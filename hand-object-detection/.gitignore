@@ -1,0 +1,34 @@
+# Entorno virtual
+venv/
+env/
+.venv/
+.env/
+
+# Modelos de MediaPipe
+*.task
+hand_landmarker.task
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.pt
+# Distribución / empaquetado
+build/
+dist/
+*.egg-info/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Archivos de sistema
+.DS_Store
+Thumbs.db
