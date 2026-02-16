@@ -1,24 +1,23 @@
+import argparse
+import os
 import numpy as np
 import cv2
 import time
 
-def visualize_skeleton(npy_path):
+def visualize_skeleton(npy_path, fps: float = 20.0):
     # Cargar los datos (Frames, Puntos, 2)
     data = np.load(npy_path)
     print(f"Visualizando: {npy_path}")
     print(f"Dimensiones: {data.shape} (Frames, Puntos, XY)")
 
-    # Definir conexiones para el esqueleto (basado en los 8 puntos que guardamos)
-    # Puntos guardados (KEEP_KPS): 5, 6, 7, 8, 9, 10, 11, 12
-    # En el array .npy, estos son los índices 0, 1, 2, 3, 4, 5, 6, 7
-    # Conexiones: (0-1 hombros), (0-2 hombro-codo izq), (2-4 codo-muñeca izq), etc.
-    connections = [
-        (0, 1), (0, 2), (2, 4), (1, 3), (3, 5), # Torso superior y brazos
-        (0, 6), (1, 7), (6, 7)                  # Torso a cadera y cadera
-    ]
+    # Conexiones: hombros, codos, muñecas, cadera (sin piernas)
+    connections = [(0, 1), (0, 2), (2, 4), (1, 3), (3, 5), (0, 6), (1, 7), (6, 7)]
 
     # Crear una imagen negra para dibujar
     h, w = 600, 600
+
+    # Tiempo entre frames en ms según fps deseados
+    delay_ms = int(1000 / fps) if fps > 0 else 50
     
     for frame_idx in range(len(data)):
         canvas = np.zeros((h, w, 3), dtype=np.uint8)
@@ -39,17 +38,26 @@ def visualize_skeleton(npy_path):
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
         
         cv2.imshow("Verificador de Esqueletos", canvas)
-        
-        # Salir con 'q' o esperar entre frames
-        if cv2.waitKey(50) & 0xFF == ord('q'):
+
+        # Salir con 'q' o avanzar según fps
+        if cv2.waitKey(delay_ms) & 0xFF == ord('q'):
             break
             
     cv2.destroyAllWindows()
 
 if __name__ == "__main__":
-    # Cambia esto por la ruta de un archivo generado
-    RUTA_EJEMPLO = "dataset_final_limpio/2/video_ejemplo_p1/poses.npy"
-    if Path(RUTA_EJEMPLO).exists():
-        visualize_skeleton(RUTA_EJEMPLO)
+    parser = argparse.ArgumentParser(description="Visualiza poses desde un archivo .npy")
+    parser.add_argument("npy_path", type=str, help="Ruta al archivo poses.npy")
+    parser.add_argument(
+        "--fps",
+        type=float,
+        default=20.0,
+        help="FPS a los que reproducir la secuencia (por defecto: 20)",
+    )
+    args = parser.parse_args()
+
+    if os.path.exists(args.npy_path):
+        visualize_skeleton(args.npy_path, fps=args.fps)
     else:
-        print("Primero genera los datos con el script anterior.")
+        print(f"Archivo no encontrado: {args.npy_path}")
+        exit(1)
