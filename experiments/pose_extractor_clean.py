@@ -95,9 +95,6 @@ def _setup_logging(log_dir: str | Path | None = None) -> object | None:
 DEVICE = _get_device()
 print(f"Cargando modelo pose: {MODEL_PATH}")
 model = YOLO(MODEL_PATH)  # Modelo pose para keypoints
-print("Cargando modelo de segmentación: yolo11x-seg.pt (para extraer siluetas)")
-model_seg = YOLO('yolo11x-seg.pt')  # Modelo seg para máscaras
-print("✓ Modelos cargados correctamente")
 
 
 # Patrón para detectar timestamps HH:MM:SS
@@ -254,15 +251,6 @@ def process_single_csv(
                 stream=True,
                 device=DEVICE,
             )
-            # Procesar segmentación en paralelo para obtener siluetas
-            results_seg = model_seg.track(
-                source=clip_path,
-                tracker="custom_tracker.yaml",
-                persist=True,
-                verbose=False,
-                stream=True,
-                device=DEVICE,
-            )
             temp_person_data = {}
             cap = cv2.VideoCapture(clip_path)
 
@@ -275,60 +263,15 @@ def process_single_csv(
             min_valid_seconds = clip_duration * MIN_COVERAGE_RATIO
             min_valid_frames = int(min_valid_seconds * fps) if clip_duration > 0 else 0
 
-            # Sincronizar iteradores de pose y segmentación frame por frame
-            for r, r_seg in zip_longest(results, results_seg, fillvalue=None):
+            for r in results:
                 success, frame = cap.read()
-                if not success:
-                    continue
-                    
-                # Si no hay resultados de pose, saltar este frame
-                if r is None or r.keypoints is None or r.boxes.id is None:
+                if not success or r.keypoints is None or r.boxes.id is None:
                     continue
 
                 ids = r.boxes.id.int().cpu().tolist()
                 kpts = r.keypoints.xyn.cpu().numpy()
                 confs = r.keypoints.conf.cpu().numpy()
                 boxes = r.boxes.xyxy.cpu().numpy()
-                
-                # Obtener dimensiones del frame
-                h_frame, w_frame = frame.shape[:2]
-                
-                # Obtener máscaras de segmentación si están disponibles
-                seg_masks = {}
-                seg_boxes = {}
-                
-                if r_seg is not None and r_seg.masks is not None and r_seg.boxes.id is not None:
-                    seg_ids = r_seg.boxes.id.int().cpu().tolist()
-                    seg_boxes_seg = r_seg.boxes.xyxy.cpu().numpy()
-                    
-                    for seg_i, seg_track_id in enumerate(seg_ids):
-                        if seg_i < len(r_seg.masks.data):
-                            try:
-                                # Obtener máscara de YOLO (puede venir como tensor o array)
-                                mask_tensor = r_seg.masks.data[seg_i]
-                                if hasattr(mask_tensor, 'cpu'):
-                                    mask_np = mask_tensor.cpu().numpy()
-                                else:
-                                    mask_np = np.array(mask_tensor)
-                                
-                                # Las máscaras de YOLO pueden venir en diferentes formatos
-                                # Si es un array 2D, ya está en formato de imagen
-                                # Si tiene más dimensiones, tomar la primera
-                                if len(mask_np.shape) > 2:
-                                    mask_np = mask_np[0] if mask_np.shape[0] == 1 else mask_np
-                                
-                                # Redimensionar al tamaño del frame si es necesario
-                                if mask_np.shape != (h_frame, w_frame):
-                                    mask_np = cv2.resize(mask_np, (w_frame, h_frame), interpolation=cv2.INTER_NEAREST)
-                                
-                                # Convertir a binario (0 o 255)
-                                mask_binary = (mask_np > 0.5).astype(np.uint8) * 255
-                                seg_masks[seg_track_id] = mask_binary
-                                seg_boxes[seg_track_id] = seg_boxes_seg[seg_i]
-                            except Exception as e:
-                                # Si hay error extrayendo la máscara, continuar sin ella
-                                print(f"[WARNING] Error extrayendo máscara para track {seg_track_id}: {e}")
-                                continue
 
                 for i, track_id in enumerate(ids):
                     if track_id not in temp_person_data:
@@ -336,9 +279,6 @@ def process_single_csv(
                         temp_person_data[track_id] = {
                             'poses_full': [],
                             'poses': [],
-                            'masks_full': [],  # Máscaras de todos los frames
-                            'masks': [],       # Máscaras solo de frames válidos
-                            'mask_areas': [],  # Áreas de máscaras para análisis volumétrico
                             'v_cnt': 0, 'total': 0, 'clothes': {'top': c_t, 'bottom': c_b},
                             'kp_conf_sum': 0.0, 'occluded_frames': 0, 'bbox_ratios': []
                         }
@@ -352,48 +292,9 @@ def process_single_csv(
                     # poses_full: todo el tracking
                     temp_person_data[track_id]['poses_full'].append(kpt_pose)
 
-                    # Extraer máscara de segmentación (silueta) para este usuario
-                    mask_frame = None
-                    if track_id in seg_masks:
-                        # Usar máscara directamente si el track_id coincide
-                        mask_frame = seg_masks[track_id]
-                    else:
-                        # Si no hay coincidencia exacta, buscar por IoU de bboxes
-                        best_iou = 0.0
-                        best_seg_id = None
-                        for seg_id, seg_box in seg_boxes.items():
-                            # Calcular IoU entre bboxes
-                            x1_i = max(bbox[0], seg_box[0])
-                            y1_i = max(bbox[1], seg_box[1])
-                            x2_i = min(bbox[2], seg_box[2])
-                            y2_i = min(bbox[3], seg_box[3])
-                            if x2_i > x1_i and y2_i > y1_i:
-                                inter_area = (x2_i - x1_i) * (y2_i - y1_i)
-                                box_area = (bbox[2] - bbox[0]) * (bbox[3] - bbox[1])
-                                seg_area = (seg_box[2] - seg_box[0]) * (seg_box[3] - seg_box[1])
-                                union_area = box_area + seg_area - inter_area
-                                iou = inter_area / union_area if union_area > 0 else 0.0
-                                if iou > best_iou and iou > 0.5:  # Umbral mínimo de IoU
-                                    best_iou = iou
-                                    best_seg_id = seg_id
-                        if best_seg_id is not None:
-                            mask_frame = seg_masks[best_seg_id]
-                    
-                    # Si no se encontró máscara, crear una máscara vacía
-                    if mask_frame is None:
-                        mask_frame = np.zeros((h_frame, w_frame), dtype=np.uint8)
-                    
-                    # Calcular área de la máscara (píxeles del cuerpo)
-                    mask_area = int(np.sum(mask_frame > 0))
-                    temp_person_data[track_id]['mask_areas'].append(mask_area)
-                    
-                    # masks_full: todas las máscaras
-                    temp_person_data[track_id]['masks_full'].append(mask_frame)
-
                     # poses: solo frames válidos
                     if valid:
                         temp_person_data[track_id]['poses'].append(kpt_pose)
-                        temp_person_data[track_id]['masks'].append(mask_frame)  # Máscara solo si frame válido
                         temp_person_data[track_id]['v_cnt'] += 1
                     temp_person_data[track_id]['total'] += 1
 
@@ -452,13 +353,6 @@ def process_single_csv(
                 else:
                     subject_velocity = 0.0
 
-                # Métricas de silueta (máscara)
-                mask_areas = info.get('mask_areas', [])
-                mask_area_avg = round(float(np.mean(mask_areas)), 1) if mask_areas else 0.0
-                mask_area_std = round(float(np.std(mask_areas)), 1) if len(mask_areas) > 1 else 0.0
-                # Variación de área (detecta cambios volumétricos como objetos ocultos)
-                mask_area_cv = round(mask_area_std / mask_area_avg * 100, 2) if mask_area_avg > 0 else 0.0
-
                 coverage_seconds = valid_frames / fps if fps > 0 else 0.0
                 user_meta = {
                     "track_id": int(tid),
@@ -468,30 +362,20 @@ def process_single_csv(
                     "total_frames": int(total_frames),
                     "poses_full_count": len(info['poses_full']),
                     "poses_filtered_count": len(info['poses']),
-                    "masks_full_count": len(info.get('masks_full', [])),
-                    "masks_filtered_count": len(info.get('masks', [])),
                     "passes_filters": passes_filters,
                     "keypoint_confidence_avg": round(kp_conf_avg, 3),
                     "occlusion_ratio": occlusion_ratio,
                     "bbox_aspect_ratio": bbox_aspect_ratio,
                     "subject_velocity": subject_velocity,
-                    "mask_area_avg": mask_area_avg,
-                    "mask_area_std": mask_area_std,
-                    "mask_area_cv": mask_area_cv,  # Coeficiente de variación (detecta cambios volumétricos)
                     "clothes": info['clothes'],
                 }
                 users_meta.append(user_meta)
 
-                # Carpetas user_X con poses y máscaras
+                # Carpetas user_X con poses
                 user_dir = data_dir / f"user_{tid}"
                 user_dir.mkdir(exist_ok=True)
                 np.save(str(user_dir / "poses_full.npy"), np.array(info['poses_full']))
                 np.save(str(user_dir / "poses.npy"), np.array(info['poses']))
-                # Guardar máscaras (siluetas) de segmentación
-                if info.get('masks_full'):
-                    np.save(str(user_dir / "masks_full.npy"), np.array(info['masks_full']))
-                if info.get('masks'):
-                    np.save(str(user_dir / "masks.npy"), np.array(info['masks']))
 
                 if not passes_filters:
                     print(

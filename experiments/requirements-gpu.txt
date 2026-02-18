@@ -24,7 +24,8 @@ numpy
 tqdm            # barra de progreso
 
 # Para GPU (se instalarán con CUDA según el comando de PyTorch que uses)
-torch
-torchvision
-torchaudio
+torch==2.1.2
+torchvision==0.16.2
+torchaudio==2.1.2
+
 
