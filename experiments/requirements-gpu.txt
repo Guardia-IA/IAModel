@@ -1,0 +1,30 @@
+########################################################################
+# Requisitos para entorno GPU (NVIDIA) para pose_extractor_clean.py
+#
+# Uso recomendado:
+# 1) Crear entorno:
+#    python -m venv .venv
+#    source .venv/bin/activate
+#
+# 2) Instalar dependencias generales:
+#    pip install -r requirements-gpu.txt
+#
+# 3) INSTALAR PyTorch CON CUDA (MUY IMPORTANTE):
+#    Ve a https://pytorch.org/get-started/locally/ y copia el comando
+#    que corresponda a tu versión de CUDA / SO, por ejemplo:
+#    pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
+#
+#    Ese paso sustituye la versión CPU de torch por la versión con GPU.
+########################################################################
+
+opencv-python
+pandas
+ultralytics     # YOLOv8/YOLO11 pose + tracking
+numpy
+tqdm            # barra de progreso
+
+# Para GPU (se instalarán con CUDA según el comando de PyTorch que uses)
+torch
+torchvision
+torchaudio
+
