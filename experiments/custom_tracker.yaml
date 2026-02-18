@@ -1,0 +1,19 @@
+# custom_tracker.yaml - Basado en botsort.yaml de Ultralytics
+# Todos los campos requeridos deben estar presentes
+
+tracker_type: botsort
+track_high_thresh: 0.3   # Umbral bajo para no perder el rastro si el cliente se agacha
+track_low_thresh: 0.1    # Requerido por Ultralytics
+new_track_thresh: 0.7    # Evita crear IDs nuevos por ruido visual
+track_buffer: 300        # Mantiene el ID en memoria durante oclusiones largas
+match_thresh: 0.5        # Asociación de cajas más flexible
+fuse_score: True         # Requerido por Ultralytics
+
+# BoT-SORT
+gmc_method: sparseOptFlow
+
+# ReID (model es obligatorio cuando with_reid: True)
+with_reid: True
+model: auto              # "auto" = usa features del detector
+proximity_thresh: 0.5
+appearance_thresh: 0.25  # Bajo para Re-ID más tolerante
