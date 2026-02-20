@@ -4,7 +4,6 @@ import json
 import sys
 from datetime import datetime
 from pathlib import Path
-from itertools import zip_longest
 
 import numpy as np
 import cv2
@@ -14,7 +13,10 @@ from tqdm import tqdm
 from ultralytics import YOLO
 
 # --- CONFIGURACIÓN DE RUTAS (edita config.py) ---
-from config import get_experiments, PATH_ROOT, CSV_PATH, OUTPUT_BASE, LOGS_SUBDIR
+from config import (
+    get_experiments, PATH_ROOT, CSV_PATH, OUTPUT_BASE, LOGS_SUBDIR,
+    CLIP_SCALE_HEIGHT, VAAPI_DEVICE,
+)
 from security import validate_folder
 
 # Base de salida: OUTPUT_BASE de config (temp_clips/ y data_result/ dentro)
@@ -23,8 +25,8 @@ OUTPUT = Path(OUTPUT_BASE) if OUTPUT_BASE else Path(__file__).parent / "output"
 # --- PARÁMETROS DE CONTROL ---
 DEBUG_MODE = True      # True: Solo procesa N vídeos
 N_DEBUG = 5            # Número de vídeos en modo debug
-MODEL_PATH = 'yolo11x-pose.pt'   # m= rápido+preciso; s/n= más rápido; l/x= más preciso
-DELETE_TEMP_VIDEOS = False       # Si True, borra los vídeos temporales al terminar
+MODEL_PATH = 'yolo11n-pose.pt'   # m= rápido+preciso; s/n= más rápido; l/x= más preciso
+DELETE_TEMP_VIDEOS = True       # Si True, borra los vídeos temporales al terminar
 
 # --- FILTROS DE CALIDAD ---
 MIN_KP_CONF = 0.5
@@ -168,12 +170,52 @@ def make_clip_name(
 
 
 def cut_clip(video_in, start, end, video_out):
-    """Recorta el vídeo usando FFmpeg (sin re-codificar, solo copia de codecs)."""
-    command = [
-        'ffmpeg', '-y', '-ss', str(start), '-to', str(end),
-        '-i', video_in, '-c', 'copy', '-loglevel', 'error', video_out
-    ]
-    subprocess.run(command)
+    """
+    Recorta el vídeo con FFmpeg. Escala a CLIP_SCALE_HEIGHT si está configurado.
+    Usa VAAPI cuando VAAPI_DEVICE está definido (Intel/AMD).
+    """
+    scale_h = CLIP_SCALE_HEIGHT
+    vaapi = VAAPI_DEVICE
+
+    if vaapi and scale_h:
+        # Pipeline VAAPI: decode → scale_vaapi → encode h264_vaapi
+        scale_expr = f"scale_vaapi=-2:{scale_h}"  # -2 = ancho automático (mantiene aspect)
+        command = [
+            'ffmpeg', '-y', '-threads', '0', '-hwaccel', 'vaapi',
+            '-hwaccel_device', str(vaapi),
+            '-hwaccel_output_format', 'vaapi',
+            '-ss', str(start), '-to', str(end), '-i', video_in,
+            '-vf', scale_expr,
+            '-c:v', 'h264_vaapi',
+            '-vaapi_device', str(vaapi),
+            '-loglevel', 'error', video_out
+        ]
+    elif scale_h:
+        # Software: scale + libx264
+        scale_expr = f"scale=-2:{scale_h}"
+        command = [
+            'ffmpeg', '-y', '-threads', '0', '-ss', str(start), '-to', str(end),
+            '-i', video_in, '-vf', scale_expr,
+            '-c:v', 'libx264', '-loglevel', 'error', video_out
+        ]
+    else:
+        # Sin escalado: copia directa (como antes)
+        command = [
+            'ffmpeg', '-y', '-threads', '0', '-ss', str(start), '-to', str(end),
+            '-i', video_in, '-c', 'copy', '-loglevel', 'error', video_out
+        ]
+
+    result = subprocess.run(command, capture_output=True, text=True)
+    if result.returncode != 0 and vaapi and scale_h:
+        # Fallback a software si VAAPI falla (ej. solo NVIDIA, sin Intel/AMD)
+        if result.stderr:
+            print(f"[FFmpeg VAAPI falló, usando software] {result.stderr.strip()[:200]}")
+        command_fb = [
+            'ffmpeg', '-y', '-threads', '0', '-ss', str(start), '-to', str(end),
+            '-i', video_in, '-vf', f"scale=-2:{scale_h}",
+            '-c:v', 'libx264', '-loglevel', 'error', video_out
+        ]
+        subprocess.run(command_fb)
 
 def get_color_attributes(frame, bbox):
     """Extrae colores RGB promedios de la ropa."""
@@ -250,12 +292,15 @@ def process_single_csv(
                 verbose=False,
                 stream=True,
                 device=DEVICE,
+                half=True,
             )
             temp_person_data = {}
+            # FPS del clip: abrimos solo para leer metadata (evitamos leer el vídeo 2 veces)
             cap = cv2.VideoCapture(clip_path)
-
-            # FPS del clip (si falla, usamos DEFAULT_FPS)
-            fps = cap.get(cv2.CAP_PROP_FPS)
+            try:
+                fps = cap.get(cv2.CAP_PROP_FPS)
+            finally:
+                cap.release()
             if fps is None or fps <= 0:
                 fps = DEFAULT_FPS
 
@@ -264,14 +309,24 @@ def process_single_csv(
             min_valid_frames = int(min_valid_seconds * fps) if clip_duration > 0 else 0
 
             for r in results:
-                success, frame = cap.read()
-                if not success or r.keypoints is None or r.boxes.id is None:
+                frame = getattr(r, 'orig_img', None)
+                if frame is None or r.keypoints is None or r.boxes.id is None:
                     continue
 
-                ids = r.boxes.id.int().cpu().tolist()
-                kpts = r.keypoints.xyn.cpu().numpy()
-                confs = r.keypoints.conf.cpu().numpy()
-                boxes = r.boxes.xyxy.cpu().numpy()
+                # Optimización GPU→CPU: hacer todas las operaciones en GPU primero, luego transferir
+                # Al agrupar las operaciones GPU y luego las transferencias, PyTorch puede optimizar mejor
+                # el pipeline y reducir overhead de sincronización
+                boxes_gpu = r.boxes.xyxy
+                ids_gpu = r.boxes.id.int()  # Operación .int() en GPU (más rápido que en CPU)
+                kpts_gpu = r.keypoints.xyn
+                confs_gpu = r.keypoints.conf
+                
+                # Transferir todo junto: aunque técnicamente son 4 .cpu(), al estar agrupadas
+                # PyTorch puede optimizar mejor el pipeline y reducir overhead
+                ids = ids_gpu.cpu().tolist()
+                kpts = kpts_gpu.cpu().numpy()
+                confs = confs_gpu.cpu().numpy()
+                boxes = boxes_gpu.cpu().numpy()
 
                 for i, track_id in enumerate(ids):
                     if track_id not in temp_person_data:
@@ -305,9 +360,6 @@ def process_single_csv(
                     h_bbox = bbox[3] - bbox[1]
                     w_bbox = max(bbox[2] - bbox[0], 1e-6)
                     temp_person_data[track_id]['bbox_ratios'].append(float(h_bbox / w_bbox))
-
-            cap.release()
-            cap = None
 
             # 4. Guardar: data_result/{cat}/{clip_name}/ con meta.json y user_X/
             if not temp_person_data:
@@ -409,12 +461,6 @@ def process_single_csv(
                 "error": str(e),
             })
             print(f"[ERROR] Clip fila {fila_csv} ({video_rel_path}): {e}")
-        finally:
-            if cap is not None:
-                try:
-                    cap.release()
-                except Exception:
-                    pass
 
 
 def main():

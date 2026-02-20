@@ -21,7 +21,7 @@ TEMP_CLIPS = None  # Solo modo CSV_PATH: None = temp_clips en dir del CSV
 # OUTPUT_BASE = carpeta donde van temp_clips/ y data_result/
 #   temp_clips/{0,1,2,...}/ = clips por categoría
 #   data_result/{0,1,2,...}/{clip_name}/ = meta.json + user_X/
-OUTPUT_BASE = "/home/debian/Proyectos/GuardIA/Grabaciones/output_test_11_mask_x/"   # None = output junto al script
+OUTPUT_BASE = "/home/debian/Proyectos/GuardIA/Grabaciones/output_test_11_n_v3/"   # None = output junto al script
 TEMP_BASE = None     # Legacy: solo para get_experiments si no usas OUTPUT_BASE unificado.
 
 CLIP_META_PATH = None  # build_clip_index genera clip_meta.csv (índice de todos los meta.json).
@@ -31,6 +31,15 @@ CLIP_META_PATH = None  # build_clip_index genera clip_meta.csv (índice de todos
 OUTPUT_SUBDIR = "dataset_final_limpio"  # Legacy: para get_experiments
 TEMP_SUBDIR = "temp_clips"              # temp_clips/{0,1,2,...}/
 LOGS_SUBDIR = "logs"                    # logs/ (ficheros log<timestamp>.txt)
+
+# --- RECORTE DE CLIPS (FFmpeg) ---
+# Resolución objetivo al extraer clips (reduce tiempo de YOLO). None = mantener original.
+CLIP_SCALE_HEIGHT = 1080   # Altura en píxeles. Ancho se calcula manteniendo aspect ratio (-2).
+
+# Aceleración VAAPI (Intel iGPU / AMD). None = usar software (libx264).
+# Recomendado: usar la gráfica INTEGRADA (/dev/dri/renderD128 suele ser Intel)
+# para no competir con la GPU NVIDIA donde corre YOLO.
+VAAPI_DEVICE = "/dev/dri/renderD128"   # None = sin VAAPI
 
 
 def _find_csv_files(root: str):
