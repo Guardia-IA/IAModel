@@ -2,26 +2,53 @@
 """
 split_videos.py - Detecta secuencias ArUco inicio→fin y extrae clips.
 
-Flujo: usuario muestra ArUco inicio (ej. 1) → lo guarda (desaparece) → hace acción
-       → muestra ArUco fin (ej. 42) → desaparece.
+Flujo básico por vídeo:
+  - Usuario muestra ArUco inicio (ej. 1) → lo guarda (desaparece) → hace acción.
+  - Más tarde muestra ArUco fin (ej. 42) → desaparece.
 
 Clip extraído: desde (último frame ArUco inicio + 3 s) hasta (último frame ArUco fin - 5 s).
 
-Uso:
-  python split_videos.py VIDEO.mp4 -o /path/output
-  python split_videos.py VIDEO.mp4 -o /path/output --inicio 1 --fin 42
-  python split_videos.py VIDEO.mp4 --preview   # Solo visualizar detección (1080p, bbox + ID)
+Modos de uso:
+  1) Modo simple (un solo vídeo):
+       python split_videos.py VIDEO.mp4 -o /path/output --inicio 1 --fin 42
 
-Salida: output/robos_split_YYYYMMDD_HHMMSS/clip_001.mp4, clip_002.mp4, ...
+  2) Preview (no genera ficheros, solo visualización):
+       python split_videos.py VIDEO.mp4 --preview --inicio 1 --fin 42
+
+  3) Modo configuración JSON (varios vídeos + rangos de búsqueda):
+       python split_videos.py --config config_split.json
+
+     Estructura esperada del JSON:
+       {
+         "output_dir": "/ruta/salida/general",
+         "clips": [
+           {
+             "video": "/ruta/completa/video1.mp4",
+             "search_start": 0.0,          # segundos (opcional)
+             "search_end": null,           # segundos (opcional, null = hasta el final)
+             "aruco_inicio": 1,
+             "aruco_fin": 42
+           }
+         ]
+       }
+
+En modo JSON todos los clips se guardan en la misma carpeta output_dir como:
+  clip1.mp4, clip2.mp4, ...
+y se genera además un CSV clips_robos2.csv con columnas:
+  video,inicio,fin,clasificacion
 """
 import os
 # Evitar avisos Qt/Wayland: forzar X11 (xcb)
 os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
 
 import argparse
+import csv
+import json
 import subprocess
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
 import cv2
 import numpy as np
@@ -44,11 +71,46 @@ OFFSET_FRAMES = 5
 
 
 def _sec_to_hhmmss(sec: float) -> str:
-    """Convierte segundos a HH:MM:SS."""
+    """Convierte segundos (float) a HH:MM:SS."""
+    if sec is None or sec < 0:
+        return "00:00:00"
     h = int(sec) // 3600
     m = (int(sec) % 3600) // 60
     s = int(sec) % 60
     return f"{h:02d}:{m:02d}:{s:02d}"
+
+
+def _hhmmss_to_sec(value) -> Optional[float]:
+    """
+    Convierte "HH:MM:SS" (o segundos numéricos) a float en segundos.
+    Devuelve None si value es None.
+    """
+    if value is None:
+        return None
+    # Si ya es número, lo devolvemos como float
+    if isinstance(value, (int, float)):
+        return float(value)
+    if not isinstance(value, str):
+        raise ValueError(f"Valor de tiempo no válido (esperado HH:MM:SS o segundos): {value!r}")
+    text = value.strip()
+    if not text:
+        return None
+    parts = text.split(":")
+    if len(parts) != 3:
+        # Intento de parsear como segundos sueltos en texto
+        try:
+            return float(text)
+        except ValueError as e:
+            raise ValueError(f"Formato de tiempo no válido (esperado HH:MM:SS): {text!r}") from e
+    try:
+        h = int(parts[0])
+        m = int(parts[1])
+        s = int(parts[2])
+    except ValueError as e:
+        raise ValueError(f"Formato de tiempo no válido (esperado HH:MM:SS): {text!r}") from e
+    if m < 0 or m >= 60 or s < 0 or s >= 60:
+        raise ValueError(f"Minutos/segundos fuera de rango en tiempo: {text!r}")
+    return float(h * 3600 + m * 60 + s)
 
 
 def _get_aruco_detector(aruco_dict, params):
@@ -85,6 +147,8 @@ def find_aruco_sequences(
     aruco_inicio: int,
     aruco_fin: int,
     fps: float | None = None,
+    search_start: Optional[float] = None,
+    search_end: Optional[float] = None,
 ) -> list[tuple[float, float]]:
     """
     Escanea el vídeo y devuelve lista de (start_sec, end_sec) para cada secuencia
@@ -96,9 +160,29 @@ def find_aruco_sequences(
         raise FileNotFoundError(f"No se pudo abrir el vídeo: {video_path}")
 
     vid_fps = cap.get(cv2.CAP_PROP_FPS) or (fps or 30.0)
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
-    total_sec = total_frames / vid_fps if total_frames else 0
+    total_frames_video = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+    total_sec_video = total_frames_video / vid_fps if total_frames_video else 0.0
     cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+
+    # Rango de búsqueda en segundos
+    start_sec = max(0.0, float(search_start)) if search_start is not None else 0.0
+    end_sec = float(search_end) if search_end is not None else total_sec_video
+    if end_sec <= 0.0 or end_sec > total_sec_video:
+        end_sec = total_sec_video
+
+    start_frame = int(start_sec * vid_fps)
+    end_frame = int(end_sec * vid_fps) if end_sec > 0 else total_frames_video
+
+    # Rango de frames efectivo para la barra de progreso
+    if total_frames_video > 0:
+        total_frames_range = max(
+            0,
+            min(end_frame, total_frames_video) - min(start_frame, total_frames_video),
+        )
+    else:
+        total_frames_range = 0
+
+    cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
 
     aruco_dict = aruco.getPredefinedDictionary(ARUCO_DICT)
     params = aruco.DetectorParameters()
@@ -115,20 +199,28 @@ def find_aruco_sequences(
     sequences: list[tuple[float, float]] = []
 
     pbar = tqdm(
-        total=total_frames,
+        total=total_frames_range or total_frames_video,
         unit="fr",
         desc="Analizando vídeo",
         bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}] {postfix}",
     )
-    frame_idx = 0
+    frame_idx = start_frame
     try:
         while True:
             ret, frame = cap.read()
             if not ret:
                 break
             t_sec = frame_idx / vid_fps
-            pbar.n = min(frame_idx, total_frames)
-            pbar.set_postfix_str(f"{_sec_to_hhmmss(t_sec)} / {_sec_to_hhmmss(total_sec)}")
+
+            if frame_idx > end_frame:
+                break
+
+            # Progreso relativo al rango de búsqueda
+            if total_frames_range > 0:
+                pbar.n = min(frame_idx - start_frame, total_frames_range)
+            else:
+                pbar.n = min(frame_idx, total_frames_video)
+            pbar.set_postfix_str(f"{_sec_to_hhmmss(t_sec)} / {_sec_to_hhmmss(end_sec)}")
             pbar.refresh()
 
             ids = _detect_aruco_ids(frame, aruco_dict, params)
@@ -186,7 +278,9 @@ def find_aruco_sequences(
             else:
                 frame_idx += 1
     finally:
-        pbar.n = total_frames
+        if total_frames_range > 0:
+            pbar.n = total_frames_range
+            pbar.refresh()
         pbar.close()
         cap.release()
 
@@ -300,16 +394,157 @@ def cut_clip(video_in: Path, start_sec: float, end_sec: float, video_out: Path) 
     return r.returncode == 0
 
 
+@dataclass
+class ConfigClip:
+    video: Path
+    search_start: Optional[float]
+    search_end: Optional[float]
+    aruco_inicio: int
+    aruco_fin: int
+
+
+def _load_config(config_path: Path) -> tuple[Path, list[ConfigClip]]:
+    """Carga el JSON de configuración para el modo batch."""
+    with open(config_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    output_dir_raw = data.get("output_dir", "")
+    if not output_dir_raw:
+        raise ValueError("El JSON debe contener la clave 'output_dir' con la carpeta de salida.")
+    output_dir = Path(output_dir_raw).expanduser().resolve()
+
+    clips_raw = data.get("clips", [])
+    if not isinstance(clips_raw, list) or not clips_raw:
+        raise ValueError("El JSON debe contener una lista 'clips' con al menos un objeto.")
+
+    clips_cfg: list[ConfigClip] = []
+    for i, item in enumerate(clips_raw, start=1):
+        if "video" not in item:
+            raise ValueError(f"Clip {i}: falta la clave 'video'.")
+        video_path = Path(item["video"]).expanduser().resolve()
+        if not video_path.exists():
+            raise FileNotFoundError(f"Clip {i}: vídeo no encontrado: {video_path}")
+
+        # search_start / search_end pueden venir como segundos o como "HH:MM:SS"
+        raw_start = item.get("search_start")
+        raw_end = item.get("search_end")
+        search_start = _hhmmss_to_sec(raw_start)
+        search_end = _hhmmss_to_sec(raw_end)
+
+        clips_cfg.append(
+            ConfigClip(
+                video=video_path,
+                search_start=search_start,
+                search_end=search_end,
+                aruco_inicio=int(item.get("aruco_inicio", 1)),
+                aruco_fin=int(item.get("aruco_fin", 42)),
+            )
+        )
+
+    return output_dir, clips_cfg
+
+
+def run_from_config(config_path: Path) -> None:
+    """
+    Ejecuta el procesamiento en modo configuración JSON.
+
+    - Recorre todos los clips del JSON.
+    - Genera clips numerados: clip1.mp4, clip2.mp4, ...
+    - Genera CSV clips_robos2.csv con columnas:
+        video,inicio,fin,clasificacion
+      donde:
+        video         = nombre del clip (p.ej. clip1.mp4)
+        inicio        = 00:00:00
+        fin           = duración del clip en HH:MM:SS
+        clasificacion = 6
+    """
+    output_dir, clips_cfg = _load_config(config_path)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    csv_path = output_dir / "clips_robos2.csv"
+    csv_file = open(csv_path, "w", encoding="utf-8", newline="")
+    writer = csv.writer(csv_file)
+    writer.writerow(["video", "inicio", "fin", "clasificacion"])
+
+    clip_counter = 1
+    try:
+        for cfg in clips_cfg:
+            print(f"\n=== Procesando vídeo: {cfg.video} ===")
+            txt_start = _sec_to_hhmmss(cfg.search_start) if cfg.search_start is not None else "00:00:00"
+            txt_end = _sec_to_hhmmss(cfg.search_end) if cfg.search_end is not None else "fin"
+            print(f"  Rango búsqueda: {txt_start} → {txt_end}")
+            print(f"  ArUco inicio={cfg.aruco_inicio}, fin={cfg.aruco_fin}")
+
+            sequences = find_aruco_sequences(
+                cfg.video,
+                cfg.aruco_inicio,
+                cfg.aruco_fin,
+                search_start=cfg.search_start,
+                search_end=cfg.search_end,
+            )
+            print(f"  Secuencias encontradas: {len(sequences)}")
+
+            for (start_sec, end_sec) in sequences:
+                duration = max(0.0, end_sec - start_sec)
+                clip_name = f"clip{clip_counter}.mp4"
+                clip_path = output_dir / clip_name
+
+                ok = cut_clip(cfg.video, start_sec, end_sec, clip_path)
+                status = "OK" if ok else "ERROR"
+                print(
+                    f"    Clip {clip_counter}: {start_sec:.1f}s - {end_sec:.1f}s "
+                    f"({duration:.1f}s) → {clip_name} [{status}]"
+                )
+
+                if ok:
+                    writer.writerow(
+                        [
+                            clip_name,
+                            "00:00:00",
+                            _sec_to_hhmmss(duration),
+                            "6",
+                        ]
+                    )
+                    clip_counter += 1
+    finally:
+        csv_file.close()
+        print(f"\nCSV generado: {csv_path}")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Detecta secuencias ArUco inicio→fin en un vídeo y extrae clips."
     )
-    parser.add_argument("video", type=str, help="Ruta del vídeo de entrada")
-    parser.add_argument("-o", "--output", type=str, default=None, help="Ruta de salida (requerido si no --preview)")
+    parser.add_argument("video", type=str, nargs="?", help="Ruta del vídeo de entrada (modo simple)")
+    parser.add_argument(
+        "-o",
+        "--output",
+        type=str,
+        default=None,
+        help="Ruta de salida (requerido en modo simple si no se usa --preview)",
+    )
+    parser.add_argument(
+        "--config",
+        type=str,
+        default=None,
+        help="Ruta a JSON de configuración para procesar múltiples vídeos (modo batch).",
+    )
     parser.add_argument("--preview", action="store_true", help="Solo mostrar vídeo con detección de ArUcos (bbox + ID)")
     parser.add_argument("--inicio", type=int, default=1, help="ID ArUco de inicio (default: 1)")
     parser.add_argument("--fin", type=int, default=42, help="ID ArUco de fin (default: 42)")
     args = parser.parse_args()
+
+    # Modo batch con JSON de configuración
+    if args.config:
+        config_path = Path(args.config).expanduser().resolve()
+        if not config_path.exists():
+            raise FileNotFoundError(f"JSON de configuración no encontrado: {config_path}")
+        run_from_config(config_path)
+        return
+
+    # Modo simple (un solo vídeo)
+    if not args.video:
+        parser.error("Debes proporcionar un vídeo (modo simple) o bien usar --config (modo batch).")
 
     video_path = Path(args.video).resolve()
     if not video_path.exists():
@@ -320,7 +555,8 @@ def main():
         return
 
     if not args.output:
-        parser.error("-o/--output es requerido cuando no se usa --preview")
+        parser.error("-o/--output es requerido en modo simple cuando no se usa --preview")
+
     output_base = Path(args.output).resolve()
     output_base.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")

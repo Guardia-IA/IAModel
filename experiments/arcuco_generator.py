@@ -1,5 +1,5 @@
 """
-Generador de marcadores ArUco en PDF tamaño A4.
+Generador de marcadores ArUco en PDF tamaño A3.
 Máxima calidad (300 DPI), bordes optimizados para que el marcador sea lo más grande posible.
 """
 import argparse
@@ -19,15 +19,15 @@ except ImportError:
 
 # ReportLab para PDF de alta calidad
 try:
-    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.pagesizes import A3
     from reportlab.pdfgen import canvas
     from reportlab.lib.utils import ImageReader
 except ImportError:
     raise ImportError("Se necesita reportlab. Instala con: pip install reportlab")
 
-# A4 en mm
-A4_W_MM = 210
-A4_H_MM = 297
+# A3 en mm (orientación vertical)
+A3_W_MM = 297
+A3_H_MM = 420
 # DPI para máxima calidad
 DPI = 300
 # Márgenes mínimos en mm (optimizados para maximizar el marcador)
@@ -55,7 +55,7 @@ def generate_aruco_pdf(
     dictionary_type: int = aruco.DICT_6X6_250,
 ) -> Path:
     """
-    Genera un PDF A4 con el marcador ArUco centrado y lo más grande posible.
+    Genera un PDF A3 con el marcador ArUco centrado y lo más grande posible.
 
     Args:
         marker_id: ID del marcador (0-249 para DICT_6X6_250).
@@ -70,8 +70,8 @@ def generate_aruco_pdf(
     output_path = Path(output_path)
 
     # Área usable en mm
-    usable_w = A4_W_MM - 2 * margin_mm
-    usable_h = A4_H_MM - 2 * margin_mm
+    usable_w = A3_W_MM - 2 * margin_mm
+    usable_h = A3_H_MM - 2 * margin_mm
     # El marcador es cuadrado: limitado por el lado corto del área usable
     marker_mm = min(usable_w, usable_h)
 
@@ -92,14 +92,14 @@ def generate_aruco_pdf(
     marker_w_pt = marker_mm * mm_to_pt
     marker_h_pt = marker_mm * mm_to_pt
 
-    # Página A4 en puntos
-    page_w, page_h = A4
+    # Página A3 en puntos
+    page_w, page_h = A3
     # Centrar el marcador
     x_pt = (page_w - marker_w_pt) / 2
     y_pt = (page_h - marker_h_pt) / 2
 
     # Crear PDF
-    c = canvas.Canvas(str(output_path), pagesize=A4)
+    c = canvas.Canvas(str(output_path), pagesize=A3)
 
     # Guardar imagen a bytes (PNG)
     _, buf = cv2.imencode(".png", marker_img)
@@ -116,7 +116,7 @@ def generate_aruco_pdf(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Genera un PDF A4 con marcador ArUco de máxima calidad y bordes optimizados."
+        description="Genera un PDF A3 con marcador ArUco de máxima calidad y bordes optimizados."
     )
     parser.add_argument("id", type=int, help="ID del marcador ArUco (0-249 para DICT_6X6_250)")
     parser.add_argument("-o", "--output", type=str, default=None, help="Ruta del PDF de salida (default: arcuco_ID.pdf)")
@@ -136,7 +136,7 @@ def main():
     )
     print(f"PDF generado: {path}")
     print(f"  Marcador ID: {args.id}")
-    marker_size_mm = min(A4_W_MM - 2*args.margin, A4_H_MM - 2*args.margin)
+    marker_size_mm = min(A3_W_MM - 2*args.margin, A3_H_MM - 2*args.margin)
     print(f"  Tamaño del marcador: {marker_size_mm:.0f}×{marker_size_mm:.0f} mm")
 
 

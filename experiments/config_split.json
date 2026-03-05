@@ -1,0 +1,114 @@
+{
+    "output_dir": "/home/debian/Proyectos/GuardIA/Grabaciones/robos_clips",
+    "clips": [
+      {
+        "video": "<rutacompelta>/CAM1/CAM1_1.avi",
+        "search_start": "00:14:05",
+        "search_end": "00:19:40",
+        "aruco_inicio": 0,
+        "aruco_fin": 216
+      },
+      {
+        "video": "<rutacompelta>/CAM1/CAM1.avi",
+        "search_start": "01:11:18",
+        "search_end": "01:15:30",
+        "aruco_inicio": 0,
+        "aruco_fin": 216
+      },
+      {
+        "video": "<rutacompelta>/CAM1/CAM1.avi",
+        "search_start": "01:16:18",
+        "search_end": "01:16:35",
+        "aruco_inicio": 0,
+        "aruco_fin": 216
+      },
+      {
+        "video": "<rutacompelta>/CAM1/CAM1.avi",
+        "search_start": "01:16:35",
+        "search_end": "01:21:40",
+        "aruco_inicio": 0,
+        "aruco_fin": 216
+      }
+      ,
+      {
+        "video": "<rutacompelta>/CAM1/CAM1.avi",
+        "search_start": "01:26:35",
+        "search_end": "01:30:28",
+        "aruco_inicio": 0,
+        "aruco_fin": 216
+      }
+      ,
+      {
+        "video": "<rutacompelta>/CAM1/CAM1.avi",
+        "search_start": "01:31:10",
+        "search_end": "01:31:40",
+        "aruco_inicio": 0,
+        "aruco_fin": 216
+      }
+      ,
+      {
+        "video": "<rutacompelta>/CAM2/CAM2.avi",
+        "search_start": "01:10:40",
+        "search_end": "01:20:15",
+        "aruco_inicio": 0,
+        "aruco_fin": 216
+      }
+      ,
+      {
+        "video": "<rutacompelta>/CAM2/CAM2.avi",
+        "search_start": "01:30:45",
+        "search_end": "01:47:20",
+        "aruco_inicio": 0,
+        "aruco_fin": 216
+      }
+      ,
+      {
+        "video": "<rutacompelta>/CAM2/CAM2_1.avi",
+        "search_start": "00:00:00",
+        "search_end": "00:06:10",
+        "aruco_inicio": 0,
+        "aruco_fin": 216
+      }
+      ,
+      {
+        "video": "<rutacompelta>/CAM3/CAM3.avi",
+        "search_start": "00:32:45",
+        "search_end": "00:38:41",
+        "aruco_inicio": 0,
+        "aruco_fin": 216
+      }
+      ,
+      {
+        "video": "<rutacompelta>/CAM3/CAM3.avi",
+        "search_start": "00:39:16",
+        "search_end": "00:44:30",
+        "aruco_inicio": 0,
+        "aruco_fin": 216
+      }
+      ,
+      {
+        "video": "<rutacompelta>/CAM3/CAM3.avi",
+        "search_start": "00:44:50",
+        "search_end": "00:54:10",
+        "aruco_inicio": 0,
+        "aruco_fin": 216
+      }
+      ,
+      {
+        "video": "<rutacompelta>/CAM3/CAM3_1.avi",
+        "search_start": "00:17:40",
+        "search_end": "00:25:38",
+        "aruco_inicio": 0,
+        "aruco_fin": 216
+      }
+      ,
+      {
+        "video": "<rutacompelta>/CAM3/CAM4.avi",
+        "search_start": "00:27:20",
+        "search_end": "00:54:34",
+        "aruco_inicio": 0,
+        "aruco_fin": 216
+      }
+      
+    ]
+  }
