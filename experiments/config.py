@@ -31,7 +31,7 @@ CLIP_META_PATH = None  # build_clip_index genera clip_meta.csv (índice de todos
 OUTPUT_SUBDIR = "dataset_final_limpio"  # Legacy: para get_experiments
 TEMP_SUBDIR = "temp_clips"              # temp_clips/{0,1,2,...}/
 LOGS_SUBDIR = "logs"                    # logs/ (ficheros log<timestamp>.txt)
-
+ 
 # --- RECORTE DE CLIPS (FFmpeg) ---
 # Resolución objetivo al extraer clips (reduce tiempo de YOLO). None = mantener original.
 CLIP_SCALE_HEIGHT = 1080   # Altura en píxeles. Ancho se calcula manteniendo aspect ratio (-2).
