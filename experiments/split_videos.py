@@ -505,12 +505,14 @@ def run_from_config(config_path: Path, debug_max_clips: Optional[int] = None) ->
                             "6",
                         ]
                     )
+                    # Forzar volcado al disco para poder ver el CSV crecer en tiempo real
+                    csv_file.flush()
                     clip_counter += 1
 
-                    # Modo debug: parar tras N clips
+                    # Modo debug: parar tras N clips totales
                     if debug_max_clips is not None and clip_counter > debug_max_clips:
                         print(f"\n[DEBUG] Límite de clips alcanzado ({debug_max_clips}). Deteniendo procesamiento.")
-                        raise StopIteration
+                        return
     finally:
         csv_file.close()
         print(f"\nCSV generado: {csv_path}")
