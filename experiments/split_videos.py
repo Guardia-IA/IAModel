@@ -444,7 +444,7 @@ def _load_config(config_path: Path) -> tuple[Path, list[ConfigClip]]:
     return output_dir, clips_cfg
 
 
-def run_from_config(config_path: Path) -> None:
+def run_from_config(config_path: Path, debug_max_clips: Optional[int] = None) -> None:
     """
     Ejecuta el procesamiento en modo configuración JSON.
 
@@ -506,6 +506,11 @@ def run_from_config(config_path: Path) -> None:
                         ]
                     )
                     clip_counter += 1
+
+                    # Modo debug: parar tras N clips
+                    if debug_max_clips is not None and clip_counter > debug_max_clips:
+                        print(f"\n[DEBUG] Límite de clips alcanzado ({debug_max_clips}). Deteniendo procesamiento.")
+                        raise StopIteration
     finally:
         csv_file.close()
         print(f"\nCSV generado: {csv_path}")
@@ -530,6 +535,11 @@ def main():
         help="Ruta a JSON de configuración para procesar múltiples vídeos (modo batch).",
     )
     parser.add_argument("--preview", action="store_true", help="Solo mostrar vídeo con detección de ArUcos (bbox + ID)")
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Modo debug: en modo JSON sólo genera los primeros 3 clips (para revisar el CSV).",
+    )
     parser.add_argument("--inicio", type=int, default=1, help="ID ArUco de inicio (default: 1)")
     parser.add_argument("--fin", type=int, default=42, help="ID ArUco de fin (default: 42)")
     args = parser.parse_args()
@@ -539,7 +549,8 @@ def main():
         config_path = Path(args.config).expanduser().resolve()
         if not config_path.exists():
             raise FileNotFoundError(f"JSON de configuración no encontrado: {config_path}")
-        run_from_config(config_path)
+        debug_max = 3 if args.debug else None
+        run_from_config(config_path, debug_max_clips=debug_max)
         return
 
     # Modo simple (un solo vídeo)
