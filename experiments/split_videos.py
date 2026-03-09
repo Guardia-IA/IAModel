@@ -193,6 +193,10 @@ def find_aruco_sequences(
 
     state = "buscar_inicio"  # buscar_inicio | inicio_visible | buscar_fin | fin_visible
     last_frame_inicio: int | None = None
+    # Para el ArUco de fin queremos:
+    #   - inicio del clip: primer frame SIN ArUco de inicio (tras su desaparición)
+    #   - fin del clip: último frame ANTES del primer frame donde aparece el ArUco de fin
+    first_frame_fin: int | None = None
     last_frame_fin: int | None = None
     frames_sin_inicio = 0
     frames_sin_fin = 0
@@ -240,10 +244,11 @@ def find_aruco_sequences(
                 else:
                     frames_sin_inicio += 1
                     if frames_sin_inicio >= FRAMES_SIN_MARCADOR:
-                        # ArUco inicio desapareció → clip_start = último frame + 3 s
-                        t_inicio_last = last_frame_inicio / vid_fps
-                        clip_start = t_inicio_last + OFFSET_INICIO_SEC
+                        # ArUco inicio desapareció → clip_start = primer frame sin el marcador
+                        # Si el último frame con marcador es F, el primero sin marcador es F+1.
+                        clip_start = (last_frame_inicio + 1) / vid_fps
                         state = "buscar_fin"
+                        first_frame_fin = None
                         last_frame_fin = None
                         frames_sin_fin = 0
 
@@ -251,6 +256,8 @@ def find_aruco_sequences(
                 if aruco_fin in ids:
                     print(f"ArUco con ID {aruco_fin} encontrado en {_sec_to_hhmmss(t_sec)}")
                     state = "fin_visible"
+                    # Guardamos el PRIMER frame donde aparece el ArUco de fin
+                    first_frame_fin = frame_idx
                     last_frame_fin = frame_idx
                     frames_sin_fin = 0
                 # else: sigue buscando
@@ -262,9 +269,18 @@ def find_aruco_sequences(
                 else:
                     frames_sin_fin += 1
                     if frames_sin_fin >= FRAMES_SIN_MARCADOR and last_frame_fin is not None:
-                        # ArUco fin desapareció → clip_end = último frame - 5 s
-                        t_fin_last = last_frame_fin / vid_fps
-                        clip_end = max(clip_start + 1.0, t_fin_last - OFFSET_FIN_SEC)
+                        # ArUco fin ha desaparecido.
+                        # El primer frame donde apareció fue first_frame_fin (N),
+                        # así que el último frame SIN el marcador es N-1.
+                        if first_frame_fin is not None:
+                            t_end = max(0.0, (first_frame_fin - 1) / vid_fps)
+                        else:
+                            # Fallback muy raro: no se registró first_frame_fin, usar último frame visto.
+                            t_end = max(0.0, last_frame_fin / vid_fps)
+
+                        # Aseguramos que el clip tenga al menos 1 frame de duración
+                        min_duration = 1.0 / vid_fps
+                        clip_end = max(clip_start + min_duration, t_end)
                         if clip_end > clip_start:
                             sequences.append((clip_start, clip_end))
                         state = "buscar_inicio"
