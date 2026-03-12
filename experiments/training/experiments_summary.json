@@ -1,0 +1,178 @@
+[
+    {
+        "exp_id": 1,
+        "config": {
+            "arch": "dilated_tcn",
+            "hidden_dim": 128,
+            "num_layers": 3,
+            "dropout": 0.1,
+            "seq_len": 64,
+            "batch_size": 64,
+            "lr": 0.001,
+            "epochs": 30,
+            "pose_source": "filtered",
+            "done": false
+        },
+        "best_val_acc": 0.0,
+        "test_loss": 0.0,
+        "test_acc": 1.0,
+        "save_path": "/home/debian/dev/Proyectos/GuadIA-IAModel/IAModel/experiments/training/models/modelo_01.pt"
+    },
+    {
+        "exp_id": 2,
+        "config": {
+            "arch": "joint_attn",
+            "joint_d_model": 64,
+            "temporal_d_model": 128,
+            "joint_layers": 1,
+            "temporal_layers": 2,
+            "nhead": 4,
+            "dim_feedforward": 256,
+            "dropout": 0.1,
+            "seq_len": 64,
+            "batch_size": 64,
+            "lr": 0.001,
+            "epochs": 30,
+            "pose_source": "filtered",
+            "done": false
+        },
+        "best_val_acc": 0.0,
+        "test_loss": 0.0,
+        "test_acc": 1.0,
+        "save_path": "/home/debian/dev/Proyectos/GuadIA-IAModel/IAModel/experiments/training/models/modelo_02.pt"
+    },
+    {
+        "exp_id": 3,
+        "config": {
+            "arch": "lstm",
+            "hidden_dim": 128,
+            "num_layers": 1,
+            "dropout": 0.1,
+            "seq_len": 64,
+            "batch_size": 64,
+            "lr": 0.001,
+            "epochs": 25,
+            "pose_source": "filtered",
+            "done": false
+        },
+        "best_val_acc": 0.0,
+        "test_loss": 0.0,
+        "test_acc": 1.0,
+        "save_path": "/home/debian/dev/Proyectos/GuadIA-IAModel/IAModel/experiments/training/models/modelo_03.pt"
+    },
+    {
+        "exp_id": 4,
+        "config": {
+            "arch": "pose_cnn2d",
+            "hidden_dim": 64,
+            "dropout": 0.1,
+            "seq_len": 64,
+            "batch_size": 64,
+            "lr": 0.001,
+            "epochs": 30,
+            "pose_source": "filtered",
+            "done": false
+        },
+        "best_val_acc": 0.0,
+        "test_loss": 0.0,
+        "test_acc": 1.0,
+        "save_path": "/home/debian/dev/Proyectos/GuadIA-IAModel/IAModel/experiments/training/models/modelo_04.pt"
+    },
+    {
+        "exp_id": 5,
+        "config": {
+            "arch": "res_tcn",
+            "hidden_dim": 128,
+            "num_blocks": 2,
+            "dropout": 0.1,
+            "seq_len": 64,
+            "batch_size": 64,
+            "lr": 0.001,
+            "epochs": 30,
+            "pose_source": "filtered",
+            "done": false
+        },
+        "best_val_acc": 0.0,
+        "test_loss": 0.0,
+        "test_acc": 1.0,
+        "save_path": "/home/debian/dev/Proyectos/GuadIA-IAModel/IAModel/experiments/training/models/modelo_05.pt"
+    },
+    {
+        "exp_id": 6,
+        "config": {
+            "arch": "stgcn",
+            "hidden_dim": 128,
+            "dropout": 0.1,
+            "seq_len": 64,
+            "batch_size": 64,
+            "lr": 0.001,
+            "epochs": 30,
+            "pose_source": "filtered",
+            "done": false
+        },
+        "best_val_acc": 0.0,
+        "test_loss": 0.0,
+        "test_acc": 1.0,
+        "save_path": "/home/debian/dev/Proyectos/GuadIA-IAModel/IAModel/experiments/training/models/modelo_06.pt"
+    },
+    {
+        "exp_id": 7,
+        "config": {
+            "arch": "tcn",
+            "hidden_dim": 64,
+            "dropout": 0.1,
+            "seq_len": 64,
+            "batch_size": 128,
+            "lr": 0.001,
+            "epochs": 15,
+            "pose_source": "filtered",
+            "done": false
+        },
+        "best_val_acc": 0.0,
+        "test_loss": 0.0,
+        "test_acc": 1.0,
+        "save_path": "/home/debian/dev/Proyectos/GuadIA-IAModel/IAModel/experiments/training/models/modelo_07.pt"
+    },
+    {
+        "exp_id": 8,
+        "config": {
+            "arch": "tcn_lstm",
+            "tcn_hidden_dim": 128,
+            "tcn_layers": 2,
+            "lstm_hidden_dim": 128,
+            "lstm_layers": 1,
+            "dropout": 0.1,
+            "seq_len": 64,
+            "batch_size": 64,
+            "lr": 0.001,
+            "epochs": 30,
+            "pose_source": "filtered",
+            "done": false
+        },
+        "best_val_acc": 0.0,
+        "test_loss": 0.0,
+        "test_acc": 1.0,
+        "save_path": "/home/debian/dev/Proyectos/GuadIA-IAModel/IAModel/experiments/training/models/modelo_08.pt"
+    },
+    {
+        "exp_id": 9,
+        "config": {
+            "arch": "transformer",
+            "d_model": 128,
+            "nhead": 4,
+            "num_layers": 2,
+            "dim_feedforward": 256,
+            "dropout": 0.1,
+            "seq_len": 64,
+            "batch_size": 64,
+            "lr": 0.001,
+            "epochs": 30,
+            "pose_source": "filtered",
+            "done": false
+        },
+        "best_val_acc": 0.0,
+        "test_loss": 0.0,
+        "test_acc": 1.0,
+        "save_path": "/home/debian/dev/Proyectos/GuadIA-IAModel/IAModel/experiments/training/models/modelo_09.pt"
+    }
+]

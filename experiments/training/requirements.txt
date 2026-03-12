@@ -1,0 +1,15 @@
+# Dependencias para la parte de entrenamiento de modelos (training/)
+# Versiones elegidas para ser estables y compatibles entre sí.
+
+numpy==1.26.4
+
+# PyTorch + ecosistema
+torch==2.3.1
+torchvision==0.18.1
+torchaudio==2.3.1
+
+# Utilidades varias
+tqdm==4.66.5
+pandas==2.2.2
+opencv-python==4.10.0.84
+
