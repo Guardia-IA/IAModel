@@ -334,6 +334,9 @@ def evaluate_model_on_multiuser(model_path: Path, pose_source: str = "filtered")
     if task == "binary":
         result.update(
             {
+                "pos_precision": c6_prec,
+                "pos_recall": c6_rec,
+                "pos_f1": c6_f1,
                 "neg_precision": n_prec,
                 "neg_recall": n_rec,
                 "neg_f1": n_f1,
@@ -368,7 +371,7 @@ def main():
         f"{'ID':>3} | {'Modelo':>12} | {'Arch':>11} | "
         f"{'N_multi':>8} | {'N_usados':>8} | "
         f"{'Acc':>6} | {'MacroF1':>8} | "
-        f"{'F1_pos':>7} | {'Rec_pos':>7} | {'Sup_pos':>7}"
+        f"{'F1_pos':>7} | {'Rec_pos':>7} | {'Prec_pos':>8} | {'Sup_pos':>7}"
     )
     print(header)
     print("-" * len(header))
@@ -381,11 +384,12 @@ def main():
 
     for idx, r in sorted_results:
         name = Path(r["model_path"]).name
+        pos_prec = r.get("pos_precision", r["class6_precision"])
         print(
             f"{idx:3d} | {name:>12} | {r['arch']:>11} | "
             f"{r['total_multi']:8d} | {r['filtered_multi']:8d} | "
             f"{r['accuracy']:6.3f} | {r['macro_f1']:8.3f} | "
-            f"{r['class6_f1']:7.3f} | {r['class6_recall']:7.3f} | {r['class6_support']:7d}"
+            f"{r['class6_f1']:7.3f} | {r['class6_recall']:7.3f} | {pos_prec:8.3f} | {r['class6_support']:7d}"
         )
 
 
