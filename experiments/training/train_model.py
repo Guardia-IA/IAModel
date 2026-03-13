@@ -32,7 +32,7 @@ DEBUG_MAX_EXAMPLES = 5      # cuántos embeddings usar en total en debug
 # Directorios locales para modelos y logs (dentro de training/)
 BASE_DIR = Path(__file__).parent
 MODELS_DIR = BASE_DIR / "models"
-LOGS_DIR = BASE_DIR / "logs"
+LOGS_DIR = BASE_DIR / "logs" 
 MODELS_DIR.mkdir(parents=True, exist_ok=True)
 LOGS_DIR.mkdir(parents=True, exist_ok=True)
 
