@@ -964,12 +964,39 @@ def run_experiment(
         device,
         num_classes=num_classes,
     )
-    print(
+    # Métricas agregadas en test (clips de un único usuario)
+    macro_f1 = test_metrics["macro_f1"]
+    weighted_f1 = test_metrics["weighted_f1"]
+
+    # Si estamos en modo binario, extraemos también métricas específicas de la clase positiva (robos)
+    f1_pos = None
+    rec_pos = None
+    prec_pos = None
+    if task == "binary":
+        # En binario, tras make_binary_examples, la clase 1 es la positiva
+        # label_to_idx mapea label_original_binaria -> índice interno (normalmente {0:0, 1:1})
+        pos_label = 1
+        if pos_label in label_to_idx:
+            pos_idx = label_to_idx[pos_label]
+            pos_stats = test_metrics["per_class"].get(pos_idx, {})
+            prec_pos = float(pos_stats.get("precision", 0.0))
+            rec_pos = float(pos_stats.get("recall", 0.0))
+            f1_pos = float(pos_stats.get("f1", 0.0))
+
+    # Log a consola
+    base_msg = (
         f"[Exp {exp_id:02d}] Test | "
         f"loss={test_loss:.4f} | acc={test_acc:.4f} | "
-        f"macro_f1={test_metrics['macro_f1']:.4f} | "
-        f"weighted_f1={test_metrics['weighted_f1']:.4f}"
+        f"macro_f1={macro_f1:.4f} | "
+        f"weighted_f1={weighted_f1:.4f}"
     )
+    if f1_pos is not None:
+        base_msg += (
+            f" | f1_pos={f1_pos:.4f} | "
+            f"rec_pos={rec_pos:.4f} | prec_pos={prec_pos:.4f} "
+            f"(clips de un único usuario, clase positiva={positive_class})"
+        )
+    print(base_msg)
 
     save_path = MODELS_DIR / f"modelo_{exp_id:02d}.pt"
 
@@ -986,8 +1013,11 @@ def run_experiment(
             "best_val_acc": float(best_val_acc),
             "test_loss": float(test_loss),
             "test_acc": float(test_acc),
-            "test_macro_f1": float(test_metrics["macro_f1"]),
-            "test_weighted_f1": float(test_metrics["weighted_f1"]),
+            "test_macro_f1": float(macro_f1),
+            "test_weighted_f1": float(weighted_f1),
+            "test_f1_pos": float(f1_pos) if f1_pos is not None else None,
+            "test_rec_pos": float(rec_pos) if rec_pos is not None else None,
+            "test_prec_pos": float(prec_pos) if prec_pos is not None else None,
             "test_top3_acc": float(test_metrics["top3_acc"]),
             "test_confusion_matrix": test_metrics["confusion_matrix"],
             "test_per_class": test_metrics["per_class"],
@@ -1004,6 +1034,11 @@ def run_experiment(
         "best_val_acc": float(best_val_acc),
         "test_loss": float(test_loss),
         "test_acc": float(test_acc),
+        "test_macro_f1": float(macro_f1),
+        "test_weighted_f1": float(weighted_f1),
+        "test_f1_pos": float(f1_pos) if f1_pos is not None else None,
+        "test_rec_pos": float(rec_pos) if rec_pos is not None else None,
+        "test_prec_pos": float(prec_pos) if prec_pos is not None else None,
         "save_path": str(save_path),
     }
 
