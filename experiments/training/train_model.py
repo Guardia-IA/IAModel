@@ -905,6 +905,7 @@ def run_experiment(
     device: torch.device,
     task: str = "multiclass",
     positive_class: int = 6,
+    pose_source_override: str | None = None,
 ) -> Dict[str, Any]:
     print("\n" + "=" * 80)
     print(f"Experimento {exp_id:02d} | config={cfg}")
@@ -914,7 +915,7 @@ def run_experiment(
     batch_size = cfg.get("batch_size", 32)
     lr = cfg.get("lr", 1e-3)
     epochs = cfg.get("epochs", 20)
-    pose_source = cfg.get("pose_source", "filtered")
+    pose_source = pose_source_override or cfg.get("pose_source", "filtered")
 
     loaders, input_dim, label_to_idx = build_datasets_and_loaders(
         seq_len=seq_len,
@@ -1043,6 +1044,12 @@ def parse_args() -> argparse.Namespace:
         default=6,
         help="Etiqueta original considerada positiva en modo binario (por defecto 6 = robos).",
     )
+    parser.add_argument(
+        "--pose-source",
+        choices=["filtered", "full"],
+        default=None,
+        help="Sobrescribe pose_source de los experimentos: 'filtered' (poses.npy) o 'full' (poses_full.npy).",
+    )
     return parser.parse_args()
 
 
@@ -1083,7 +1090,7 @@ def main():
         print(f"Usando device: {device}")
         print(f"Modelos se guardarán en: {MODELS_DIR}")
         print(f"Log de esta sesión: {log_path}")
-        print(f"Tarea: {args.task} | positive_class={args.positive_class}")
+        print(f"Tarea: {args.task} | positive_class={args.positive_class} | pose_source_override={args.pose_source}")
 
         results = []
         exps_iter = _select_debug_experiments(EXPERIMENTS) if DEBUG_MODE else EXPERIMENTS
@@ -1097,6 +1104,7 @@ def main():
                 device,
                 task=args.task,
                 positive_class=args.positive_class,
+                pose_source_override=args.pose_source,
             )
             results.append(res)
 
