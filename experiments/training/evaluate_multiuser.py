@@ -99,6 +99,8 @@ def evaluate_model_on_multiuser(model_path: Path, pose_source: str = "filtered")
     model_state = checkpoint["model_state_dict"]
     label_to_idx = checkpoint["label_to_idx"]
     seq_len = checkpoint.get("seq_len", 64)
+    task = checkpoint.get("task", "multiclass")
+    positive_class = checkpoint.get("positive_class", 6)
 
     # Reconstruir modelo según config guardada
     try:
@@ -111,7 +113,8 @@ def evaluate_model_on_multiuser(model_path: Path, pose_source: str = "filtered")
     cfg = checkpoint.get("config", {})
     arch = cfg.get("arch", "tcn")
     input_dim = checkpoint["input_dim"]
-    num_classes = len(label_to_idx)
+    # Para compatibilidad: si viene num_classes en el checkpoint, lo usamos; si no, inferimos.
+    num_classes = int(checkpoint.get("num_classes", len(label_to_idx)))
 
     model = build_model(arch, input_dim, num_classes, cfg).to(device)
     model.load_state_dict(model_state)
@@ -121,6 +124,17 @@ def evaluate_model_on_multiuser(model_path: Path, pose_source: str = "filtered")
     examples = collect_multiuser_examples(pose_source=pose_source)
     total_multi = len(examples)
     print(f"Ejemplos multiusuario: {total_multi}")
+
+    # Si el modelo es binario, reetiquetamos a 0/1 igual que en train_model
+    if task == "binary":
+        try:
+            # Ejecución como módulo: python -m training.evaluate_multiuser
+            from .train_model import make_binary_examples  # type: ignore[attr-defined]
+        except ImportError:
+            # Ejecución como script: python training/evaluate_multiuser.py
+            from train_model import make_binary_examples  # type: ignore[attr-defined]
+        print(f"[BINARIO] Reetiquetando multiusuario con positive_class={positive_class}")
+        examples = make_binary_examples(examples, positive_class=positive_class)
 
     # Filtrar ejemplos a solo labels que el modelo conoce
     examples = [ex for ex in examples if ex.label in label_to_idx]
@@ -205,48 +219,106 @@ def evaluate_model_on_multiuser(model_path: Path, pose_source: str = "filtered")
     print(f"Macro-F1 multiusuario: {macro_f1:.4f}")
     print(f"Weighted-F1 multiusuario: {weighted_f1:.4f}")
 
-    # Mostrar métricas por clase mapeando de índice interno a label original
-    inv_map = {v: k for k, v in label_to_idx.items()}
-    print("Métricas por clase (label original):")
-    for idx, stats in sorted(per_class.items()):
-        lab = inv_map.get(idx, idx)
-        if stats["support"] == 0:
-            continue
+    # Mostrar métricas por clase
+    if task == "binary":
+        # En binario: índice 1 = clase positiva (robos)
+        print("Métricas por clase (binario 0=no-robo, 1=robo):")
+        for idx, stats in sorted(per_class.items()):
+            if stats["support"] == 0:
+                continue
+            print(
+                f"  Clase {idx}: "
+                f"prec={stats['precision']:.3f}, "
+                f"rec={stats['recall']:.3f}, "
+                f"f1={stats['f1']:.3f}, "
+                f"support={stats['support']}"
+            )
+
+        # Métricas específicas para la clase positiva (1)
+        pos_idx = 1
+        if pos_idx in per_class:
+            c_stats = per_class[pos_idx]
+            c_prec = float(c_stats["precision"])
+            c_rec = float(c_stats["recall"])
+            c_f1 = float(c_stats["f1"])
+            c_sup = int(c_stats["support"])
+        else:
+            c_prec = 0.0
+            c_rec = 0.0
+            c_f1 = 0.0
+            c_sup = 0
+
+        # Métricas de la clase negativa (0)
+        neg_idx = 0
+        if neg_idx in per_class:
+            n_stats = per_class[neg_idx]
+            n_prec = float(n_stats["precision"])
+            n_rec = float(n_stats["recall"])
+            n_f1 = float(n_stats["f1"])
+            n_sup = int(n_stats["support"])
+        else:
+            n_prec = 0.0
+            n_rec = 0.0
+            n_f1 = 0.0
+            n_sup = 0
+
         print(
-            f"  Clase {lab}: "
-            f"prec={stats['precision']:.3f}, "
-            f"rec={stats['recall']:.3f}, "
-            f"f1={stats['f1']:.3f}, "
-            f"support={stats['support']}"
+            f"Métricas clase positiva (1=robo): "
+            f"prec={c_prec:.3f}, rec={c_rec:.3f}, f1={c_f1:.3f}, support={c_sup}"
+        )
+        print(
+            f"Métricas clase negativa (0=no robo): "
+            f"prec={n_prec:.3f}, rec={n_rec:.3f}, f1={n_f1:.3f}, support={n_sup}"
         )
 
-    # Métricas específicas para la clase 6 (robos)
-    class6_idx = None
-    for idx, lab in inv_map.items():
-        if lab == 6:
-            class6_idx = idx
-            break
-
-    if class6_idx is not None and class6_idx in per_class:
-        c6_stats = per_class[class6_idx]
-        c6_prec = float(c6_stats["precision"])
-        c6_rec = float(c6_stats["recall"])
-        c6_f1 = float(c6_stats["f1"])
-        c6_sup = int(c6_stats["support"])
+        c6_prec = c_prec
+        c6_rec = c_rec
+        c6_f1 = c_f1
+        c6_sup = c_sup
     else:
-        c6_prec = 0.0
-        c6_rec = 0.0
-        c6_f1 = 0.0
-        c6_sup = 0
+        # Multiclase: mapeamos de índice interno a label original
+        inv_map = {v: k for k, v in label_to_idx.items()}
+        print("Métricas por clase (label original):")
+        for idx, stats in sorted(per_class.items()):
+            lab = inv_map.get(idx, idx)
+            if stats["support"] == 0:
+                continue
+            print(
+                f"  Clase {lab}: "
+                f"prec={stats['precision']:.3f}, "
+                f"rec={stats['recall']:.3f}, "
+                f"f1={stats['f1']:.3f}, "
+                f"support={stats['support']}"
+            )
 
-    print(
-        f"Métricas clase 6 (robos): "
-        f"prec={c6_prec:.3f}, rec={c6_rec:.3f}, f1={c6_f1:.3f}, support={c6_sup}"
-    )
+        # Métricas específicas para la clase 6 (robos)
+        class6_idx = None
+        for idx, lab in inv_map.items():
+            if lab == 6:
+                class6_idx = idx
+                break
 
-    return {
+        if class6_idx is not None and class6_idx in per_class:
+            c6_stats = per_class[class6_idx]
+            c6_prec = float(c6_stats["precision"])
+            c6_rec = float(c6_stats["recall"])
+            c6_f1 = float(c6_stats["f1"])
+            c6_sup = int(c6_stats["support"])
+        else:
+            c6_prec = 0.0
+            c6_rec = 0.0
+            c6_f1 = 0.0
+            c6_sup = 0
+
+        print(
+            f"Métricas clase 6 (robos): "
+            f"prec={c6_prec:.3f}, rec={c6_rec:.3f}, f1={c6_f1:.3f}, support={c6_sup}"
+        )
+
+    result: Dict[str, Any] = {
         "model_path": str(model_path),
         "arch": arch,
+        "task": task,
         "total_multi": int(total_multi),
         "filtered_multi": int(filtered_multi),
         "accuracy": float(overall_acc),
@@ -258,6 +330,18 @@ def evaluate_model_on_multiuser(model_path: Path, pose_source: str = "filtered")
         "class6_f1": c6_f1,
         "class6_support": c6_sup,
     }
+
+    if task == "binary":
+        result.update(
+            {
+                "neg_precision": n_prec,
+                "neg_recall": n_rec,
+                "neg_f1": n_f1,
+                "neg_support": n_sup,
+            }
+        )
+
+    return result
 
 
 def main():
@@ -278,18 +362,18 @@ def main():
 
     # Resumen en tabla enfocado en la clase 6 (robos)
     print("\n" + "=" * 80)
-    print("RESUMEN MODELOS EN MULTIUSUARIO (enfocado en clase 6)")
+    print("RESUMEN MODELOS EN MULTIUSUARIO (enfocado en clase positiva / clase 6)")
     print("=" * 80)
     header = (
         f"{'ID':>3} | {'Modelo':>12} | {'Arch':>11} | "
         f"{'N_multi':>8} | {'N_usados':>8} | "
         f"{'Acc':>6} | {'MacroF1':>8} | "
-        f"{'F1_c6':>7} | {'Rec_c6':>7} | {'Sup_c6':>7}"
+        f"{'F1_pos':>7} | {'Rec_pos':>7} | {'Sup_pos':>7}"
     )
     print(header)
     print("-" * len(header))
 
-    # Ordenar por F1 de clase 6 descendente y luego por macro_f1
+    # Ordenar por F1 de clase positiva/robos descendente y luego por macro_f1
     sorted_results = sorted(
         enumerate(results, start=1),
         key=lambda p: (-p[1]["class6_f1"], -p[1]["macro_f1"]),

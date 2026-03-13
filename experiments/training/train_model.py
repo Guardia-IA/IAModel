@@ -1,3 +1,4 @@
+import argparse
 import json
 import random
 import sys
@@ -44,7 +45,7 @@ torch.manual_seed(SEED)
 @dataclass
 class PoseExample:
     pose_path: Path
-    label: int          # clase original (p.ej. 0..6)
+    label: int          # clase (original o binaria, según el modo)
     track_id: int
     clip_name: str
     category_str: str   # por si quieres inspeccionar
@@ -613,6 +614,30 @@ def build_label_mapping(examples: List[PoseExample]) -> Dict[int, int]:
     return {lab: i for i, lab in enumerate(labels)}
 
 
+def make_binary_examples(
+    examples: List[PoseExample],
+    positive_class: int = 6,
+) -> List[PoseExample]:
+    """
+    Construye una lista de ejemplos binarios:
+      - label = 1 si la clase original == positive_class
+      - label = 0 en caso contrario
+    """
+    binary_examples: List[PoseExample] = []
+    for ex in examples:
+        bin_label = 1 if ex.label == positive_class else 0
+        binary_examples.append(
+            PoseExample(
+                pose_path=ex.pose_path,
+                label=bin_label,
+                track_id=ex.track_id,
+                clip_name=ex.clip_name,
+                category_str=ex.category_str,
+            )
+        )
+    return binary_examples
+
+
 def train_one_epoch(model, loader, criterion, optimizer, device) -> float:
     model.train()
     total_loss = 0.0
@@ -754,6 +779,8 @@ def build_datasets_and_loaders(
     batch_size: int,
     pose_source: str,
     num_workers: int = 4,
+    task: str = "multiclass",
+    positive_class: int = 6,
 ) -> Tuple[Dict[str, DataLoader], int, Dict[int, int]]:
     print(f"Recolectando ejemplos desde data_result... (pose_source='{pose_source}')")
     examples = collect_examples(pose_source=pose_source)
@@ -763,6 +790,11 @@ def build_datasets_and_loaders(
         # Reducir drásticamente el número de ejemplos para pruebas locales rápidas
         examples = examples[:DEBUG_MAX_EXAMPLES]
         print(f"[DEBUG] Usando solo {len(examples)} ejemplos para train/val/test")
+
+    # En modo binario reetiquetamos a 0/1 manteniendo el resto del flujo igual
+    if task == "binary":
+        print(f"[BINARIO] Usando clase positiva original: {positive_class}")
+        examples = make_binary_examples(examples, positive_class=positive_class)
 
     train_ex, val_ex, test_ex = split_examples(examples)
     print(f"Train: {len(train_ex)} | Val: {len(val_ex)} | Test: {len(test_ex)}")
@@ -871,6 +903,8 @@ def run_experiment(
     exp_id: int,
     cfg: Dict[str, Any],
     device: torch.device,
+    task: str = "multiclass",
+    positive_class: int = 6,
 ) -> Dict[str, Any]:
     print("\n" + "=" * 80)
     print(f"Experimento {exp_id:02d} | config={cfg}")
@@ -882,7 +916,13 @@ def run_experiment(
     epochs = cfg.get("epochs", 20)
     pose_source = cfg.get("pose_source", "filtered")
 
-    loaders, input_dim, label_to_idx = build_datasets_and_loaders(seq_len, batch_size, pose_source)
+    loaders, input_dim, label_to_idx = build_datasets_and_loaders(
+        seq_len=seq_len,
+        batch_size=batch_size,
+        pose_source=pose_source,
+        task=task,
+        positive_class=positive_class,
+    )
     num_classes = len(label_to_idx)
 
     model = build_model(cfg["arch"], input_dim, num_classes, cfg).to(device)
@@ -932,27 +972,29 @@ def run_experiment(
 
     save_path = MODELS_DIR / f"modelo_{exp_id:02d}.pt"
 
-    torch.save(
-        {
-            "model_state_dict": model.state_dict(),
-            "label_to_idx": label_to_idx,
-            "config": cfg,
-            "input_dim": input_dim,
-            "seq_len": seq_len,
-            "metrics": {
-                "best_val_acc": float(best_val_acc),
-                "test_loss": float(test_loss),
-                "test_acc": float(test_acc),
-                "test_macro_f1": float(test_metrics["macro_f1"]),
-                "test_weighted_f1": float(test_metrics["weighted_f1"]),
-                "test_top3_acc": float(test_metrics["top3_acc"]),
-                "test_confusion_matrix": test_metrics["confusion_matrix"],
-                "test_per_class": test_metrics["per_class"],
-                "history": history,
-            },
+    checkpoint = {
+        "model_state_dict": model.state_dict(),
+        "label_to_idx": label_to_idx,
+        "config": cfg,
+        "input_dim": input_dim,
+        "seq_len": seq_len,
+        "task": task,
+        "positive_class": positive_class,
+        "num_classes": num_classes,
+        "metrics": {
+            "best_val_acc": float(best_val_acc),
+            "test_loss": float(test_loss),
+            "test_acc": float(test_acc),
+            "test_macro_f1": float(test_metrics["macro_f1"]),
+            "test_weighted_f1": float(test_metrics["weighted_f1"]),
+            "test_top3_acc": float(test_metrics["top3_acc"]),
+            "test_confusion_matrix": test_metrics["confusion_matrix"],
+            "test_per_class": test_metrics["per_class"],
+            "history": history,
         },
-        save_path,
-    )
+    }
+
+    torch.save(checkpoint, save_path)
     print(f"[Exp {exp_id:02d}] Modelo guardado en: {save_path}")
 
     return {
@@ -987,6 +1029,23 @@ def _select_debug_experiments(experiments: List[Dict[str, Any]]) -> List[Dict[st
     return selected
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Entrenamiento de modelos de acción sobre poses.")
+    parser.add_argument(
+        "--task",
+        choices=["multiclass", "binary"],
+        default="multiclass",
+        help="Tipo de tarea: 'multiclass' (por defecto) o 'binary' (robo vs no-robo).",
+    )
+    parser.add_argument(
+        "--positive-class",
+        type=int,
+        default=6,
+        help="Etiqueta original considerada positiva en modo binario (por defecto 6 = robos).",
+    )
+    return parser.parse_args()
+
+
 def main():
     # Redirección de logs: terminal + fichero en training/logs/
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -1018,10 +1077,13 @@ def main():
     sys.stdout = Tee(original_stdout, log_file)
 
     try:
+        args = parse_args()
+
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         print(f"Usando device: {device}")
         print(f"Modelos se guardarán en: {MODELS_DIR}")
         print(f"Log de esta sesión: {log_path}")
+        print(f"Tarea: {args.task} | positive_class={args.positive_class}")
 
         results = []
         exps_iter = _select_debug_experiments(EXPERIMENTS) if DEBUG_MODE else EXPERIMENTS
@@ -1029,7 +1091,13 @@ def main():
             if (not DEBUG_MODE) and cfg.get("done", False):
                 print(f"[Exp {i:02d}] Marcado como done=True, se omite.")
                 continue
-            res = run_experiment(i, cfg, device)
+            res = run_experiment(
+                i,
+                cfg,
+                device,
+                task=args.task,
+                positive_class=args.positive_class,
+            )
             results.append(res)
 
         # Guardar resumen de todos los experimentos (junto al script de training)
