@@ -27,7 +27,7 @@ OUTPUT = Path(OUTPUT_BASE) if OUTPUT_BASE else Path(__file__).parent / "output"
 # --- PARÁMETROS DE CONTROL ---
 DEBUG_MODE = True      # True: Solo procesa N vídeos
 N_DEBUG = 5            # Número de vídeos en modo debug
-MODEL_PATH = 'yolo11m-pose.pt'   # m= rápido+preciso; s/n= más rápido; l/x= más preciso
+MODEL_PATH = 'yolo11n-pose.pt'   # m= rápido+preciso; s/n= más rápido; l/x= más preciso
 DELETE_TEMP_VIDEOS = True       # Si True, borra los vídeos temporales al terminar
 # Si True, guarda una copia del clip procesado en data_result/{cat}/{clip_name}/clip.mp4
 # para poder visualizar poses con el vídeo exacto (mismo nº de frames que poses_full.npy)
