@@ -10,3 +10,6 @@ hand-object-detection/modelo_optimizado/modelo.pth
 *.pyc
 
 *.log
+
+*.npy
+experiments/__pycache__/*.*

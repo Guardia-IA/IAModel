@@ -1,6 +1,8 @@
+import argparse
 import os
 import re
 import json
+import shutil
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -25,8 +27,11 @@ OUTPUT = Path(OUTPUT_BASE) if OUTPUT_BASE else Path(__file__).parent / "output"
 # --- PARÁMETROS DE CONTROL ---
 DEBUG_MODE = True      # True: Solo procesa N vídeos
 N_DEBUG = 5            # Número de vídeos en modo debug
-MODEL_PATH = 'yolo11n-pose.pt'   # m= rápido+preciso; s/n= más rápido; l/x= más preciso
+MODEL_PATH = 'yolo11m-pose.pt'   # m= rápido+preciso; s/n= más rápido; l/x= más preciso
 DELETE_TEMP_VIDEOS = True       # Si True, borra los vídeos temporales al terminar
+# Si True, guarda una copia del clip procesado en data_result/{cat}/{clip_name}/clip.mp4
+# para poder visualizar poses con el vídeo exacto (mismo nº de frames que poses_full.npy)
+SAVE_PROCESSED_CLIP = True
 
 # --- FILTROS DE CALIDAD ---
 MIN_KP_CONF = 0.5
@@ -40,6 +45,13 @@ DEFAULT_FPS = 12                       # FPS por defecto si no se puede leer del
 
 # Filtro de duración mínima por usuario (en segundos)
 MIN_USER_SECONDS = 2.0                 # Usuarios con menos de esto se ignoran
+
+# Filtro de visibilidad corporal: no guardar usuarios que solo muestren mano, cabeza, etc.
+# Un frame cuenta como "cuerpo visible" si al menos BODY_VISIBLE_MIN_KPS keypoints están
+# por encima de MIN_KP_CONF (torso, brazos, caderas). No se guarda el usuario si no cumple:
+BODY_VISIBLE_MIN_KPS = 5               # Mín. keypoints visibles por frame (de 8: hombros, codos, muñecas, cadera)
+BODY_VISIBLE_MIN_FRAMES = 5            # Mín. frames con cuerpo visible
+BODY_VISIBLE_MIN_RATIO = 0.2           # Mín. ratio de frames con cuerpo visible (20%)
 
 # Umbral de confianza para considerar un punto "ocluso"
 OCCLUSION_CONF_THR = 0.3              # keypoints con conf < esto se consideran ocluidos
@@ -93,10 +105,21 @@ def _setup_logging(log_dir: str | Path | None = None) -> object | None:
     return log_file, original_stdout
 
 
+def _resolve_model_path(base: str) -> str:
+    """Busca .engine en engine/ y, si no existe, usa .pt."""
+    stem = Path(base).stem
+    engine_dir = Path(__file__).resolve().parent / "engine"
+    engine_path = engine_dir / f"{stem}.engine"
+    if engine_path.exists():
+        return str(engine_path)
+    return base
+
+
 # Carga del modelo (se hace una sola vez)
 DEVICE = _get_device()
-print(f"Cargando modelo pose: {MODEL_PATH}")
-model = YOLO(MODEL_PATH)  # Modelo pose para keypoints
+_MODEL_RESOLVED = _resolve_model_path(MODEL_PATH)
+print(f"Cargando modelo pose: {_MODEL_RESOLVED}")
+model = YOLO(_MODEL_RESOLVED)  # Modelo pose para keypoints
 
 
 # Patrón para detectar timestamps HH:MM:SS
@@ -217,6 +240,169 @@ def cut_clip(video_in, start, end, video_out):
         ]
         subprocess.run(command_fb)
 
+
+def scale_video(video_in: str, video_out: str, height: int | None = None) -> bool:
+    """
+    Escala un vídeo a la altura indicada (sin recortar).
+    Usa el mismo pipeline que cut_clip (VAAPI o software).
+    Devuelve True si ok, False si falló.
+    """
+    scale_h = height or CLIP_SCALE_HEIGHT
+    vaapi = VAAPI_DEVICE
+    if scale_h is None:
+        scale_h = 720  # fallback
+    scale_expr = f"scale=-2:{scale_h}"
+    if vaapi and scale_h:
+        cmd = [
+            'ffmpeg', '-y', '-threads', '0', '-hwaccel', 'vaapi',
+            '-hwaccel_device', str(vaapi), '-hwaccel_output_format', 'vaapi',
+            '-i', video_in, '-vf', f"scale_vaapi=-2:{scale_h}",
+            '-c:v', 'h264_vaapi', '-vaapi_device', str(vaapi),
+            '-loglevel', 'error', video_out
+        ]
+    else:
+        cmd = [
+            'ffmpeg', '-y', '-threads', '0', '-i', video_in,
+            '-vf', scale_expr, '-c:v', 'libx264', '-loglevel', 'error', video_out
+        ]
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    if r.returncode != 0 and vaapi:
+        cmd_fb = [
+            'ffmpeg', '-y', '-threads', '0', '-i', video_in,
+            '-vf', scale_expr, '-c:v', 'libx264', '-loglevel', 'error', video_out
+        ]
+        r = subprocess.run(cmd_fb, capture_output=True, text=True)
+    return r.returncode == 0
+
+
+def run_debug_extract(video_path: str) -> Path | None:
+    """
+    Modo debug/test: extrae poses de un único vídeo y guarda en carpeta temporal.
+    Genera poses_full.npy y poses.npy (normalizados 0-1) por usuario, igual que el flujo normal.
+    """
+    video_path = Path(video_path).resolve()
+    if not video_path.exists():
+        print(f"[DEBUG] Vídeo no encontrado: {video_path}")
+        return None
+    stem = video_path.stem or "clip"
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    out_dir = OUTPUT / "debug_extract" / f"{timestamp}_{stem}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    temp_clip = out_dir / "_temp_scaled.mp4"
+    print(f"[DEBUG] Procesando: {video_path}")
+    print(f"[DEBUG] Salida: {out_dir}")
+
+    if not scale_video(str(video_path), str(temp_clip)):
+        print("[DEBUG] Error al escalar el vídeo")
+        return None
+
+    cap = cv2.VideoCapture(str(temp_clip))
+    fps = cap.get(cv2.CAP_PROP_FPS) or DEFAULT_FPS
+    cap.release()
+
+    results = model.track(
+        source=str(temp_clip),
+        tracker="custom_tracker.yaml",
+        persist=True,
+        verbose=False,
+        stream=True,
+        device=DEVICE,
+        half=True,
+    )
+    temp_person_data = {}
+
+    for r in tqdm(results, desc="Extrayendo poses"):
+        frame = getattr(r, 'orig_img', None)
+        if frame is None or r.keypoints is None or r.boxes.id is None:
+            continue
+        boxes = r.boxes.xyxy.cpu().numpy()
+        ids = r.boxes.id.int().cpu().tolist()
+        kpts = r.keypoints.xyn.cpu().numpy()
+        confs = r.keypoints.conf.cpu().numpy()
+
+        for i, track_id in enumerate(ids):
+            if track_id not in temp_person_data:
+                c_t, c_b = get_color_attributes(frame, boxes[i])
+                temp_person_data[track_id] = {
+                    'poses_full': [], 'poses': [], 'v_cnt': 0, 'total': 0, 'body_visible_cnt': 0,
+                    'clothes': {'top': c_t, 'bottom': c_b},
+                    'kp_conf_sum': 0.0, 'occluded_frames': 0, 'bbox_ratios': [],
+                }
+            conf_kp = confs[i][KEEP_KPS]
+            body_visible = int(np.sum(conf_kp > MIN_KP_CONF) >= BODY_VISIBLE_MIN_KPS)
+            temp_person_data[track_id]['body_visible_cnt'] += body_visible
+            valid = all(confs[i][idx] > MIN_KP_CONF for idx in CRITICAL_KPS)
+            kpt_pose = kpts[i][KEEP_KPS]
+            temp_person_data[track_id]['poses_full'].append(kpt_pose)
+            if valid:
+                temp_person_data[track_id]['poses'].append(kpt_pose)
+                temp_person_data[track_id]['v_cnt'] += 1
+            temp_person_data[track_id]['total'] += 1
+            temp_person_data[track_id]['kp_conf_sum'] += float(np.mean(conf_kp))
+            if any(confs[i][idx] < OCCLUSION_CONF_THR for idx in CRITICAL_KPS):
+                temp_person_data[track_id]['occluded_frames'] += 1
+            bbox = boxes[i]
+            h_bbox = bbox[3] - bbox[1]
+            w_bbox = max(bbox[2] - bbox[0], 1e-6)
+            temp_person_data[track_id]['bbox_ratios'].append(float(h_bbox / w_bbox))
+
+    if not temp_person_data:
+        print("[DEBUG] No se detectaron personas")
+        return None
+
+    users_meta = []
+    for tid, info in temp_person_data.items():
+        total = info['total']
+        if total == 0:
+            continue
+        body_vis = info['body_visible_cnt']
+        if body_vis < BODY_VISIBLE_MIN_FRAMES or (body_vis / total) < BODY_VISIBLE_MIN_RATIO:
+            continue  # No guardar: solo mano, cabeza o visibilidad insuficiente
+        valid = info['v_cnt']
+        rel = valid / total
+        user_dir = out_dir / f"user_{tid}"
+        user_dir.mkdir(exist_ok=True)
+        np.save(str(user_dir / "poses_full.npy"), np.array(info['poses_full']))
+        np.save(str(user_dir / "poses.npy"), np.array(info['poses']))
+        users_meta.append({
+            "track_id": int(tid),
+            "valid_pct": round(rel * 100, 1),
+            "rel": round(rel, 2),
+            "valid_frames": int(valid),
+            "total_frames": int(total),
+            "poses_full_count": len(info['poses_full']),
+            "poses_filtered_count": len(info['poses']),
+            "clothes": info['clothes'],
+        })
+
+    clip_mp4 = out_dir / "clip.mp4"
+    if temp_clip.exists():
+        shutil.copy2(temp_clip, clip_mp4)
+        temp_clip.unlink()
+    else:
+        scale_video(str(video_path), str(clip_mp4))
+
+    frame_count = max(info['total'] for info in temp_person_data.values()) if temp_person_data else 0
+    meta = {
+        "clip_name": stem,
+        "video_source": str(video_path),
+        "debug_mode": True,
+        "fps": fps,
+        "frame_count": frame_count,
+        "users": users_meta,
+    }
+    with open(out_dir / "meta.json", "w", encoding="utf-8") as f:
+        json.dump(meta, f, indent=2, ensure_ascii=False)
+
+    print(f"\n[DEBUG] Listo. Salida: {out_dir}")
+    if users_meta:
+        uid = users_meta[0]["track_id"]
+        print(f"        Visualizar: python visualize_video_pose.py {clip_mp4} {out_dir / f'user_{uid}' / 'poses_full.npy'}")
+    else:
+        print("        (No se guardaron usuarios: ninguno cumple visibilidad de torso/brazos)")
+    return out_dir
+
+
 def get_color_attributes(frame, bbox):
     """Extrae colores RGB promedios de la ropa."""
     x1, y1, x2, y2 = map(int, bbox)
@@ -332,16 +518,19 @@ def process_single_csv(
                     if track_id not in temp_person_data:
                         c_t, c_b = get_color_attributes(frame, boxes[i])
                         temp_person_data[track_id] = {
-                            'poses_full': [],
-                            'poses': [],
-                            'v_cnt': 0, 'total': 0, 'clothes': {'top': c_t, 'bottom': c_b},
+                            'poses_full': [], 'poses': [],
+                            'v_cnt': 0, 'total': 0, 'body_visible_cnt': 0,
+                            'clothes': {'top': c_t, 'bottom': c_b},
                             'kp_conf_sum': 0.0, 'occluded_frames': 0, 'bbox_ratios': []
                         }
+
+                    conf_kp = confs[i][KEEP_KPS]
+                    body_visible = int(np.sum(conf_kp > MIN_KP_CONF) >= BODY_VISIBLE_MIN_KPS)
+                    temp_person_data[track_id]['body_visible_cnt'] += body_visible
 
                     # Filtro de confianza en puntos críticos (muñecas, codos)
                     valid = all(confs[i][idx] > MIN_KP_CONF for idx in CRITICAL_KPS)
                     kpt_pose = kpts[i][KEEP_KPS]
-                    conf_kp = confs[i][KEEP_KPS]
                     bbox = boxes[i]
 
                     # poses_full: todo el tracking
@@ -386,6 +575,14 @@ def process_single_csv(
                     print(
                         f"[DESCARTADO usuario] Clip '{clip_name}' user_{tid} | "
                         f"duración={user_seconds:.2f}s < {MIN_USER_SECONDS}s"
+                    )
+                    continue
+
+                body_vis = info.get('body_visible_cnt', 0)
+                if body_vis < BODY_VISIBLE_MIN_FRAMES or (body_vis / total_frames) < BODY_VISIBLE_MIN_RATIO:
+                    print(
+                        f"[DESCARTADO usuario] Clip '{clip_name}' user_{tid} | "
+                        f"solo mano/cabeza/visibilidad insuficiente (body_visible={body_vis}/{total_frames})"
                     )
                     continue
 
@@ -435,15 +632,19 @@ def process_single_csv(
                         f"valid_pct={valid_pct}% | valid_frames={valid_frames}, min={min_valid_frames}"
                     )
 
+            # Nº de frames del clip procesado (1:1 con cada poses_full por usuario)
+            processed_frame_count = max(info["total"] for info in temp_person_data.values())
+
             # meta.json único por clip
             meta = {
                 "clip_name": clip_name,
-                "video_source": video_rel_path,
+                "video_source": str(Path(video_full_path).resolve()),
                 "row_csv": int(fila_csv),
                 "t_start": str(t_start),
                 "t_end": str(t_end),
                 "clip_duration": clip_duration,
                 "fps": fps,
+                "frame_count": processed_frame_count,
                 "min_valid_frames": int(min_valid_frames),
                 "cat": category,
                 "users": users_meta,
@@ -451,9 +652,20 @@ def process_single_csv(
             with open(data_dir / "meta.json", "w", encoding="utf-8") as f:
                 json.dump(meta, f, indent=4, ensure_ascii=False)
 
-            # Limpiar clip temporal (opcional)
-            if DELETE_TEMP_VIDEOS and clip_path and os.path.exists(clip_path):
-                os.remove(clip_path)
+            # Guardar clip procesado en data_result (vídeo exacto que coincide con las poses) o borrarlo
+            if clip_path and os.path.exists(clip_path):
+                if SAVE_PROCESSED_CLIP:
+                    dest_clip = data_dir / "clip.mp4"
+                    try:
+                        import shutil
+                        shutil.copy2(clip_path, dest_clip)
+                        meta["clip_video"] = "clip.mp4"
+                        with open(data_dir / "meta.json", "w", encoding="utf-8") as f:
+                            json.dump(meta, f, indent=4, ensure_ascii=False)
+                    except Exception as e:
+                        print(f"[AVISO] No se pudo guardar clip en data_result: {e}")
+                if DELETE_TEMP_VIDEOS:
+                    os.remove(clip_path)
 
         except Exception as e:
             failed_clips.append({
@@ -464,6 +676,14 @@ def process_single_csv(
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Extractor de poses YOLO para clips")
+    parser.add_argument("--debug", "--test", dest="debug_video", metavar="VIDEO", help="Modo debug: extrae poses de un único vídeo en carpeta temporal (poses_full.npy, poses.npy)")
+    args = parser.parse_args()
+
+    if args.debug_video:
+        run_debug_extract(args.debug_video)
+        return
+
     # 1. Log en fichero además del terminal (antes de validación para registrar todo)
     log_result = _setup_logging()
     log_file = original_stdout = None

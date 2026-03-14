@@ -1,0 +1,33 @@
+# Requisitos para generar y usar .engine (TensorRT) con YOLO
+#
+# Requisitos previos del sistema (GPU NVIDIA):
+#   - Driver NVIDIA actualizado
+#   - CUDA Toolkit 11.x o 12.x
+#   - cuDNN
+#   - TensorRT (apt o pip según distribución)
+#
+# Instalación:
+#   1) PyTorch con CUDA (según tu versión de CUDA):
+#      pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+#      # o cu118, cu124 según tengas
+#
+#   2) Dependencias del paquete engine:
+#      pip install -r engine/requirements.txt
+#
+#   3) TensorRT (si no está en el sistema):
+#      - Ubuntu: sudo apt install nvidia-tensorrt  (o desde .deb de NVIDIA)
+#      - Pip (cuando hay wheel para tu plataforma):
+#        pip install nvidia-tensorrt
+#
+# Uso:
+#   python engine/build_engines.py
+#   python engine/build_engines.py --model yolo11x-pose.pt
+
+# Base para YOLO
+ultralytics>=8.3.0
+numpy
+opencv-python
+
+# PyTorch (instalar versión CUDA aparte, ver arriba)
+# torch
+# torchvision
