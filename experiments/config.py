@@ -11,7 +11,7 @@ import os
 from pathlib import Path
 
 # --- RUTAS ---
-PATH_ROOT = "/home/debian/Proyectos/GuardIA/Grabaciones/Videos/"  # Carpeta raíz: busca *.csv recursivamente. None = modo CSV_PATH
+PATH_ROOT = "/home/debian/Proyectos/GuardIA/Grabaciones/Robos2/2026.03.01/clips"  # Carpeta raíz: busca *.csv recursivamente. None = modo CSV_PATH
 CSV_PATH = None    # Usado solo si PATH_ROOT es None
 VIDEOS_DIR = None  # Solo modo CSV_PATH: None = mismo dir que el CSV
 OUTPUT_DIR = None  # Solo modo CSV_PATH: None = dataset_final_limpio en dir del CSV
@@ -21,7 +21,7 @@ TEMP_CLIPS = None  # Solo modo CSV_PATH: None = temp_clips en dir del CSV
 # OUTPUT_BASE = carpeta donde van temp_clips/ y data_result/
 #   temp_clips/{0,1,2,...}/ = clips por categoría
 #   data_result/{0,1,2,...}/{clip_name}/ = meta.json + user_X/
-OUTPUT_BASE = "/home/debian/Proyectos/GuardIA/Grabaciones/output_test_11_n_v3/"   # None = output junto al script
+OUTPUT_BASE = "/home/debian/Proyectos/GuardIA/Grabaciones/output_Debug"   # None = output junto al script
 TEMP_BASE = None     # Legacy: solo para get_experiments si no usas OUTPUT_BASE unificado.
 
 CLIP_META_PATH = None  # build_clip_index genera clip_meta.csv (índice de todos los meta.json).
@@ -40,6 +40,11 @@ CLIP_SCALE_HEIGHT = 1080   # Altura en píxeles. Ancho se calcula manteniendo as
 # Recomendado: usar la gráfica INTEGRADA (/dev/dri/renderD128 suele ser Intel)
 # para no competir con la GPU NVIDIA donde corre YOLO.
 VAAPI_DEVICE = "/dev/dri/renderD128"   # None = sin VAAPI
+
+# --- MODELO YOLO POSE ---
+# Usado por pose_extractor_clean y pose_extractor_preflight.
+# Opciones: yolo11n-pose.pt (rápido), yolo11m-pose.pt, yolo11l-pose.pt, yolo11x-pose.pt (más preciso).
+YOLO_POSE_MODEL = "yolo11n-pose.pt"
 
 
 def _find_csv_files(root: str):

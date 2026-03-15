@@ -204,18 +204,32 @@ def run_app(video_path: str, model_path: str = "yolo11n-pose.pt", npy_path: str 
         if npy_poses is not None:
             npy_len = len(npy_poses)
             if npy_len > 0:
-                # Mapear frame de vídeo a frame de npy (pueden tener distinta longitud)
                 idx = current_frame[0] % max(1, video_frames or 1)
-                if video_frames and npy_len != video_frames:
+                if video_frames and npy_len < video_frames:
+                    # Hay más frames de vídeo que poses: suponer que faltan al inicio
+                    # (la persona no se detectó hasta entrar en plano). No mostrar esqueleto
+                    # en los primeros frames; alinear poses con el tramo final del vídeo.
+                    offset = video_frames - npy_len
+                    if idx < offset:
+                        pts_norm = None  # Aún no hay poses (persona no detectada)
+                    else:
+                        j = idx - offset
+                        j = max(0, min(j, npy_len - 1))
+                        pts_norm = npy_poses[j]
+                elif video_frames and npy_len > video_frames:
                     j = int(round(idx * (npy_len - 1) / max(1, video_frames - 1)))
+                    j = max(0, min(j, npy_len - 1))
+                    pts_norm = npy_poses[j]
                 else:
                     j = min(idx, npy_len - 1)
-                j = max(0, min(j, npy_len - 1))
-                pts_norm = npy_poses[j]
-                points_xy = pts_norm.copy()
-                points_xy[:, 0] = pts_norm[:, 0] * w_orig
-                points_xy[:, 1] = pts_norm[:, 1] * h_orig
-                confs = np.ones(8)
+                    pts_norm = npy_poses[j]
+                if pts_norm is not None and not np.any(np.isnan(pts_norm)):
+                    points_xy = pts_norm.copy()
+                    points_xy[:, 0] = pts_norm[:, 0] * w_orig
+                    points_xy[:, 1] = pts_norm[:, 1] * h_orig
+                    confs = np.ones(8)
+                else:
+                    points_xy, confs = None, np.zeros(8)
             else:
                 points_xy, confs = None, np.zeros(8)
         else:

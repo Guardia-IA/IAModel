@@ -17,7 +17,7 @@ from ultralytics import YOLO
 # --- CONFIGURACIÓN DE RUTAS (edita config.py) ---
 from config import (
     get_experiments, PATH_ROOT, CSV_PATH, OUTPUT_BASE, LOGS_SUBDIR,
-    CLIP_SCALE_HEIGHT, VAAPI_DEVICE,
+    CLIP_SCALE_HEIGHT, VAAPI_DEVICE, YOLO_POSE_MODEL,
 )
 from security import validate_folder
 
@@ -27,8 +27,8 @@ OUTPUT = Path(OUTPUT_BASE) if OUTPUT_BASE else Path(__file__).parent / "output"
 # --- PARÁMETROS DE CONTROL ---
 DEBUG_MODE = True      # True: Solo procesa N vídeos
 N_DEBUG = 5            # Número de vídeos en modo debug
-MODEL_PATH = 'yolo11n-pose.pt'   # m= rápido+preciso; s/n= más rápido; l/x= más preciso
-DELETE_TEMP_VIDEOS = True       # Si True, borra los vídeos temporales al terminar
+MODEL_PATH = YOLO_POSE_MODEL     # Definido en config.py
+DELETE_TEMP_VIDEOS = False       # Si True, borra los vídeos temporales al terminar
 # Si True, guarda una copia del clip procesado en data_result/{cat}/{clip_name}/clip.mp4
 # para poder visualizar poses con el vídeo exacto (mismo nº de frames que poses_full.npy)
 SAVE_PROCESSED_CLIP = True
@@ -55,6 +55,9 @@ BODY_VISIBLE_MIN_RATIO = 0.2           # Mín. ratio de frames con cuerpo visibl
 
 # Umbral de confianza para considerar un punto "ocluso"
 OCCLUSION_CONF_THR = 0.3              # keypoints con conf < esto se consideran ocluidos
+
+# Pose sentinela para mantener 1:1 frame–pose cuando no hay detección (evita desfase vídeo/poses)
+NAN_POSE = np.full((len(KEEP_KPS), 2), np.nan, dtype=np.float32)
 
 
 def _get_device() -> str:
@@ -310,16 +313,24 @@ def run_debug_extract(video_path: str) -> Path | None:
         half=True,
     )
     temp_person_data = {}
+    # 1:1 frame–pose: cada iteración = un frame; si no hay detección se rellena con NAN_POSE.
 
     for r in tqdm(results, desc="Extrayendo poses"):
         frame = getattr(r, 'orig_img', None)
         if frame is None or r.keypoints is None or r.boxes.id is None:
+            for tid in list(temp_person_data.keys()):
+                temp_person_data[tid]['poses_full'].append(NAN_POSE.copy())
+                temp_person_data[tid]['total'] += 1
             continue
         boxes = r.boxes.xyxy.cpu().numpy()
         ids = r.boxes.id.int().cpu().tolist()
         kpts = r.keypoints.xyn.cpu().numpy()
         confs = r.keypoints.conf.cpu().numpy()
-
+        # Tracks ya vistos pero no detectados en este frame: 1:1 con NaN
+        for tid in list(temp_person_data.keys()):
+            if tid not in ids:
+                temp_person_data[tid]['poses_full'].append(NAN_POSE.copy())
+                temp_person_data[tid]['total'] += 1
         for i, track_id in enumerate(ids):
             if track_id not in temp_person_data:
                 c_t, c_b = get_color_attributes(frame, boxes[i])
@@ -362,8 +373,12 @@ def run_debug_extract(video_path: str) -> Path | None:
         rel = valid / total
         user_dir = out_dir / f"user_{tid}"
         user_dir.mkdir(exist_ok=True)
-        np.save(str(user_dir / "poses_full.npy"), np.array(info['poses_full']))
+        poses_full_arr = np.array(info['poses_full'])
+        np.save(str(user_dir / "poses_full.npy"), poses_full_arr)
         np.save(str(user_dir / "poses.npy"), np.array(info['poses']))
+        # Máscara para entrenamiento: True = frame con pose válida (sin NaN). Evita usar NaN en el loss.
+        valid_mask = ~np.isnan(poses_full_arr).any(axis=(1, 2))
+        np.save(str(user_dir / "valid_mask.npy"), valid_mask)
         users_meta.append({
             "track_id": int(tid),
             "valid_pct": round(rel * 100, 1),
@@ -436,6 +451,7 @@ def process_single_csv(
     if DEBUG_MODE:
         df = df.head(N_DEBUG)  # Limitar filas (clips) de este CSV
 
+    # Cada iteración = un clip: estado fresco (temp_person_data, etc.). Nada se arrastra del clip anterior.
     for index, row in tqdm(df.iterrows(), total=len(df), desc="Procesando CSV"):
         video_rel_path = row.iloc[0]  # Nombre del vídeo en la primera columna
         t_start = row.iloc[1]        # HH:MM:SS
@@ -465,12 +481,13 @@ def process_single_csv(
             )
             temp_cat_dir = Path(TEMP_CLIPS_BASE) / category
             temp_cat_dir.mkdir(parents=True, exist_ok=True)
-            clip_path = str(temp_cat_dir / f"{clip_name}.avi")
+            clip_path = str(temp_cat_dir / f"{clip_name}.mp4")
 
             print(f"[Clip] {clip_name} | Fila CSV: {fila_csv} | Inicio: {t_start} | Fin: {t_end} | Video: {video_rel_path}")
             cut_clip(video_full_path, t_start, t_end, clip_path)
 
-            # 3. Procesar Pose Tracking en el clip (stream=True reduce uso de memoria)
+            # 3. Procesar Pose Tracking en el clip (stream=True reduce uso de memoria).
+            # Cada clip usa su propio temp_person_data (estado fresco); no se reutiliza nada del clip anterior.
             results = model.track(
                 source=clip_path,
                 tracker="custom_tracker.yaml",
@@ -494,9 +511,13 @@ def process_single_csv(
             min_valid_seconds = clip_duration * MIN_COVERAGE_RATIO
             min_valid_frames = int(min_valid_seconds * fps) if clip_duration > 0 else 0
 
+            # 1:1 frame–pose: cada iteración = un frame; si no hay detección se rellena con NAN_POSE (igual que modo debug).
             for r in results:
                 frame = getattr(r, 'orig_img', None)
                 if frame is None or r.keypoints is None or r.boxes.id is None:
+                    for tid in list(temp_person_data.keys()):
+                        temp_person_data[tid]['poses_full'].append(NAN_POSE.copy())
+                        temp_person_data[tid]['total'] += 1
                     continue
 
                 # Optimización GPU→CPU: hacer todas las operaciones en GPU primero, luego transferir
@@ -513,7 +534,11 @@ def process_single_csv(
                 kpts = kpts_gpu.cpu().numpy()
                 confs = confs_gpu.cpu().numpy()
                 boxes = boxes_gpu.cpu().numpy()
-
+                # Tracks ya vistos pero no detectados en este frame: 1:1 con NaN (igual que modo debug)
+                for tid in list(temp_person_data.keys()):
+                    if tid not in ids:
+                        temp_person_data[tid]['poses_full'].append(NAN_POSE.copy())
+                        temp_person_data[tid]['total'] += 1
                 for i, track_id in enumerate(ids):
                     if track_id not in temp_person_data:
                         c_t, c_b = get_color_attributes(frame, boxes[i])
@@ -620,11 +645,13 @@ def process_single_csv(
                 }
                 users_meta.append(user_meta)
 
-                # Carpetas user_X con poses
+                # Carpetas user_X con poses + máscara para entrenamiento (True = frame válido, sin NaN)
                 user_dir = data_dir / f"user_{tid}"
                 user_dir.mkdir(exist_ok=True)
-                np.save(str(user_dir / "poses_full.npy"), np.array(info['poses_full']))
+                np.save(str(user_dir / "poses_full.npy"), poses_full_arr)
                 np.save(str(user_dir / "poses.npy"), np.array(info['poses']))
+                valid_mask = ~np.isnan(poses_full_arr).any(axis=(1, 2))
+                np.save(str(user_dir / "valid_mask.npy"), valid_mask)
 
                 if not passes_filters:
                     print(
@@ -634,8 +661,17 @@ def process_single_csv(
 
             # Nº de frames del clip procesado (1:1 con cada poses_full por usuario)
             processed_frame_count = max(info["total"] for info in temp_person_data.values())
+            video_frame_count = None
+            cap_meta = cv2.VideoCapture(clip_path)
+            try:
+                video_frame_count = int(cap_meta.get(cv2.CAP_PROP_FRAME_COUNT))
+            finally:
+                cap_meta.release()
+            if video_frame_count is not None and video_frame_count != processed_frame_count:
+                warn_msg = f"Clip '{clip_name}': frames en vídeo={video_frame_count}, frames con poses={processed_frame_count}"
+                print(f"[AVISO] {warn_msg}")
 
-            # meta.json único por clip
+            # meta.json único por clip (incl. clip_video si vamos a guardar el clip)
             meta = {
                 "clip_name": clip_name,
                 "video_source": str(Path(video_full_path).resolve()),
@@ -645,23 +681,23 @@ def process_single_csv(
                 "clip_duration": clip_duration,
                 "fps": fps,
                 "frame_count": processed_frame_count,
+                "video_frame_count": video_frame_count,
                 "min_valid_frames": int(min_valid_frames),
                 "cat": category,
                 "users": users_meta,
             }
+            if clip_path and os.path.exists(clip_path) and SAVE_PROCESSED_CLIP:
+                meta["clip_video"] = "clip.mp4"
             with open(data_dir / "meta.json", "w", encoding="utf-8") as f:
                 json.dump(meta, f, indent=4, ensure_ascii=False)
 
-            # Guardar clip procesado en data_result (vídeo exacto que coincide con las poses) o borrarlo
+            # Guardar clip procesado en data_result (mismo archivo que vio YOLO → 1:1 con poses_full)
             if clip_path and os.path.exists(clip_path):
                 if SAVE_PROCESSED_CLIP:
                     dest_clip = data_dir / "clip.mp4"
                     try:
                         import shutil
                         shutil.copy2(clip_path, dest_clip)
-                        meta["clip_video"] = "clip.mp4"
-                        with open(data_dir / "meta.json", "w", encoding="utf-8") as f:
-                            json.dump(meta, f, indent=4, ensure_ascii=False)
                     except Exception as e:
                         print(f"[AVISO] No se pudo guardar clip en data_result: {e}")
                 if DELETE_TEMP_VIDEOS:
@@ -678,7 +714,13 @@ def process_single_csv(
 def main():
     parser = argparse.ArgumentParser(description="Extractor de poses YOLO para clips")
     parser.add_argument("--debug", "--test", dest="debug_video", metavar="VIDEO", help="Modo debug: extrae poses de un único vídeo en carpeta temporal (poses_full.npy, poses.npy)")
+    parser.add_argument("--limit", "-n", type=int, default=None, metavar="N", help="Solo procesar los primeros N clips del CSV (útil para pruebas)")
     args = parser.parse_args()
+
+    if args.limit is not None and args.debug_video is None:
+        global N_DEBUG, DEBUG_MODE
+        N_DEBUG = args.limit
+        DEBUG_MODE = True
 
     if args.debug_video:
         run_debug_extract(args.debug_video)

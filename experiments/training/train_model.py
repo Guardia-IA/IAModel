@@ -5,7 +5,7 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import List, Dict, Tuple, Any
+from typing import List, Dict, Tuple, Any, Optional
 
 import numpy as np
 import torch
@@ -49,6 +49,7 @@ class PoseExample:
     track_id: int
     clip_name: str
     category_str: str   # por si quieres inspeccionar
+    valid_mask_path: Optional[Path] = None  # si usa poses_full.npy: máscara de frames válidos (sin NaN)
 
 
 def get_data_result_root() -> Path:
@@ -64,6 +65,8 @@ def collect_examples(pose_source: str = "filtered") -> List[PoseExample]:
       1) Solo clips con un usuario, excepto categoría 6.
       2) En categoría 6, si hay varios usuarios, quedarse con el que tenga más frames.
       3) pose_source: "filtered" -> usa poses.npy, "full" -> usa poses_full.npy.
+      4) Si "full": usa valid_mask.npy para entrenar solo con frames válidos (sin NaN);
+         si no hay máscara o hay NaN sin máscara, se descarta el clip.
     """
     root = get_data_result_root()
     examples: List[PoseExample] = []
@@ -121,6 +124,22 @@ def collect_examples(pose_source: str = "filtered") -> List[PoseExample]:
             if poses.shape[0] < MIN_SEQ_LEN:
                 continue
 
+            valid_mask_path = None
+            if pose_source == "full":
+                mask_path = user_dir / "valid_mask.npy"
+                if mask_path.exists():
+                    try:
+                        valid_mask = np.load(mask_path)
+                        if valid_mask.ndim != 1 or len(valid_mask) != poses.shape[0]:
+                            continue
+                        if valid_mask.sum() < MIN_SEQ_LEN:
+                            continue
+                        valid_mask_path = mask_path
+                    except Exception:
+                        pass
+                elif np.any(np.isnan(poses)):
+                    continue
+
             examples.append(
                 PoseExample(
                     pose_path=pose_path,
@@ -128,6 +147,7 @@ def collect_examples(pose_source: str = "filtered") -> List[PoseExample]:
                     track_id=int(track_id),
                     clip_name=str(meta.get("clip_name", clip_dir.name)),
                     category_str=cat_str,
+                    valid_mask_path=valid_mask_path,
                 )
             )
 
@@ -195,6 +215,11 @@ class PoseDataset(Dataset):
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, int]:
         ex = self.examples[idx]
         poses = np.load(ex.pose_path)  # [T, J, 2]
+        if ex.valid_mask_path is not None and ex.valid_mask_path.exists():
+            valid_mask = np.load(ex.valid_mask_path)
+            poses = poses[valid_mask].copy()
+        if np.any(np.isnan(poses)):
+            poses = np.nan_to_num(poses, nan=0.0, posinf=0.0, neginf=0.0)
         poses = normalize_sequence(poses)
         poses = add_velocity(poses)  # [T, J, 4]
         poses = temporal_resize(poses, self.seq_len)  # [seq_len, J, 4]
@@ -633,6 +658,7 @@ def make_binary_examples(
                 track_id=ex.track_id,
                 clip_name=ex.clip_name,
                 category_str=ex.category_str,
+                valid_mask_path=getattr(ex, "valid_mask_path", None),
             )
         )
     return binary_examples
