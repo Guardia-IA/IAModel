@@ -516,6 +516,9 @@ def process_single_csv(
         t_end = row.iloc[2]          # HH:MM:SS
         category = str(int(row.iloc[3]))
 
+        # fila_csv = número de fila en el CSV
+        fila_csv = start_row + int(index)
+
         # Límite por categoría (máx. clips a procesar por clase). Si se supera, se omite el clip.
         limit = category_limits.get(category)
         if limit is not None and category_counters.get(category, 0) >= limit:
@@ -524,9 +527,6 @@ def process_single_csv(
                 f"límite de {limit} clips para esa categoría."
             )
             continue
-
-        # fila_csv = número de fila en el CSV
-        fila_csv = start_row + int(index)
 
         # Duración teórica del clip según el CSV
         clip_duration = max(0.0, hms_to_seconds(t_end) - hms_to_seconds(t_start))
