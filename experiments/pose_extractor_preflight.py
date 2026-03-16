@@ -120,9 +120,15 @@ def get_device() -> str:
 
 # 8 keypoints = KEEP_KPS en pose_extractor_clean: hombros (5,6), codos (7,8), muñecas (9,10), cadera (11,12). No los 17.
 # Tiempo medio por frame: solo inferencia pose (esos 8 keypoints). Unidad: s/frame. Referencia 1080p.
-SEC_PER_FRAME_POSE = {
+# pt = modelo YOLO .pt (PyTorch); engine = TensorRT (.engine) generado en engine/.
+SEC_PER_FRAME_PT = {
     "cpu": {"n": 1.2, "s": 1.6, "m": 2.2, "l": 3.5, "x": 5.0},
     "cuda": {"n": 0.020, "s": 0.028, "m": 0.040, "l": 0.070, "x": 0.12},
+}
+# Valores orientativos: TensorRT suele ser ~2–3× más rápido en GPU.
+SEC_PER_FRAME_ENGINE = {
+    "cpu": SEC_PER_FRAME_PT["cpu"],  # en CPU no aplica engine; igual que .pt
+    "cuda": {"n": 0.010, "s": 0.016, "m": 0.022, "l": 0.035, "x": 0.06},
 }
 FFMPEG_SEC_PER_CLIP = 3.0
 
@@ -147,10 +153,14 @@ def get_model_size(model_stem: str) -> str:
     return "n"
 
 
-def get_sec_per_frame(device: str, model_stem: str) -> float:
-    """Tiempo medio (s) por frame para extracción de pose (8 keypoints), según modelo y dispositivo."""
+def get_sec_per_frame(device: str, model_stem: str, backend: str = "pt") -> float:
+    """Tiempo medio (s) por frame para extracción de pose (8 keypoints), según modelo, dispositivo y backend ('pt' o 'engine')."""
     size = get_model_size(model_stem)
-    return SEC_PER_FRAME_POSE.get(device, SEC_PER_FRAME_POSE["cpu"]).get(size, SEC_PER_FRAME_POSE["cpu"]["n"])
+    if backend == "engine":
+        table = SEC_PER_FRAME_ENGINE
+    else:
+        table = SEC_PER_FRAME_PT
+    return table.get(device, table["cpu"]).get(size, table["cpu"]["n"])
 
 
 def estimate_time(
@@ -158,12 +168,13 @@ def estimate_time(
     total_clips: int,
     device: str,
     model_stem: str,
+    backend: str = "pt",
 ):
     """
-    Estima tiempo total: inferencia YOLO (solo pose) + FFmpeg.
+    Estima tiempo total: inferencia YOLO (solo pose) + FFmpeg para un backend dado.
     Devuelve (segundos_inferencia, segundos_ffmpeg, segundos_por_frame_usado).
     """
-    sec_per_frame = get_sec_per_frame(device, model_stem)
+    sec_per_frame = get_sec_per_frame(device, model_stem, backend=backend)
     inference_sec = total_frames * sec_per_frame
     ffmpeg_sec = total_clips * FFMPEG_SEC_PER_CLIP
     return inference_sec, ffmpeg_sec, sec_per_frame
@@ -277,19 +288,37 @@ def main():
 
     header("5) Estimación de tiempo total")
     model_size = get_model_size(model_stem)
-    sec_per_frame = get_sec_per_frame(device, model_stem)
-    print(f"  Tiempo medio por frame (8 keypoints: hombros, codos, muñecas, cadera — KEEP_KPS): {CYAN}{sec_per_frame:.3f} s/frame{RESET} (YOLO-{model_size}, {device.upper()})")
-    inference_sec, ffmpeg_sec, _ = estimate_time(total_frames_approx, total_clips, device, model_stem)
-    est_sec = inference_sec + ffmpeg_sec
-    print(f"  Frames totales: {total_frames_approx} → Inferencia: ~{inference_sec/60:.0f} min  |  FFmpeg (cut+scale): ~{ffmpeg_sec/60:.0f} min")
-    hours = int(est_sec // 3600)
-    mins = int((est_sec % 3600) // 60)
-    secs = int(est_sec % 60)
-    print(f"  Tiempo estimado total: {CYAN}~{hours}h {mins}m {secs}s{RESET}")
+    # Estimación con modelo .pt (PyTorch)
+    sec_per_frame_pt = get_sec_per_frame(device, model_stem, backend="pt")
+    inf_pt, ffmpeg_pt, _ = estimate_time(total_frames_approx, total_clips, device, model_stem, backend="pt")
+    total_pt = inf_pt + ffmpeg_pt
+
+    print(f"  [YOLO .pt]    Tiempo medio por frame (8 keypoints, KEEP_KPS): {CYAN}{sec_per_frame_pt:.3f} s/frame{RESET} (YOLO-{model_size}, {device.upper()})")
+    print(f"               Frames: {total_frames_approx} → Inferencia: ~{inf_pt/60:.0f} min  |  FFmpeg: ~{ffmpeg_pt/60:.0f} min")
+
+    # Estimación con .engine (TensorRT) — sólo aporta mejora real en CUDA
+    sec_per_frame_eng = get_sec_per_frame(device, model_stem, backend="engine")
+    inf_eng, ffmpeg_eng, _ = estimate_time(total_frames_approx, total_clips, device, model_stem, backend="engine")
+    total_eng = inf_eng + ffmpeg_eng
+    print(f"  [YOLO .engine] Tiempo medio por frame (estimado): {CYAN}{sec_per_frame_eng:.3f} s/frame{RESET} (YOLO-{model_size}, {device.upper()})")
+    print(f"                 Frames: {total_frames_approx} → Inferencia: ~{inf_eng/60:.0f} min  |  FFmpeg: ~{ffmpeg_eng/60:.0f} min")
+
+    # Resumen comparativo
+    hours_pt = int(total_pt // 3600)
+    mins_pt = int((total_pt % 3600) // 60)
+    secs_pt = int(total_pt % 60)
+    hours_eng = int(total_eng // 3600)
+    mins_eng = int((total_eng % 3600) // 60)
+    secs_eng = int(total_eng % 60)
+    print(f"\n  Tiempo estimado total YOLO .pt:     {CYAN}~{hours_pt}h {mins_pt}m {secs_pt}s{RESET}")
+    print(f"  Tiempo estimado total YOLO .engine:{CYAN}~{hours_eng}h {mins_eng}m {secs_eng}s{RESET}")
+
     if total_clips > 0:
-        sec_per_clip = est_sec / total_clips
-        min_per_clip = sec_per_clip / 60
-        print(f"  Tiempo medio por clip: {CYAN}~{min_per_clip:.1f} min{RESET} (~{sec_per_clip:.0f} s)")
+        sec_per_clip_pt = total_pt / total_clips
+        sec_per_clip_eng = total_eng / total_clips
+        print(f"  Tiempo medio por clip (.pt):      {CYAN}~{sec_per_clip_pt/60:.1f} min{RESET} (~{sec_per_clip_pt:.0f} s)")
+        print(f"  Tiempo medio por clip (.engine):  {CYAN}~{sec_per_clip_eng/60:.1f} min{RESET} (~{sec_per_clip_eng:.0f} s)")
+
     warn("Estimación aproximada (CPU/GPU y carga del sistema pueden variar).")
 
     print()
