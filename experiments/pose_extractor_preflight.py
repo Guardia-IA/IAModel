@@ -259,6 +259,8 @@ def main():
     category_counters: dict[str, int] = {}
     if category_limits:
         print(f"Límites por categoría (config_pose_extraction.json): {category_limits}")
+    else:
+        print("Límites por categoría: sin límites (no hay config_pose_extraction.json o está vacío).")
 
     for csv_path in csv_files:
         start_row = find_start_row(str(csv_path))
