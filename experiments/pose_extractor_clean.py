@@ -71,11 +71,19 @@ def _get_device() -> str:
     return "cpu"
 
 
-def _setup_logging(log_dir: str | Path | None = None) -> object | None:
-    """Redirige stdout a terminal + fichero log<timestamp>.txt. Logs en OUTPUT/LOGS_SUBDIR (OUTPUT_BASE/logs)."""
+def _setup_logging(log_dir: str | Path | None = None):
+    """
+    Redirige stdout a terminal + fichero log<timestamp>.txt.
+    Logs en OUTPUT/LOGS_SUBDIR (p. ej. OUTPUT_BASE/logs). Todo lo que se imprima
+    después quedará en el log (útil para ejecutar por SSH y revisar luego).
+    Devuelve (log_file, original_stdout, log_path) o (None, None, None) si falla.
+    """
     base = (OUTPUT / LOGS_SUBDIR) if OUTPUT_BASE else Path(__file__).parent / "logs"
     log_dir = Path(log_dir or base).resolve()
-    log_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        log_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return None, None, None
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     log_path = log_dir / f"log{timestamp}.txt"
 
@@ -88,7 +96,7 @@ def _setup_logging(log_dir: str | Path | None = None) -> object | None:
                 if hasattr(s, "flush"):
                     s.flush()
             except (ValueError, OSError):
-                pass  # archivo cerrado u otro error de I/O
+                pass
 
         def write(self, data):
             for s in self.streams:
@@ -102,10 +110,13 @@ def _setup_logging(log_dir: str | Path | None = None) -> object | None:
             for s in self.streams:
                 self._safe_flush(s)
 
-    log_file = open(log_path, "w", encoding="utf-8")
+    try:
+        log_file = open(log_path, "w", encoding="utf-8")
+    except OSError:
+        return None, None, None
     original_stdout = sys.stdout
     sys.stdout = Tee(original_stdout, log_file)
-    return log_file, original_stdout
+    return log_file, original_stdout, log_path
 
 
 def _resolve_model_path(base: str) -> str:
@@ -712,6 +723,14 @@ def process_single_csv(
 
 
 def main():
+    # Log a fichero desde el inicio (todo lo que se imprima irá a terminal + log; útil para SSH)
+    log_file, original_stdout, log_path = None, None, None
+    log_result = _setup_logging()
+    if log_result:
+        log_file, original_stdout, log_path = log_result
+        print(f"Log guardado en: {log_path}")
+        print(f"Modelo pose: {_MODEL_RESOLVED}")
+
     parser = argparse.ArgumentParser(description="Extractor de poses YOLO para clips")
     parser.add_argument("--debug", "--test", dest="debug_video", metavar="VIDEO", help="Modo debug: extrae poses de un único vídeo en carpeta temporal (poses_full.npy, poses.npy)")
     parser.add_argument("--limit", "-n", type=int, default=None, metavar="N", help="Solo procesar los primeros N clips del CSV (útil para pruebas)")
@@ -724,14 +743,11 @@ def main():
 
     if args.debug_video:
         run_debug_extract(args.debug_video)
+        if log_file:
+            if original_stdout is not None:
+                sys.stdout = original_stdout
+            log_file.close()
         return
-
-    # 1. Log en fichero además del terminal (antes de validación para registrar todo)
-    log_result = _setup_logging()
-    log_file = original_stdout = None
-    if log_result:
-        log_file, original_stdout = log_result
-        print(f"Log guardado en: {log_file.name}")
 
     # 2. Validación previa (security): comprobar que CSVs y vídeos existen, tiempos correctos
     path_to_validate = PATH_ROOT if PATH_ROOT else (os.path.dirname(os.path.abspath(CSV_PATH or ".")))
@@ -751,6 +767,10 @@ def main():
     experiments = get_experiments()
     if not experiments:
         print("Error: no se encontraron CSV. Configura PATH_ROOT o CSV_PATH en config.py")
+        if log_file:
+            if original_stdout is not None:
+                sys.stdout = original_stdout
+            log_file.close()
         return
 
     if DEBUG_MODE:
@@ -790,9 +810,10 @@ def main():
     else:
         print("\nTodos los clips se procesaron correctamente.")
 
+    print(f"\n[FIN] {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} — Proceso terminado.")
     if log_file:
         if original_stdout is not None:
-            sys.stdout = original_stdout  # Restaurar antes de cerrar para evitar flush en archivo cerrado
+            sys.stdout = original_stdout
         log_file.close()
 
 
