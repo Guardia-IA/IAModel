@@ -120,7 +120,7 @@ def get_device() -> str:
 
 # Config opcional de límites por categoría (máx. clips a procesar por clase),
 # compartida con pose_extractor_clean.py.
-POSE_EXTRACTION_CONFIG = Path(__file__).resolve().parent / "config_pose_extraction.json"
+POSE_EXTRACTION_CONFIG = "config_pose_extraction.json"
 
 
 def _load_category_limits() -> dict[str, int]:
