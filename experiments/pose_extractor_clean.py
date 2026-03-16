@@ -67,7 +67,7 @@ def _load_category_limits() -> dict[str, int]:
 DEBUG_MODE = True      # True: Solo procesa N vídeos
 N_DEBUG = 5            # Número de vídeos en modo debug
 MODEL_PATH = YOLO_POSE_MODEL     # Definido en config.py
-DELETE_TEMP_VIDEOS = False       # Si True, borra los vídeos temporales al terminar
+DELETE_TEMP_VIDEOS = True       # Si True, borra los vídeos temporales al terminar
 # Si True, guarda una copia del clip procesado en data_result/{cat}/{clip_name}/clip.mp4
 # para poder visualizar poses con el vídeo exacto (mismo nº de frames que poses_full.npy)
 SAVE_PROCESSED_CLIP = True
@@ -454,6 +454,8 @@ def run_debug_extract(video_path: str) -> Path | None:
         "debug_mode": True,
         "fps": fps,
         "frame_count": frame_count,
+        "yolo_model": str(_MODEL_RESOLVED),
+        "yolo_backend": "engine" if str(_MODEL_RESOLVED).endswith(".engine") else "pt",
         "users": users_meta,
     }
     with open(out_dir / "meta.json", "w", encoding="utf-8") as f:
@@ -762,6 +764,9 @@ def process_single_csv(
                 "video_frame_count": video_frame_count,
                 "min_valid_frames": int(min_valid_frames),
                 "cat": category,
+                 # Información del modelo YOLO usado para generar las poses
+                "yolo_model": str(_MODEL_RESOLVED),
+                "yolo_backend": "engine" if str(_MODEL_RESOLVED).endswith(".engine") else "pt",
                 "users": users_meta,
             }
             if clip_path and os.path.exists(clip_path) and SAVE_PROCESSED_CLIP:
