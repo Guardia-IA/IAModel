@@ -24,6 +24,43 @@ from security import validate_folder
 # Base de salida: OUTPUT_BASE de config (temp_clips/ y data_result/ dentro)
 OUTPUT = Path(OUTPUT_BASE) if OUTPUT_BASE else Path(__file__).parent / "output"
 
+# Config opcional de límites por categoría (máx. clips a procesar por clase).
+POSE_EXTRACTION_CONFIG = Path(__file__).resolve().parent / "config_pose_extraction.json"
+
+
+def _load_category_limits() -> dict[str, int]:
+    """
+    Lee config_pose_extraction.json si existe y devuelve un dict {cat_str: max_clips}.
+    Valores:
+      - null/None  -> sin límite (se procesan todos)
+      - 0          -> no se procesa ninguno
+      - >0         -> máximo N clips para esa categoría
+    """
+    limits: dict[str, int] = {}
+    if not POSE_EXTRACTION_CONFIG.exists():
+        return limits
+    try:
+        with open(POSE_EXTRACTION_CONFIG, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return limits
+    cat_cfg = data.get("category_limits", {})
+    if isinstance(cat_cfg, dict):
+        for k, v in cat_cfg.items():
+            try:
+                cat_str = str(int(k))
+            except (TypeError, ValueError):
+                continue
+            if v is None:
+                continue
+            try:
+                n = int(v)
+            except (TypeError, ValueError):
+                continue
+            if n >= 0:
+                limits[cat_str] = n
+    return limits
+
 # --- PARÁMETROS DE CONTROL ---
 DEBUG_MODE = True      # True: Solo procesa N vídeos
 N_DEBUG = 5            # Número de vídeos en modo debug
@@ -450,6 +487,8 @@ def process_single_csv(
     failed_clips: list,
     used_clip_names: set,
     dir_rel_path: str | None = None,
+    category_limits: dict[str, int] | None = None,
+    category_counters: dict[str, int] | None = None,
 ):
     """Procesa un único CSV. Errores por clip se añaden a failed_clips."""
     # 1. Detectar fila de inicio (primera con HH:MM:SS en col 2) y leer CSV
@@ -463,11 +502,24 @@ def process_single_csv(
         df = df.head(N_DEBUG)  # Limitar filas (clips) de este CSV
 
     # Cada iteración = un clip: estado fresco (temp_person_data, etc.). Nada se arrastra del clip anterior.
+    if category_limits is None:
+        category_limits = {}
+    if category_counters is None:
+        category_counters = {}
     for index, row in tqdm(df.iterrows(), total=len(df), desc="Procesando CSV"):
         video_rel_path = row.iloc[0]  # Nombre del vídeo en la primera columna
         t_start = row.iloc[1]        # HH:MM:SS
         t_end = row.iloc[2]          # HH:MM:SS
         category = str(int(row.iloc[3]))
+
+        # Límite por categoría (máx. clips a procesar por clase). Si se supera, se omite el clip.
+        limit = category_limits.get(category)
+        if limit is not None and category_counters.get(category, 0) >= limit:
+            print(
+                f"[OMITIDO] Clip fila {fila_csv} (cat={category}) porque alcanzó el "
+                f"límite de {limit} clips para esa categoría."
+            )
+            continue
 
         # fila_csv = número de fila en el CSV
         fila_csv = start_row + int(index)
@@ -653,6 +705,8 @@ def process_single_csv(
                     "bbox_aspect_ratio": bbox_aspect_ratio,
                     "subject_velocity": subject_velocity,
                     "clothes": info['clothes'],
+                    # Clasificación de usuario (inicialmente igual que la general del clip, meta['cat'])
+                    "user_cat": int(category),
                 }
                 users_meta.append(user_meta)
 
@@ -669,6 +723,17 @@ def process_single_csv(
                         f"[SIN filtros] Clip '{clip_name}' user_{tid} | "
                         f"valid_pct={valid_pct}% | valid_frames={valid_frames}, min={min_valid_frames}"
                     )
+
+            # Marcar usuario "principal" en categoría 6 (robo)
+            try:
+                clip_cat_int = int(category)
+            except (TypeError, ValueError):
+                clip_cat_int = None
+            if clip_cat_int == 6 and users_meta:
+                # Campo booleando para marcar al usuario que está robando
+                # Si hay un solo usuario: True. Si hay varios: solo el primero.
+                for idx_u, u in enumerate(users_meta):
+                    u["is_primary_robber"] = (idx_u == 0)
 
             # Nº de frames del clip procesado (1:1 con cada poses_full por usuario)
             processed_frame_count = max(info["total"] for info in temp_person_data.values())
@@ -713,6 +778,9 @@ def process_single_csv(
                         print(f"[AVISO] No se pudo guardar clip en data_result: {e}")
                 if DELETE_TEMP_VIDEOS:
                     os.remove(clip_path)
+
+            # Contar clip como procesado para esta categoría (aunque luego descartes usuarios).
+            category_counters[category] = category_counters.get(category, 0) + 1
 
         except Exception as e:
             failed_clips.append({
@@ -782,8 +850,14 @@ def main():
     temp_clips_base.mkdir(parents=True, exist_ok=True)
     data_result_base.mkdir(parents=True, exist_ok=True)
 
+    # Límite global opcional por categoría (máx. clips a procesar por clase, en todos los CSV)
+    category_limits = _load_category_limits()
+    if category_limits:
+        print(f"Límites por categoría (config_pose_extraction.json): {category_limits}")
+
     failed_clips = []
     used_clip_names = set()
+    category_counters: dict[str, int] = {}
     for i, exp in enumerate(experiments):
         print(f"\n{'='*60}")
         print(f"[Experimento {i+1}/{len(experiments)}] CSV: {exp['csv']}")
@@ -796,6 +870,8 @@ def main():
             failed_clips,
             used_clip_names,
             dir_rel_path=exp.get("rel_path"),
+            category_limits=category_limits,
+            category_counters=category_counters,
         )
 
     # 4. Resumen de clips fallidos

@@ -118,6 +118,45 @@ def get_device() -> str:
     return "cpu"
 
 
+# Config opcional de límites por categoría (máx. clips a procesar por clase),
+# compartida con pose_extractor_clean.py.
+POSE_EXTRACTION_CONFIG = Path(__file__).resolve().parent / "config_pose_extraction.json"
+
+
+def _load_category_limits() -> dict[str, int]:
+    """
+    Lee config_pose_extraction.json si existe y devuelve un dict {cat_str: max_clips}.
+    Valores:
+      - null/None  -> sin límite (se procesan todos)
+      - 0          -> no se procesa ninguno
+      - >0         -> máximo N clips para esa categoría
+    """
+    limits: dict[str, int] = {}
+    if not POSE_EXTRACTION_CONFIG.exists():
+        return limits
+    try:
+        with open(POSE_EXTRACTION_CONFIG, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return limits
+    cat_cfg = data.get("category_limits", {})
+    if isinstance(cat_cfg, dict):
+        for k, v in cat_cfg.items():
+            try:
+                cat_str = str(int(k))
+            except (TypeError, ValueError):
+                continue
+            if v is None:
+                continue
+            try:
+                n = int(v)
+            except (TypeError, ValueError):
+                continue
+            if n >= 0:
+                limits[cat_str] = n
+    return limits
+
+
 # 8 keypoints = KEEP_KPS en pose_extractor_clean: hombros (5,6), codos (7,8), muñecas (9,10), cadera (11,12). No los 17.
 # Tiempo medio por frame: solo inferencia pose (esos 8 keypoints). Unidad: s/frame. Referencia 1080p.
 # pt = modelo YOLO .pt (PyTorch); engine = TensorRT (.engine) generado en engine/.
@@ -208,11 +247,18 @@ def main():
         sys.exit(1)
 
     total_clips = 0
-    by_category = {}
+    by_category: dict[int, int] = {}
     total_seconds_of_video = 0.0
     total_frames_approx = 0
     max_clip_sec = 10.0
     fps_cache = {}
+
+    # Límite global opcional por categoría (máx. clips a considerar por clase),
+    # compartido con pose_extractor_clean (mismos números que luego se procesarán).
+    category_limits = _load_category_limits()
+    category_counters: dict[str, int] = {}
+    if category_limits:
+        print(f"Límites por categoría (config_pose_extraction.json): {category_limits}")
 
     for csv_path in csv_files:
         start_row = find_start_row(str(csv_path))
@@ -225,7 +271,7 @@ def main():
 
         base_dir = Path(csv_path).resolve().parent
         n_clips = 0
-        cat_counts = {}
+        cat_counts: dict[int, int] = {}
         for _, row in df.iterrows():
             if len(row) < 4 or pd.isna(row.iloc[0]):
                 continue
@@ -234,6 +280,11 @@ def main():
             except (ValueError, TypeError):
                 continue
             if cat < 0:
+                continue
+            cat_str = str(cat)
+            # Respetar límite por categoría si existe (mismos N primeros que procesará pose_extractor_clean)
+            limit = category_limits.get(cat_str) if category_limits else None
+            if limit is not None and category_counters.get(cat_str, 0) >= limit:
                 continue
             if not is_hms_format(str(row.iloc[1]).strip()) or not is_hms_format(str(row.iloc[2]).strip()):
                 continue
@@ -247,6 +298,7 @@ def main():
             total_seconds_of_video += dur
             total_frames_approx += int(min(dur, max_clip_sec) * fps + 0.5)
             cat_counts[cat] = cat_counts.get(cat, 0) + 1
+            category_counters[cat_str] = category_counters.get(cat_str, 0) + 1
 
         for k, v in cat_counts.items():
             by_category[k] = by_category.get(k, 0) + v
