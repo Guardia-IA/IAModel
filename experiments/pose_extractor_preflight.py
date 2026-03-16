@@ -122,7 +122,6 @@ def get_device() -> str:
 # compartida con pose_extractor_clean.py.
 POSE_EXTRACTION_CONFIG = "config_pose_extraction.json"
 
-
 def _load_category_limits() -> dict[str, int]:
     """
     Lee config_pose_extraction.json si existe y devuelve un dict {cat_str: max_clips}.
