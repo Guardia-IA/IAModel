@@ -132,14 +132,17 @@ def _load_category_limits() -> dict[str, int]:
       - 0          -> no se procesa ninguno
       - >0         -> máximo N clips para esa categoría
     """
-    limits: dict[str, int] = {} 
+    limits: dict[str, int] = {}
     cfg_path = Path(POSE_EXTRACTION_CONFIG)
+    print(f"  [DEBUG] Buscando config de límites en: {cfg_path} (existe={cfg_path.exists()})")
     if not cfg_path.exists():
         return limits
     try:
         with open(cfg_path, "r", encoding="utf-8") as f:
             data = json.load(f)
-    except Exception:
+        print(f"  [DEBUG] Contenido bruto de config_pose_extraction.json: {data}")
+    except Exception as e:
+        print(f"  [DEBUG] Error al leer config_pose_extraction.json: {e}")
         return limits
     cat_cfg = data.get("category_limits", {})
     if isinstance(cat_cfg, dict):
