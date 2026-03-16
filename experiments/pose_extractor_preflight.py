@@ -24,7 +24,7 @@ from config import (
     OUTPUT_BASE,
     CLIP_SCALE_HEIGHT,
     YOLO_POSE_MODEL,
-)
+) 
 from security import validate_folder
 
 # Misma lógica que pose_extractor para detectar fila de inicio del CSV
