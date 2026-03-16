@@ -39,7 +39,7 @@ CLIP_SCALE_HEIGHT = 1080   # Altura en píxeles. Ancho se calcula manteniendo as
 # Aceleración VAAPI (Intel iGPU / AMD). None = usar software (libx264).
 # Recomendado: usar la gráfica INTEGRADA (/dev/dri/renderD128 suele ser Intel)
 # para no competir con la GPU NVIDIA donde corre YOLO.
-VAAPI_DEVICE = "None"   # None = sin VAAPI
+VAAPI_DEVICE = None   # None = sin VAAPI
 
 # --- MODELO YOLO POSE ---
 # Usado por pose_extractor_clean y pose_extractor_preflight.
