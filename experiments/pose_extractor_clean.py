@@ -25,7 +25,8 @@ from security import validate_folder
 OUTPUT = Path(OUTPUT_BASE) if OUTPUT_BASE else Path(__file__).parent / "output"
 
 # Config opcional de límites por categoría (máx. clips a procesar por clase).
-POSE_EXTRACTION_CONFIG = Path(__file__).resolve().parent / "config_pose_extraction.json"
+# Se busca en el directorio actual desde donde se ejecuta el script.
+POSE_EXTRACTION_CONFIG = "config_pose_extraction.json"
 
 
 def _load_category_limits() -> dict[str, int]:
@@ -37,10 +38,11 @@ def _load_category_limits() -> dict[str, int]:
       - >0         -> máximo N clips para esa categoría
     """
     limits: dict[str, int] = {}
-    if not POSE_EXTRACTION_CONFIG.exists():
+    cfg_path = Path(POSE_EXTRACTION_CONFIG)
+    if not cfg_path.exists():
         return limits
     try:
-        with open(POSE_EXTRACTION_CONFIG, "r", encoding="utf-8") as f:
+        with open(cfg_path, "r", encoding="utf-8") as f:
             data = json.load(f)
     except Exception:
         return limits

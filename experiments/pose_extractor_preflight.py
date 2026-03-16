@@ -24,7 +24,7 @@ from config import (
     OUTPUT_BASE,
     CLIP_SCALE_HEIGHT,
     YOLO_POSE_MODEL,
-) 
+)
 from security import validate_folder
 
 # Misma lógica que pose_extractor para detectar fila de inicio del CSV
@@ -120,7 +120,9 @@ def get_device() -> str:
 
 # Config opcional de límites por categoría (máx. clips a procesar por clase),
 # compartida con pose_extractor_clean.py.
+# Se busca en el directorio actual desde donde se ejecuta el script.
 POSE_EXTRACTION_CONFIG = "config_pose_extraction.json"
+
 
 def _load_category_limits() -> dict[str, int]:
     """
@@ -131,10 +133,11 @@ def _load_category_limits() -> dict[str, int]:
       - >0         -> máximo N clips para esa categoría
     """
     limits: dict[str, int] = {}
-    if not POSE_EXTRACTION_CONFIG.exists():
+    cfg_path = Path(POSE_EXTRACTION_CONFIG)
+    if not cfg_path.exists():
         return limits
     try:
-        with open(POSE_EXTRACTION_CONFIG, "r", encoding="utf-8") as f:
+        with open(cfg_path, "r", encoding="utf-8") as f:
             data = json.load(f)
     except Exception:
         return limits
