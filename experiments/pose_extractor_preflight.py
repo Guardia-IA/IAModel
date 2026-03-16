@@ -14,6 +14,7 @@ Uso:
 import re
 import subprocess
 import sys
+import json
 from pathlib import Path
 
 # Sin cargar YOLO ni pose_extractor_clean (evitar carga pesada)
