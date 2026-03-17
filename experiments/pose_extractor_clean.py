@@ -64,7 +64,7 @@ def _load_category_limits() -> dict[str, int]:
     return limits
 
 # --- PARÁMETROS DE CONTROL ---
-DEBUG_MODE = True      # True: Solo procesa N vídeos
+DEBUG_MODE = False      # True: Solo procesa N vídeos
 N_DEBUG = 5            # Número de vídeos en modo debug
 MODEL_PATH = YOLO_POSE_MODEL     # Definido en config.py
 DELETE_TEMP_VIDEOS = True       # Si True, borra los vídeos temporales al terminar
