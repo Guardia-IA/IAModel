@@ -1,4 +1,6 @@
+import argparse
 import json
+import random
 from pathlib import Path
 from typing import List, Dict, Any
 
@@ -26,10 +28,20 @@ def get_data_result_root() -> Path:
     return root
 
 
-def collect_multiuser_examples(pose_source: str = "filtered") -> List[PoseExample]:
+def collect_multiuser_examples(
+    pose_source: str = "filtered",
+    *,
+    label_mode: str = "clip_cat",
+    positive_class: int = 6,
+) -> List[PoseExample]:
     """
     Construye un conjunto de ejemplos SOLO a partir de clips con más de un usuario en meta["users"].
     Para cada clip multiusuario, se añaden los usuarios cuyo total_frames >= MIN_TOTAL_FRAMES_MULTI.
+
+    label_mode:
+      - "clip_cat": etiqueta por clip (meta["cat"]) para cada usuario (comportamiento original).
+      - "primary_thief": para clips con cat == positive_class, etiqueta 1 solo al usuario
+        marcado como primary thief en meta["users"][*]["is_primary_robber"].
     """
     root = get_data_result_root()
     examples: List[PoseExample] = []
@@ -51,6 +63,10 @@ def collect_multiuser_examples(pose_source: str = "filtered") -> List[PoseExampl
                 continue
 
             users = meta.get("users", [])
+            try:
+                clip_cat_int = int(meta.get("cat", cat_str))
+            except Exception:
+                clip_cat_int = None
             # Solo nos interesan clips con más de un usuario anotado
             if len(users) <= 1:
                 continue
@@ -78,7 +94,15 @@ def collect_multiuser_examples(pose_source: str = "filtered") -> List[PoseExampl
                 examples.append(
                     PoseExample(
                         pose_path=pose_path,
-                        label=int(meta.get("cat", cat_str)),
+                        label=(
+                            positive_class
+                            if (
+                                label_mode == "primary_thief"
+                                and clip_cat_int == positive_class
+                                and bool(u.get("is_primary_robber", False))
+                            )
+                            else (0 if (label_mode == "primary_thief" and clip_cat_int == positive_class) else (clip_cat_int if clip_cat_int is not None else int(cat_str)))
+                        ),
                         track_id=int(track_id),
                         clip_name=str(meta.get("clip_name", clip_dir.name)),
                         category_str=cat_str,
@@ -91,9 +115,17 @@ def collect_multiuser_examples(pose_source: str = "filtered") -> List[PoseExampl
 
 
 @torch.no_grad()
-def evaluate_model_on_multiuser(model_path: Path, pose_source: str = "filtered") -> Dict[str, Any]:
+def evaluate_model_on_multiuser(
+    model_path: Path,
+    pose_source: str = "filtered",
+    *,
+    balanced_eval: bool = False,
+    balanced_ratio: float = 1.0,
+    seed: int = 42,
+) -> Dict[str, Any]:
     print(f"\nEvaluando modelo en multiusuario: {model_path}")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    random.seed(seed)
 
     checkpoint = torch.load(model_path, map_location=device)
     model_state = checkpoint["model_state_dict"]
@@ -121,7 +153,11 @@ def evaluate_model_on_multiuser(model_path: Path, pose_source: str = "filtered")
     model.eval()
 
     print(f"Construyendo dataset multiusuario (pose_source='{pose_source}')...")
-    examples = collect_multiuser_examples(pose_source=pose_source)
+    examples = collect_multiuser_examples(
+        pose_source=pose_source,
+        label_mode=("primary_thief" if task == "binary" else "clip_cat"),
+        positive_class=int(positive_class),
+    )
     total_multi = len(examples)
     print(f"Ejemplos multiusuario: {total_multi}")
 
@@ -135,6 +171,25 @@ def evaluate_model_on_multiuser(model_path: Path, pose_source: str = "filtered")
             from train_model import make_binary_examples  # type: ignore[attr-defined]
         print(f"[BINARIO] Reetiquetando multiusuario con positive_class={positive_class}")
         examples = make_binary_examples(examples, positive_class=positive_class)
+
+        if balanced_eval:
+            pos = [ex for ex in examples if ex.label == 1]
+            neg = [ex for ex in examples if ex.label == 0]
+            if len(pos) > 0 and len(neg) > 0:
+                target_neg = int(len(pos) * balanced_ratio)
+                target_neg = max(1, target_neg)
+                target_neg = min(target_neg, len(neg))
+                neg_sel = random.sample(neg, target_neg) if target_neg < len(neg) else neg
+                examples = pos + neg_sel
+                random.shuffle(examples)
+                print(
+                    f"[BALANCED-EVAL] pos={len(pos)} neg_total={len(neg)} "
+                    f"neg_kept={target_neg} total_eval={len(examples)}"
+                )
+            else:
+                print(
+                    f"[BALANCED-EVAL] pos={len(pos)} neg={len(neg)} => sin balance (pocos datos)"
+                )
 
     # Filtrar ejemplos a solo labels que el modelo conoce
     examples = [ex for ex in examples if ex.label in label_to_idx]
@@ -348,6 +403,12 @@ def evaluate_model_on_multiuser(model_path: Path, pose_source: str = "filtered")
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Evalúa modelos en multiusuario (evalúa multiusuario con más de un usuario).")
+    parser.add_argument("--balanced", action="store_true", help="En modo binario, balancea eval recortando la clase no-robo.")
+    parser.add_argument("--balanced-ratio", type=float, default=1.0, help="neg_kept = pos_count * ratio (solo si --balanced).")
+    parser.add_argument("--seed", type=int, default=42, help="Semilla para muestreo balanceado.")
+    args = parser.parse_args()
+
     models_dir = Path(__file__).parent / "models"
     model_paths = sorted(models_dir.glob("modelo_*.pt"))
     if not model_paths:
@@ -357,7 +418,13 @@ def main():
     # Evalúa todos los modelos en multiusuario con poses filtradas
     results: List[Dict[str, Any]] = []
     for mp in model_paths:
-        res = evaluate_model_on_multiuser(mp, pose_source="filtered")
+        res = evaluate_model_on_multiuser(
+            mp,
+            pose_source="filtered",
+            balanced_eval=args.balanced,
+            balanced_ratio=args.balanced_ratio,
+            seed=args.seed,
+        )
         results.append(res)
 
     if not results:

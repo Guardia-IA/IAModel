@@ -10,7 +10,7 @@ from typing import List, Dict, Tuple, Any, Optional
 import numpy as np
 import torch
 from torch import nn
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, WeightedRandomSampler
 
 # Soportar ejecución como módulo (-m training.train_model) y como script (python training/train_model.py)
 try:
@@ -26,7 +26,7 @@ VAL_RATIO = 0.15  # resto será test
 MIN_SEQ_LEN = 4   # descartar secuencias demasiado cortas
 
 # Modo debug: usar muy pocos datos y un experimento por arquitectura
-DEBUG_MODE = True          # ponlo a True en local para pruebas rápidas
+DEBUG_MODE = False          # ponlo a True en local para pruebas rápidas
 DEBUG_MAX_EXAMPLES = 5      # cuántos embeddings usar en total en debug
 
 # Directorios locales para modelos y logs (dentro de training/)
@@ -807,6 +807,7 @@ def build_datasets_and_loaders(
     num_workers: int = 4,
     task: str = "multiclass",
     positive_class: int = 6,
+    balanced: bool = False,
 ) -> Tuple[Dict[str, DataLoader], int, Dict[int, int]]:
     print(f"Recolectando ejemplos desde data_result... (pose_source='{pose_source}')")
     examples = collect_examples(pose_source=pose_source)
@@ -833,7 +834,32 @@ def build_datasets_and_loaders(
     val_ds = PoseDataset(val_ex, label_to_idx, seq_len)
     test_ds = PoseDataset(test_ex, label_to_idx, seq_len)
 
-    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=num_workers)
+    if balanced and task == "binary":
+        # WeightedRandomSampler para reducir desbalance (en binario: labels 0/1)
+        train_labels = [ex.label for ex in train_ex]
+        count0 = sum(1 for v in train_labels if v == 0)
+        count1 = sum(1 for v in train_labels if v == 1)
+        if count0 > 0 and count1 > 0:
+            class_weights = {0: 1.0 / count0, 1: 1.0 / count1}
+            sample_weights = [class_weights[v] for v in train_labels]
+            sampler = WeightedRandomSampler(
+                sample_weights,
+                num_samples=len(sample_weights),
+                replacement=True,
+            )
+            train_loader = DataLoader(
+                train_ds,
+                batch_size=batch_size,
+                sampler=sampler,
+                shuffle=False,
+                num_workers=num_workers,
+            )
+            print(f"[BALANCED-TRAIN] binary sampler activo | count0={count0} count1={count1}")
+        else:
+            train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=num_workers)
+            print(f"[BALANCED-TRAIN] binary sampler ignorado (count0={count0}, count1={count1})")
+    else:
+        train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=num_workers)
     val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=num_workers)
     test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=False, num_workers=num_workers)
 
@@ -932,6 +958,7 @@ def run_experiment(
     task: str = "multiclass",
     positive_class: int = 6,
     pose_source_override: str | None = None,
+    balanced: bool = False,
 ) -> Dict[str, Any]:
     print("\n" + "=" * 80)
     print(f"Experimento {exp_id:02d} | config={cfg}")
@@ -949,6 +976,7 @@ def run_experiment(
         pose_source=pose_source,
         task=task,
         positive_class=positive_class,
+        balanced=balanced,
     )
     num_classes = len(label_to_idx)
 
@@ -1111,6 +1139,11 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Sobrescribe pose_source de los experimentos: 'filtered' (poses.npy) o 'full' (poses_full.npy).",
     )
+    parser.add_argument(
+        "--balanced",
+        action="store_true",
+        help="Balancea el muestreo en modo binario para reducir el desbalance (WeightedRandomSampler).",
+    )
     return parser.parse_args()
 
 
@@ -1166,6 +1199,7 @@ def main():
                 task=args.task,
                 positive_class=args.positive_class,
                 pose_source_override=args.pose_source,
+                balanced=args.balanced,
             )
             results.append(res)
 
