@@ -172,9 +172,11 @@ def evaluate_model_on_singleuser(
     correct = 0
     conf_mat = [[0 for _ in range(num_classes)] for _ in range(num_classes)]
     top3_correct = 0
+    sample_offset = 0
     y_true_bin: List[int] = []
     y_pos_prob: List[float] = []
     pos_idx_internal = 1 if task == "binary" else None
+    false_negative_video_paths: List[str] = []
 
     for x, y_idx in loader:
         x = x.to(device)
@@ -199,6 +201,22 @@ def evaluate_model_on_singleuser(
         for yt, yp in zip(y_idx.tolist(), preds_idx.tolist()):
             if 0 <= yt < num_classes and 0 <= yp < num_classes:
                 conf_mat[yt][yp] += 1
+
+        # Falsos negativos (binario): etiquetado robo (1) pero predicho no-robo (0).
+        if task == "binary" and pos_idx_internal is not None:
+            y_true_list = y_idx.tolist()
+            y_pred_list = preds_idx.tolist()
+            for j, (yt, yp) in enumerate(zip(y_true_list, y_pred_list)):
+                if yt == pos_idx_internal and yp != pos_idx_internal:
+                    ex_idx = sample_offset + j
+                    if 0 <= ex_idx < len(examples):
+                        ex = examples[ex_idx]
+                        clip_dir = ex.pose_path.parent.parent
+                        clip_video_path = clip_dir / "clip.mp4"
+                        full_path = clip_video_path.resolve() if clip_video_path.exists() else clip_dir.resolve()
+                        false_negative_video_paths.append(str(full_path))
+
+        sample_offset += y_idx.size(0)
 
         if logits.size(1) >= 3:
             top3 = logits.topk(3, dim=1).indices
@@ -257,6 +275,12 @@ def evaluate_model_on_singleuser(
 
         print(f"Métricas clase positiva (1=robo): prec={c6_prec:.3f}, rec={c6_rec:.3f}, f1={c6_f1:.3f}, support={c6_sup}")
         print(f"Métricas clase negativa (0=no robo): prec={n_prec:.3f}, rec={n_rec:.3f}, f1={n_f1:.3f}, support={n_sup}")
+        if false_negative_video_paths:
+            print("\n[FALSE-NEGATIVES] Robos etiquetados no detectados (ruta completa):")
+            for p in sorted(set(false_negative_video_paths)):
+                print(f"  - {p}")
+        else:
+            print("\n[FALSE-NEGATIVES] No hay robos etiquetados no detectados.")
 
         best_thr = None
         best_prec = 0.0
