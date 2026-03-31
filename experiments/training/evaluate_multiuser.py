@@ -122,6 +122,7 @@ def evaluate_model_on_multiuser(
     balanced_eval: bool = False,
     balanced_ratio: float = 1.0,
     seed: int = 42,
+    apply_threshold: float | None = None,
     threshold_sweep: bool = False,
     threshold_min: float = 0.05,
     threshold_max: float = 0.95,
@@ -212,17 +213,23 @@ def evaluate_model_on_multiuser(
     top3_correct = 0
     y_true_bin: List[int] = []
     y_pos_prob: List[float] = []
-    pos_idx_internal = int(label_to_idx.get(1, 1)) if task == "binary" else None
+    pos_idx_internal = 1 if task == "binary" else None
 
     for x, y_idx in loader:
         x = x.to(device)
         y_idx = y_idx.to(device)
         logits = model(x)
-        preds_idx = logits.argmax(dim=1)
         if task == "binary" and logits.size(1) >= 2 and pos_idx_internal is not None:
-            probs = torch.softmax(logits, dim=1)[:, pos_idx_internal]
-            y_pos_prob.extend(probs.detach().cpu().tolist())
+            probs = torch.softmax(logits, dim=1)
+            pos_probs = probs[:, pos_idx_internal]
+            y_pos_prob.extend(pos_probs.detach().cpu().tolist())
             y_true_bin.extend((y_idx == pos_idx_internal).long().cpu().tolist())
+            if apply_threshold is not None:
+                preds_idx = (pos_probs >= float(apply_threshold)).long()
+            else:
+                preds_idx = logits.argmax(dim=1)
+        else:
+            preds_idx = logits.argmax(dim=1)
 
         total += y_idx.size(0)
         correct += (preds_idx == y_idx).sum().item()
@@ -449,6 +456,7 @@ def evaluate_model_on_multiuser(
                 "neg_recall": n_rec,
                 "neg_f1": n_f1,
                 "neg_support": n_sup,
+                "applied_threshold": (float(apply_threshold) if apply_threshold is not None else None),
                 "threshold_sweep_enabled": bool(threshold_sweep),
                 "threshold_sweep_min": float(threshold_min),
                 "threshold_sweep_max": float(threshold_max),
@@ -468,6 +476,7 @@ def main():
     parser.add_argument("--balanced", action="store_true", help="En modo binario, balancea eval recortando la clase no-robo.")
     parser.add_argument("--balanced-ratio", type=float, default=1.0, help="neg_kept = pos_count * ratio (solo si --balanced).")
     parser.add_argument("--seed", type=int, default=42, help="Semilla para muestreo balanceado.")
+    parser.add_argument("--apply-threshold", type=float, default=None, help="En binario, umbral fijo de probabilidad para decidir robo (p>=thr => robo).")
     parser.add_argument("--threshold-sweep", action="store_true", help="En binario, barre umbrales de probabilidad y reporta el mejor F1_pos.")
     parser.add_argument("--threshold-min", type=float, default=0.05, help="Umbral mínimo del barrido (0..1).")
     parser.add_argument("--threshold-max", type=float, default=0.95, help="Umbral máximo del barrido (0..1).")
@@ -489,6 +498,7 @@ def main():
             balanced_eval=args.balanced,
             balanced_ratio=args.balanced_ratio,
             seed=args.seed,
+            apply_threshold=args.apply_threshold,
             threshold_sweep=args.threshold_sweep,
             threshold_min=args.threshold_min,
             threshold_max=args.threshold_max,
