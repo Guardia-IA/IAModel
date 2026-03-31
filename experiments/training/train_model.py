@@ -32,8 +32,10 @@ DEBUG_MAX_EXAMPLES = 5      # cuántos embeddings usar en total en debug
 # Directorios locales para modelos y logs (dentro de training/)
 BASE_DIR = Path(__file__).parent
 MODELS_DIR = BASE_DIR / "models"
+MODELS_SINGLE_DIR = BASE_DIR / "models-single"
 LOGS_DIR = BASE_DIR / "logs" 
 MODELS_DIR.mkdir(parents=True, exist_ok=True)
+MODELS_SINGLE_DIR.mkdir(parents=True, exist_ok=True)
 LOGS_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -59,11 +61,12 @@ def get_data_result_root() -> Path:
     return root
 
 
-def collect_examples(pose_source: str = "filtered") -> List[PoseExample]:
+def collect_examples(pose_source: str = "filtered", single_user_only: bool = False) -> List[PoseExample]:
     """
     Recorre data_result/{cat}/{clip_name}/ y construye ejemplos aplicando:
-      1) Solo clips con un usuario, excepto categoría 6.
-      2) En categoría 6, si hay varios usuarios, quedarse con el que tenga más frames.
+      1) Por defecto: solo clips con un usuario, excepto categoría 6.
+      2) Por defecto en categoría 6, si hay varios usuarios, quedarse con el que tenga más frames.
+      3) Si single_user_only=True: solo clips con exactamente un usuario (también para categoría 6).
       3) pose_source: "filtered" -> usa poses.npy, "full" -> usa poses_full.npy.
       4) Si "full": usa valid_mask.npy para entrenar solo con frames válidos (sin NaN);
          si no hay máscara o hay NaN sin máscara, se descarta el clip.
@@ -91,9 +94,13 @@ def collect_examples(pose_source: str = "filtered") -> List[PoseExample]:
             if not users:
                 continue
 
-            # Filtrado por número de usuarios según tus reglas
+            # Filtrado por número de usuarios según modo
             chosen_user = None
-            if cat_str != "6":
+            if single_user_only:
+                if len(users) != 1:
+                    continue
+                chosen_user = users[0]
+            elif cat_str != "6":
                 if len(users) != 1:
                     continue
                 chosen_user = users[0]
@@ -808,9 +815,10 @@ def build_datasets_and_loaders(
     task: str = "multiclass",
     positive_class: int = 6,
     balanced: bool = False,
+    single_user_only: bool = False,
 ) -> Tuple[Dict[str, DataLoader], int, Dict[int, int]]:
     print(f"Recolectando ejemplos desde data_result... (pose_source='{pose_source}')")
-    examples = collect_examples(pose_source=pose_source)
+    examples = collect_examples(pose_source=pose_source, single_user_only=single_user_only)
     print(f"Ejemplos totales (tras filtrado): {len(examples)}")
 
     if DEBUG_MODE:
@@ -959,6 +967,8 @@ def run_experiment(
     positive_class: int = 6,
     pose_source_override: str | None = None,
     balanced: bool = False,
+    single_user_only: bool = False,
+    models_dir: Path = MODELS_DIR,
 ) -> Dict[str, Any]:
     print("\n" + "=" * 80)
     print(f"Experimento {exp_id:02d} | config={cfg}")
@@ -977,6 +987,7 @@ def run_experiment(
         task=task,
         positive_class=positive_class,
         balanced=balanced,
+        single_user_only=single_user_only,
     )
     num_classes = len(label_to_idx)
 
@@ -1052,7 +1063,7 @@ def run_experiment(
         )
     print(base_msg)
 
-    save_path = MODELS_DIR / f"modelo_{exp_id:02d}.pt"
+    save_path = models_dir / f"modelo_{exp_id:02d}.pt"
 
     checkpoint = {
         "model_state_dict": model.state_dict(),
@@ -1144,6 +1155,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Balancea el muestreo en modo binario para reducir el desbalance (WeightedRandomSampler).",
     )
+    parser.add_argument(
+        "--single-user-only",
+        action="store_true",
+        help="Usa solo clips con exactamente un usuario para train/val/test (incluye categoría 6).",
+    )
     return parser.parse_args()
 
 
@@ -1182,9 +1198,12 @@ def main():
 
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         print(f"Usando device: {device}")
-        print(f"Modelos se guardarán en: {MODELS_DIR}")
+        models_dir = MODELS_SINGLE_DIR if args.single_user_only else MODELS_DIR
+        models_dir.mkdir(parents=True, exist_ok=True)
+        print(f"Modelos se guardarán en: {models_dir}")
         print(f"Log de esta sesión: {log_path}")
         print(f"Tarea: {args.task} | positive_class={args.positive_class} | pose_source_override={args.pose_source}")
+        print(f"single_user_only={args.single_user_only}")
 
         results = []
         exps_iter = _select_debug_experiments(EXPERIMENTS) if DEBUG_MODE else EXPERIMENTS
@@ -1200,6 +1219,8 @@ def main():
                 positive_class=args.positive_class,
                 pose_source_override=args.pose_source,
                 balanced=args.balanced,
+                single_user_only=args.single_user_only,
+                models_dir=models_dir,
             )
             results.append(res)
 
