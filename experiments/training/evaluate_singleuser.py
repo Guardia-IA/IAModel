@@ -105,6 +105,7 @@ def evaluate_model_on_singleuser(
     threshold_min: float = 0.05,
     threshold_max: float = 0.95,
     threshold_step: float = 0.05,
+    print_false_negatives: bool = False,
 ) -> Dict[str, Any]:
     print(f"\nEvaluando modelo en single-user: {model_path}")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -275,11 +276,11 @@ def evaluate_model_on_singleuser(
 
         print(f"Métricas clase positiva (1=robo): prec={c6_prec:.3f}, rec={c6_rec:.3f}, f1={c6_f1:.3f}, support={c6_sup}")
         print(f"Métricas clase negativa (0=no robo): prec={n_prec:.3f}, rec={n_rec:.3f}, f1={n_f1:.3f}, support={n_sup}")
-        if false_negative_video_paths:
+        if print_false_negatives and false_negative_video_paths:
             print("\n[FALSE-NEGATIVES] Robos etiquetados no detectados (ruta completa):")
             for p in sorted(set(false_negative_video_paths)):
                 print(f"  - {p}")
-        else:
+        elif print_false_negatives:
             print("\n[FALSE-NEGATIVES] No hay robos etiquetados no detectados.")
 
         best_thr = None
@@ -385,6 +386,8 @@ def evaluate_model_on_singleuser(
                 "best_pos_precision": float(best_prec),
                 "best_pos_recall": float(best_rec),
                 "best_pos_f1": float(best_f1),
+                "false_negative_paths": sorted(set(false_negative_video_paths)),
+                "false_negative_count": int(len(false_negative_video_paths)),
             }
         )
 
@@ -413,6 +416,11 @@ def main():
         default=None,
         help="Carpeta de modelos a evaluar. Por defecto usa training/models-single.",
     )
+    parser.add_argument(
+        "--show-fn-best",
+        action="store_true",
+        help="Al final, muestra rutas de falsos negativos solo del mejor modelo por F1_pos.",
+    )
     args = parser.parse_args()
 
     default_models_dir = Path(__file__).parent / "models-single"
@@ -435,6 +443,7 @@ def main():
             threshold_min=args.threshold_min,
             threshold_max=args.threshold_max,
             threshold_step=args.threshold_step,
+            print_false_negatives=False,
         )
         results.append(res)
 
@@ -467,6 +476,22 @@ def main():
             f"{r['accuracy']:6.3f} | {r['macro_f1']:8.3f} | "
             f"{r['class6_f1']:7.3f} | {r['class6_recall']:7.3f} | {pos_prec:8.3f} | {r['class6_support']:7d}"
         )
+
+    if args.show_fn_best and sorted_results:
+        best_rank, best_result = sorted_results[0]
+        best_name = Path(best_result["model_path"]).name
+        fn_paths = best_result.get("false_negative_paths", [])
+        print("\n" + "=" * 80)
+        print(
+            f"FALSE-NEGATIVES DEL MEJOR MODELO (rank={best_rank}, modelo={best_name}, "
+            f"F1_pos={best_result.get('class6_f1', 0.0):.3f})"
+        )
+        print("=" * 80)
+        if fn_paths:
+            for p in fn_paths:
+                print(f"  - {p}")
+        else:
+            print("  (No hay robos etiquetados no detectados)")
 
 
 if __name__ == "__main__":
