@@ -1,47 +1,62 @@
 {
-    "output_dir": "/home/debian/Proyectos/GuardIA/Grabaciones/Videos/Robos3/2026.03.15/clips",
+    "output_dir": "/home/debian/Proyectos/GuardIA/Grabaciones/Videos/Robos5/2026.03.29/clips",
     "clips": [
       {
-        "video": "/home/debian/Proyectos/GuardIA/Grabaciones/Videos/Robos3/2026.03.15/cam1/cam1.avi",
-        "search_start": "01:52:10",
-        "search_end": "01:53:23",
+        "video": "/home/debian/Proyectos/GuardIA/Grabaciones/Videos/Robos5/2026.03.29/cam1/cam1.avi",
+        "search_start": "00:52:03",
+        "search_end": "01:37:20",
+        "aruco_inicio": 216,
+        "aruco_fin": 0
+      },
+      {
+        "video": "/home/debian/Proyectos/GuardIA/Grabaciones/Videos/Robos5/2026.03.29/cam1/cam1_1.avi",
+        "search_start": "00:09:40",
+        "search_end": "00:39:15",
+        "aruco_inicio": 216,
+        "aruco_fin": 0
+      },
+      {
+        "video": "/home/debian/Proyectos/GuardIA/Grabaciones/Videos/Robos5/2026.03.29/cam2/cam2.avi",
+        "search_start": "00:52:00",
+        "search_end": "01:37:20",
+        "aruco_inicio": 216,
+        "aruco_fin": 0
+      },
+      {
+        "video": "/home/debian/Proyectos/GuardIA/Grabaciones/Videos/Robos5/2026.03.29/cam2/cam2_1.avi",
+        "search_start": "00:10:30",
+        "search_end": "00:40:25",
+        "aruco_inicio": 216,
+        "aruco_fin": 0
+      },
+      {
+        "video": "/home/debian/Proyectos/GuardIA/Grabaciones/Videos/Robos5/2026.03.29/cam3/cam3.avi",
+        "search_start": "00:52:00",
+        "search_end": "01:37:26",
         "aruco_inicio": 0,
         "aruco_fin": 216
       },
       {
-        "video": "/home/debian/Proyectos/GuardIA/Grabaciones/Videos/Robos3/2026.03.15/cam1/cam1_1.avi",
-        "search_start": "01:02:05",
-        "search_end": "01:13:30",
+        "video": "/home/debian/Proyectos/GuardIA/Grabaciones/Videos/Robos5/2026.03.29/cam3/cam3_1.avi",
+        "search_start": "00:24:15",
+        "search_end": "00:53:58",
         "aruco_inicio": 0,
         "aruco_fin": 216
       },
       {
-        "video": "/home/debian/Proyectos/GuardIA/Grabaciones/Videos/Robos3/2026.03.15/cam2/cam2_1.avi",
-        "search_start": "01:17:00",
-        "search_end": "01:35:00",
+        "video": "/home/debian/Proyectos/GuardIA/Grabaciones/Videos/Robos5/2026.03.29/cam4/cam4.avi",
+        "search_start": "00:52:00",
+        "search_end": "01:22:33",
         "aruco_inicio": 0,
         "aruco_fin": 216
       },
       {
-        "video": "/home/debian/Proyectos/GuardIA/Grabaciones/Videos/Robos3/2026.03.15/cam3/cam3_1.avi",
-        "search_start": "00:17:25",
-        "search_end": "01:21:10",
+        "video": "/home/debian/Proyectos/GuardIA/Grabaciones/Videos/Robos5/2026.03.29/cam4/cam4_1.avi",
+        "search_start": "00:02:15",
+        "search_end": "01:05:20",
         "aruco_inicio": 0,
         "aruco_fin": 216
-      },
-      {
-        "video": "/home/debian/Proyectos/GuardIA/Grabaciones/Videos/Robos3/2026.03.15/cam4/cam4.avi",
-        "search_start": "01:31:20",
-        "search_end": "01:43:06",
-        "aruco_inicio": 0,
-        "aruco_fin": 216
-      },
-      {
-        "video": "/home/debian/Proyectos/GuardIA/Grabaciones/Videos/Robos3/2026.03.15/cam4/cam4_1.avi",
-        "search_start": "00:00:00",
-        "search_end": "00:28:30",
-        "aruco_inicio": 0,
-        "aruco_fin": 216
-      }]
+      }
+    ]
       
   }

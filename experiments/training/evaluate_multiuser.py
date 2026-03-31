@@ -122,6 +122,10 @@ def evaluate_model_on_multiuser(
     balanced_eval: bool = False,
     balanced_ratio: float = 1.0,
     seed: int = 42,
+    threshold_sweep: bool = False,
+    threshold_min: float = 0.05,
+    threshold_max: float = 0.95,
+    threshold_step: float = 0.05,
 ) -> Dict[str, Any]:
     print(f"\nEvaluando modelo en multiusuario: {model_path}")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -206,12 +210,19 @@ def evaluate_model_on_multiuser(
     correct = 0
     conf_mat = [[0 for _ in range(num_classes)] for _ in range(num_classes)]
     top3_correct = 0
+    y_true_bin: List[int] = []
+    y_pos_prob: List[float] = []
+    pos_idx_internal = int(label_to_idx.get(1, 1)) if task == "binary" else None
 
     for x, y_idx in loader:
         x = x.to(device)
         y_idx = y_idx.to(device)
         logits = model(x)
         preds_idx = logits.argmax(dim=1)
+        if task == "binary" and logits.size(1) >= 2 and pos_idx_internal is not None:
+            probs = torch.softmax(logits, dim=1)[:, pos_idx_internal]
+            y_pos_prob.extend(probs.detach().cpu().tolist())
+            y_true_bin.extend((y_idx == pos_idx_internal).long().cpu().tolist())
 
         total += y_idx.size(0)
         correct += (preds_idx == y_idx).sum().item()
@@ -326,6 +337,48 @@ def evaluate_model_on_multiuser(
             f"prec={n_prec:.3f}, rec={n_rec:.3f}, f1={n_f1:.3f}, support={n_sup}"
         )
 
+        best_thr = None
+        best_prec = 0.0
+        best_rec = 0.0
+        best_f1 = 0.0
+        if threshold_sweep and y_true_bin and y_pos_prob:
+            t_min = max(0.0, min(1.0, float(threshold_min)))
+            t_max = max(0.0, min(1.0, float(threshold_max)))
+            t_step = max(1e-6, float(threshold_step))
+            if t_max < t_min:
+                t_min, t_max = t_max, t_min
+
+            thr = t_min
+            while thr <= (t_max + 1e-12):
+                y_pred_thr = [1 if p >= thr else 0 for p in y_pos_prob]
+                tp = sum(1 for yt, yp in zip(y_true_bin, y_pred_thr) if yt == 1 and yp == 1)
+                fp = sum(1 for yt, yp in zip(y_true_bin, y_pred_thr) if yt == 0 and yp == 1)
+                fn = sum(1 for yt, yp in zip(y_true_bin, y_pred_thr) if yt == 1 and yp == 0)
+                prec_t = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+                rec_t = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+                f1_t = (2 * prec_t * rec_t / (prec_t + rec_t)) if (prec_t + rec_t) > 0 else 0.0
+                if (
+                    (f1_t > best_f1)
+                    or (abs(f1_t - best_f1) <= 1e-12 and prec_t > best_prec)
+                    or (
+                        abs(f1_t - best_f1) <= 1e-12
+                        and abs(prec_t - best_prec) <= 1e-12
+                        and (best_thr is None or thr < best_thr)
+                    )
+                ):
+                    best_thr = thr
+                    best_prec = prec_t
+                    best_rec = rec_t
+                    best_f1 = f1_t
+                thr += t_step
+
+            if best_thr is not None:
+                print(
+                    "[THRESHOLD-SWEEP] "
+                    f"mejor umbral={best_thr:.3f} | "
+                    f"prec_pos={best_prec:.3f} rec_pos={best_rec:.3f} f1_pos={best_f1:.3f}"
+                )
+
         c6_prec = c_prec
         c6_rec = c_rec
         c6_f1 = c_f1
@@ -396,6 +449,14 @@ def evaluate_model_on_multiuser(
                 "neg_recall": n_rec,
                 "neg_f1": n_f1,
                 "neg_support": n_sup,
+                "threshold_sweep_enabled": bool(threshold_sweep),
+                "threshold_sweep_min": float(threshold_min),
+                "threshold_sweep_max": float(threshold_max),
+                "threshold_sweep_step": float(threshold_step),
+                "best_threshold": (float(best_thr) if best_thr is not None else None),
+                "best_pos_precision": float(best_prec),
+                "best_pos_recall": float(best_rec),
+                "best_pos_f1": float(best_f1),
             }
         )
 
@@ -407,6 +468,10 @@ def main():
     parser.add_argument("--balanced", action="store_true", help="En modo binario, balancea eval recortando la clase no-robo.")
     parser.add_argument("--balanced-ratio", type=float, default=1.0, help="neg_kept = pos_count * ratio (solo si --balanced).")
     parser.add_argument("--seed", type=int, default=42, help="Semilla para muestreo balanceado.")
+    parser.add_argument("--threshold-sweep", action="store_true", help="En binario, barre umbrales de probabilidad y reporta el mejor F1_pos.")
+    parser.add_argument("--threshold-min", type=float, default=0.05, help="Umbral mínimo del barrido (0..1).")
+    parser.add_argument("--threshold-max", type=float, default=0.95, help="Umbral máximo del barrido (0..1).")
+    parser.add_argument("--threshold-step", type=float, default=0.05, help="Paso del barrido de umbral.")
     args = parser.parse_args()
 
     models_dir = Path(__file__).parent / "models"
@@ -424,6 +489,10 @@ def main():
             balanced_eval=args.balanced,
             balanced_ratio=args.balanced_ratio,
             seed=args.seed,
+            threshold_sweep=args.threshold_sweep,
+            threshold_min=args.threshold_min,
+            threshold_max=args.threshold_max,
+            threshold_step=args.threshold_step,
         )
         results.append(res)
 

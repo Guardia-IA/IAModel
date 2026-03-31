@@ -64,8 +64,8 @@ except ImportError:
 # Constantes
 ARUCO_DICT = aruco.DICT_6X6_250
 FRAMES_SIN_MARCADOR = 8  # Frames consecutivos sin ver el ArUco para considerarlo "desaparecido"
-OFFSET_INICIO_SEC = 3.0  # Segundos después de que desaparece el ArUco de inicio
-OFFSET_FIN_SEC = 5.0     # Segundos antes de que desaparezca el ArUco de fin (retroceder)
+OFFSET_INICIO_SEC = 1.0  # Segundos después de que desaparece el ArUco de inicio
+OFFSET_FIN_SEC = 2.0     # Segundos antes de que desaparezca el ArUco de fin (retroceder)
 # Al buscar ArUco: saltar N frames para acelerar (0 = procesar todos). En visible: siempre frame a frame.
 OFFSET_FRAMES = 5
 
