@@ -16,7 +16,6 @@ except ImportError:
     from model_config import DATA_RESULT_ROOT  # type: ignore[attr-defined]
     from train_model import PoseExample, PoseDataset  # type: ignore[attr-defined]
 
-
 def get_data_result_root() -> Path:
     root = DATA_RESULT_ROOT
     if not root.exists():
@@ -141,6 +140,7 @@ def evaluate_model_on_singleuser(
     balanced_eval: bool = False,
     balanced_ratio: float = 1.0,
     seed: int = 42,
+    threshold_robbery: float = 0.8,
     apply_threshold: float | None = None,
     threshold_sweep: bool = False,
     threshold_min: float = 0.05,
@@ -238,6 +238,14 @@ def evaluate_model_on_singleuser(
 
     paths_ordered = [_clip_full_path_from_example(ex) for ex in examples]
 
+    if task == "binary":
+        effective_thr = float(apply_threshold) if apply_threshold is not None else float(threshold_robbery)
+        effective_thr = max(0.0, min(1.0, effective_thr))
+        thr_src = "apply_threshold" if apply_threshold is not None else "threshold_robbery"
+        print(
+            f"[EVAL] Binario: P(robo) >= {effective_thr:.4f} ({thr_src}) para métricas y listas FN/FP."
+        )
+
     ds = PoseDataset(examples, label_to_idx, seq_len)
     loader = DataLoader(ds, batch_size=64, shuffle=False, num_workers=4)
 
@@ -260,10 +268,7 @@ def evaluate_model_on_singleuser(
             pos_probs = probs[:, pos_idx_internal]
             y_pos_prob.extend(pos_probs.detach().cpu().tolist())
             y_true_bin.extend((y_idx == pos_idx_internal).long().cpu().tolist())
-            if apply_threshold is not None:
-                preds_idx = (pos_probs >= float(apply_threshold)).long()
-            else:
-                preds_idx = logits.argmax(dim=1)
+            preds_idx = (pos_probs >= effective_thr).long()
         else:
             preds_idx = logits.argmax(dim=1)
 
@@ -349,15 +354,8 @@ def evaluate_model_on_singleuser(
                     f"prec_pos={best_prec:.3f} rec_pos={best_rec:.3f} f1_pos={best_f1_sw:.3f}"
                 )
 
-        if apply_threshold is not None:
-            detail_threshold = float(apply_threshold)
-            detail_threshold_source = "apply_threshold"
-        elif best_thr is not None:
-            detail_threshold = float(best_thr)
-            detail_threshold_source = "sweep_best_f1_pos"
-        else:
-            detail_threshold = 0.5
-            detail_threshold_source = "fallback_0.5"
+        detail_threshold = effective_thr
+        detail_threshold_source = thr_src
 
         fn_missed: List[Dict[str, Any]] = []
         fp_alarms: List[Dict[str, Any]] = []
@@ -439,6 +437,8 @@ def evaluate_model_on_singleuser(
                 "neg_recall": n_rec,
                 "neg_f1": n_f1,
                 "neg_support": n_sup,
+                "threshold_robbery": float(threshold_robbery),
+                "effective_eval_threshold": float(effective_thr),
                 "applied_threshold": (float(apply_threshold) if apply_threshold is not None else None),
                 "threshold_sweep_enabled": bool(threshold_sweep),
                 "threshold_sweep_min": float(threshold_min),
@@ -482,8 +482,23 @@ def main():
     parser.add_argument("--balanced", action="store_true", help="En modo binario, balancea eval recortando la clase no-robo.")
     parser.add_argument("--balanced-ratio", type=float, default=1.0, help="neg_kept = pos_count * ratio (solo si --balanced).")
     parser.add_argument("--seed", type=int, default=42, help="Semilla para muestreo balanceado.")
-    parser.add_argument("--apply-threshold", type=float, default=None, help="En binario, umbral fijo de probabilidad para decidir robo (p>=thr => robo).")
-    parser.add_argument("--threshold-sweep", action="store_true", help="En binario, barre umbrales de probabilidad y reporta el mejor F1_pos.")
+    parser.add_argument(
+        "--threshold-robbery",
+        type=float,
+        default=0.8,
+        help="En binario, P(robo) mínima para robo (0..1). Métricas de tabla y listas FN/FP. Sobrescrito por --apply-threshold.",
+    )
+    parser.add_argument(
+        "--apply-threshold",
+        type=float,
+        default=None,
+        help="En binario, fuerza un umbral P(robo) (0..1); sustituye a --threshold-robbery.",
+    )
+    parser.add_argument(
+        "--threshold-sweep",
+        action="store_true",
+        help="En binario, imprime el umbral que maximiza F1_pos (solo diagnóstico).",
+    )
     parser.add_argument("--threshold-min", type=float, default=0.05, help="Umbral mínimo del barrido (0..1).")
     parser.add_argument("--threshold-max", type=float, default=0.95, help="Umbral máximo del barrido (0..1).")
     parser.add_argument("--threshold-step", type=float, default=0.05, help="Paso del barrido de umbral.")
@@ -521,6 +536,7 @@ def main():
             balanced_eval=args.balanced,
             balanced_ratio=args.balanced_ratio,
             seed=args.seed,
+            threshold_robbery=args.threshold_robbery,
             apply_threshold=args.apply_threshold,
             threshold_sweep=args.threshold_sweep,
             threshold_min=args.threshold_min,
@@ -572,7 +588,9 @@ def main():
         ][:3]
         if top_binary:
             print("\n" + "=" * 80)
-            print("TOP 3 MODELOS (binario, por F1_pos de la tabla — métricas con argmax / --apply-threshold)")
+            print(
+                "TOP 3 MODELOS (binario, por F1_pos — umbral: --apply-threshold o --threshold-robbery)"
+            )
             print("=" * 80)
             for place, (rank, r) in enumerate(top_binary, start=1):
                 name = Path(r["model_path"]).name
