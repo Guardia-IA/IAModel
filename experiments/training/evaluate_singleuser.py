@@ -2,7 +2,7 @@ import argparse
 import json
 import random
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Tuple
 
 import numpy as np
 import torch
@@ -17,9 +17,6 @@ except ImportError:
     from train_model import PoseExample, PoseDataset  # type: ignore[attr-defined]
 
 
-MIN_TOTAL_FRAMES_SINGLE = 10
-
-
 def get_data_result_root() -> Path:
     root = DATA_RESULT_ROOT
     if not root.exists():
@@ -27,69 +24,112 @@ def get_data_result_root() -> Path:
     return root
 
 
-def collect_singleuser_examples(pose_source: str = "filtered") -> List[PoseExample]:
-    """Construye ejemplos SOLO a partir de clips con exactamente un usuario."""
-    root = get_data_result_root()
-    examples: List[PoseExample] = []
+def _clip_full_path_from_example(ex: PoseExample) -> str:
+    clip_dir = ex.pose_path.parent.parent
+    clip_video_path = clip_dir / "clip.mp4"
+    p = clip_video_path.resolve() if clip_video_path.exists() else clip_dir.resolve()
+    return str(p)
 
-    for cat_dir in sorted(root.iterdir()):
-        if not cat_dir.is_dir():
-            continue
-        cat_str = cat_dir.name
-        for clip_dir in sorted(cat_dir.iterdir()):
-            if not clip_dir.is_dir():
-                continue
-            meta_path = clip_dir / "meta.json"
-            if not meta_path.exists():
-                continue
-            try:
-                with open(meta_path, "r", encoding="utf-8") as f:
-                    meta = json.load(f)
-            except Exception:
-                continue
 
-            users = meta.get("users", [])
-            if len(users) != 1:
-                continue
-
-            u = users[0]
-            track_id = u.get("track_id")
-            total_frames = u.get("total_frames", 0)
-            if track_id is None or total_frames < MIN_TOTAL_FRAMES_SINGLE:
-                continue
-
-            user_dir = clip_dir / f"user_{track_id}"
-            pose_filename = "poses.npy" if pose_source == "filtered" else "poses_full.npy"
-            pose_path = user_dir / pose_filename
-            if not pose_path.exists():
-                continue
-
-            try:
-                poses = np.load(pose_path)
-            except Exception:
-                continue
-
-            if poses.ndim != 3 or poses.shape[-1] != 2:
-                continue
-
-            try:
-                clip_cat_int = int(meta.get("cat", cat_str))
-            except Exception:
-                clip_cat_int = int(cat_str)
-
-            examples.append(
-                PoseExample(
-                    pose_path=pose_path,
-                    label=clip_cat_int,
-                    track_id=int(track_id),
-                    clip_name=str(meta.get("clip_name", clip_dir.name)),
-                    category_str=cat_str,
-                )
+def _sweep_best_threshold(
+    y_true_bin: List[int],
+    y_pos_prob: List[float],
+    threshold_min: float,
+    threshold_max: float,
+    threshold_step: float,
+) -> tuple[float | None, float, float, float]:
+    """Devuelve (mejor_thr, prec, rec, f1) maximizando F1 en positivos."""
+    if not y_true_bin or not y_pos_prob:
+        return None, 0.0, 0.0, 0.0
+    t_min = max(0.0, min(1.0, float(threshold_min)))
+    t_max = max(0.0, min(1.0, float(threshold_max)))
+    t_step = max(1e-6, float(threshold_step))
+    if t_max < t_min:
+        t_min, t_max = t_max, t_min
+    best_thr = None
+    best_prec = 0.0
+    best_rec = 0.0
+    best_f1 = 0.0
+    thr = t_min
+    while thr <= (t_max + 1e-12):
+        y_pred_thr = [1 if p >= thr else 0 for p in y_pos_prob]
+        tp = sum(1 for yt, yp in zip(y_true_bin, y_pred_thr) if yt == 1 and yp == 1)
+        fp = sum(1 for yt, yp in zip(y_true_bin, y_pred_thr) if yt == 0 and yp == 1)
+        fn = sum(1 for yt, yp in zip(y_true_bin, y_pred_thr) if yt == 1 and yp == 0)
+        prec_t = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+        rec_t = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+        f1_t = (2 * prec_t * rec_t / (prec_t + rec_t)) if (prec_t + rec_t) > 0 else 0.0
+        if (
+            (f1_t > best_f1)
+            or (abs(f1_t - best_f1) <= 1e-12 and prec_t > best_prec)
+            or (
+                abs(f1_t - best_f1) <= 1e-12
+                and abs(prec_t - best_prec) <= 1e-12
+                and (best_thr is None or thr < best_thr)
             )
+        ):
+            best_thr = thr
+            best_prec = prec_t
+            best_rec = rec_t
+            best_f1 = f1_t
+        thr += t_step
+    return best_thr, best_prec, best_rec, best_f1
 
-    if not examples:
-        raise RuntimeError("No se encontraron ejemplos single-user válidos en data_result.")
-    return examples
+
+def build_examples_singleuser(
+    pose_source: str,
+    task: str,
+    positive_class: int,
+    data_split: str,
+) -> Tuple[List[PoseExample], dict[str, Any]]:
+    """
+    Misma recolección y partición que train_model.py:
+    collect_examples(..., single_user_only=True) -> [binario] -> split train/val/test con SEED fijo.
+    """
+    try:
+        from .train_model import (  # type: ignore[attr-defined]
+            collect_examples,
+            split_examples,
+            make_binary_examples,
+            SEED,
+        )
+    except ImportError:
+        from train_model import (  # type: ignore[attr-defined]
+            collect_examples,
+            split_examples,
+            make_binary_examples,
+            SEED,
+        )
+
+    info: dict[str, Any] = {"split": data_split, "seed": int(SEED)}
+    examples = collect_examples(pose_source=pose_source, single_user_only=True)
+    info["pool_after_collect"] = len(examples)
+
+    if task == "binary":
+        examples = make_binary_examples(examples, positive_class=positive_class)
+        info["pool_after_binary"] = len(examples)
+
+    if data_split == "all":
+        info["note"] = "Sin split: incluye train+val+test (métricas optimistas si el modelo entrenó con estos datos)."
+        return examples, info
+
+    random.seed(SEED)
+    train_ex, val_ex, test_ex = split_examples(examples)
+    info["train_n"] = len(train_ex)
+    info["val_n"] = len(val_ex)
+    info["test_n"] = len(test_ex)
+    info["note"] = (
+        "Split idéntico a train_model: ~70% train, ~15% val (métricas cada época), "
+        "~15% test (no usado en entrenamiento ni en val_loader)."
+    )
+
+    if data_split == "train":
+        return train_ex, info
+    if data_split == "val":
+        return val_ex, info
+    if data_split == "test":
+        return test_ex, info
+    raise ValueError(f"data_split no válido: {data_split}")
 
 
 @torch.no_grad()
@@ -97,6 +137,7 @@ def evaluate_model_on_singleuser(
     model_path: Path,
     pose_source: str = "filtered",
     *,
+    data_split: str = "test",
     balanced_eval: bool = False,
     balanced_ratio: float = 1.0,
     seed: int = 42,
@@ -109,7 +150,6 @@ def evaluate_model_on_singleuser(
 ) -> Dict[str, Any]:
     print(f"\nEvaluando modelo en single-user: {model_path}")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    random.seed(seed)
 
     checkpoint = torch.load(model_path, map_location=device)
     model_state = checkpoint["model_state_dict"]
@@ -132,20 +172,50 @@ def evaluate_model_on_singleuser(
     model.load_state_dict(model_state)
     model.eval()
 
-    print(f"Construyendo dataset single-user (pose_source='{pose_source}')...")
-    examples = collect_singleuser_examples(pose_source=pose_source)
+    print(
+        f"Construyendo dataset single-user (pose_source='{pose_source}', split='{data_split}')..."
+    )
+    examples, split_info = build_examples_singleuser(
+        pose_source=pose_source,
+        task=task,
+        positive_class=int(positive_class),
+        data_split=data_split,
+    )
+    print(f"[SPLIT] {split_info.get('note', '')}")
+    if "train_n" in split_info:
+        print(
+            f"[SPLIT] Tamaños: train={split_info['train_n']} | val={split_info['val_n']} | "
+            f"test={split_info['test_n']} | evaluando={data_split}"
+        )
+    else:
+        print(f"[SPLIT] Ejemplos en evaluación: {len(examples)} (pool collect={split_info.get('pool_after_collect')})")
+
     total_single = len(examples)
-    print(f"Ejemplos single-user: {total_single}")
+    print(f"Ejemplos single-user en este split: {total_single}")
+    if total_single == 0:
+        print("[SPLIT] No hay ejemplos en este subconjunto; se omite el modelo.")
+        return {
+            "model_path": str(model_path),
+            "arch": arch,
+            "task": task,
+            "data_split": data_split,
+            "split_info": split_info,
+            "total_single": 0,
+            "filtered_single": 0,
+            "accuracy": 0.0,
+            "top3_acc": 0.0,
+            "macro_f1": 0.0,
+            "weighted_f1": 0.0,
+            "class6_precision": 0.0,
+            "class6_recall": 0.0,
+            "class6_f1": 0.0,
+            "class6_support": 0,
+            "skipped_empty": True,
+        }
 
     if task == "binary":
-        try:
-            from .train_model import make_binary_examples  # type: ignore[attr-defined]
-        except ImportError:
-            from train_model import make_binary_examples  # type: ignore[attr-defined]
-        print(f"[BINARIO] Reetiquetando single-user con positive_class={positive_class}")
-        examples = make_binary_examples(examples, positive_class=positive_class)
-
         if balanced_eval:
+            random.seed(seed)
             pos = [ex for ex in examples if ex.label == 1]
             neg = [ex for ex in examples if ex.label == 0]
             if len(pos) > 0 and len(neg) > 0:
@@ -166,6 +236,8 @@ def evaluate_model_on_singleuser(
     filtered_single = len(examples)
     print(f"Ejemplos después de filtrar por clases conocidas: {filtered_single}")
 
+    paths_ordered = [_clip_full_path_from_example(ex) for ex in examples]
+
     ds = PoseDataset(examples, label_to_idx, seq_len)
     loader = DataLoader(ds, batch_size=64, shuffle=False, num_workers=4)
 
@@ -177,7 +249,6 @@ def evaluate_model_on_singleuser(
     y_true_bin: List[int] = []
     y_pos_prob: List[float] = []
     pos_idx_internal = 1 if task == "binary" else None
-    false_negative_video_paths: List[str] = []
 
     for x, y_idx in loader:
         x = x.to(device)
@@ -202,20 +273,6 @@ def evaluate_model_on_singleuser(
         for yt, yp in zip(y_idx.tolist(), preds_idx.tolist()):
             if 0 <= yt < num_classes and 0 <= yp < num_classes:
                 conf_mat[yt][yp] += 1
-
-        # Falsos negativos (binario): etiquetado robo (1) pero predicho no-robo (0).
-        if task == "binary" and pos_idx_internal is not None:
-            y_true_list = y_idx.tolist()
-            y_pred_list = preds_idx.tolist()
-            for j, (yt, yp) in enumerate(zip(y_true_list, y_pred_list)):
-                if yt == pos_idx_internal and yp != pos_idx_internal:
-                    ex_idx = sample_offset + j
-                    if 0 <= ex_idx < len(examples):
-                        ex = examples[ex_idx]
-                        clip_dir = ex.pose_path.parent.parent
-                        clip_video_path = clip_dir / "clip.mp4"
-                        full_path = clip_video_path.resolve() if clip_video_path.exists() else clip_dir.resolve()
-                        false_negative_video_paths.append(str(full_path))
 
         sample_offset += y_idx.size(0)
 
@@ -276,52 +333,55 @@ def evaluate_model_on_singleuser(
 
         print(f"Métricas clase positiva (1=robo): prec={c6_prec:.3f}, rec={c6_rec:.3f}, f1={c6_f1:.3f}, support={c6_sup}")
         print(f"Métricas clase negativa (0=no robo): prec={n_prec:.3f}, rec={n_rec:.3f}, f1={n_f1:.3f}, support={n_sup}")
-        if print_false_negatives and false_negative_video_paths:
-            print("\n[FALSE-NEGATIVES] Robos etiquetados no detectados (ruta completa):")
-            for p in sorted(set(false_negative_video_paths)):
-                print(f"  - {p}")
-        elif print_false_negatives:
-            print("\n[FALSE-NEGATIVES] No hay robos etiquetados no detectados.")
 
-        best_thr = None
+        best_thr: float | None = None
         best_prec = 0.0
         best_rec = 0.0
-        best_f1 = 0.0
-        if threshold_sweep and y_true_bin and y_pos_prob:
-            t_min = max(0.0, min(1.0, float(threshold_min)))
-            t_max = max(0.0, min(1.0, float(threshold_max)))
-            t_step = max(1e-6, float(threshold_step))
-            if t_max < t_min:
-                t_min, t_max = t_max, t_min
-            thr = t_min
-            while thr <= (t_max + 1e-12):
-                y_pred_thr = [1 if p >= thr else 0 for p in y_pos_prob]
-                tp = sum(1 for yt, yp in zip(y_true_bin, y_pred_thr) if yt == 1 and yp == 1)
-                fp = sum(1 for yt, yp in zip(y_true_bin, y_pred_thr) if yt == 0 and yp == 1)
-                fn = sum(1 for yt, yp in zip(y_true_bin, y_pred_thr) if yt == 1 and yp == 0)
-                prec_t = tp / (tp + fp) if (tp + fp) > 0 else 0.0
-                rec_t = tp / (tp + fn) if (tp + fn) > 0 else 0.0
-                f1_t = (2 * prec_t * rec_t / (prec_t + rec_t)) if (prec_t + rec_t) > 0 else 0.0
-                if (
-                    (f1_t > best_f1)
-                    or (abs(f1_t - best_f1) <= 1e-12 and prec_t > best_prec)
-                    or (
-                        abs(f1_t - best_f1) <= 1e-12
-                        and abs(prec_t - best_prec) <= 1e-12
-                        and (best_thr is None or thr < best_thr)
-                    )
-                ):
-                    best_thr = thr
-                    best_prec = prec_t
-                    best_rec = rec_t
-                    best_f1 = f1_t
-                thr += t_step
-            if best_thr is not None:
+        best_f1_sw = 0.0
+        if y_true_bin and y_pos_prob:
+            best_thr, best_prec, best_rec, best_f1_sw = _sweep_best_threshold(
+                y_true_bin, y_pos_prob, threshold_min, threshold_max, threshold_step
+            )
+            if threshold_sweep and best_thr is not None:
                 print(
                     "[THRESHOLD-SWEEP] "
                     f"mejor umbral={best_thr:.3f} | "
-                    f"prec_pos={best_prec:.3f} rec_pos={best_rec:.3f} f1_pos={best_f1:.3f}"
+                    f"prec_pos={best_prec:.3f} rec_pos={best_rec:.3f} f1_pos={best_f1_sw:.3f}"
                 )
+
+        if apply_threshold is not None:
+            detail_threshold = float(apply_threshold)
+            detail_threshold_source = "apply_threshold"
+        elif best_thr is not None:
+            detail_threshold = float(best_thr)
+            detail_threshold_source = "sweep_best_f1_pos"
+        else:
+            detail_threshold = 0.5
+            detail_threshold_source = "fallback_0.5"
+
+        fn_missed: List[Dict[str, Any]] = []
+        fp_alarms: List[Dict[str, Any]] = []
+        if y_true_bin and y_pos_prob and len(paths_ordered) == len(y_true_bin):
+            for path, yt, p in zip(paths_ordered, y_true_bin, y_pos_prob):
+                pred1 = 1 if p >= detail_threshold else 0
+                if yt == 1 and pred1 == 0:
+                    fn_missed.append({"path": path, "prob_robo_pct": round(float(p) * 100.0, 2)})
+                if yt == 0 and pred1 == 1:
+                    fp_alarms.append({"path": path, "prob_robo_pct": round(float(p) * 100.0, 2)})
+
+        print(
+            f"[UMBRAL-DETALLE] Corte P(robo)>={detail_threshold:.1%} "
+            f"({detail_threshold_source}) — "
+            f"robos no detectados: {len(fn_missed)} | alarmas falsas: {len(fp_alarms)}"
+        )
+
+        if print_false_negatives:
+            print("\n[Robos no detectados] (etiqueta robo, predicho no-robo):")
+            if fn_missed:
+                for row in fn_missed:
+                    print(f"  - {row['path']}  |  P(robo)={row['prob_robo_pct']:.2f}%")
+            else:
+                print("  (ninguno)")
     else:
         inv_map = {v: k for k, v in label_to_idx.items()}
         print("Métricas por clase (label original):")
@@ -355,6 +415,8 @@ def evaluate_model_on_singleuser(
         "model_path": str(model_path),
         "arch": arch,
         "task": task,
+        "data_split": data_split,
+        "split_info": split_info,
         "total_single": int(total_single),
         "filtered_single": int(filtered_single),
         "accuracy": float(overall_acc),
@@ -385,9 +447,13 @@ def evaluate_model_on_singleuser(
                 "best_threshold": (float(best_thr) if best_thr is not None else None),
                 "best_pos_precision": float(best_prec),
                 "best_pos_recall": float(best_rec),
-                "best_pos_f1": float(best_f1),
-                "false_negative_paths": sorted(set(false_negative_video_paths)),
-                "false_negative_count": int(len(false_negative_video_paths)),
+                "best_pos_f1_sweep": float(best_f1_sw),
+                "detail_threshold": float(detail_threshold),
+                "detail_threshold_source": detail_threshold_source,
+                "robos_no_detectados": fn_missed,
+                "robos_no_detectados_count": len(fn_missed),
+                "alarmas_falsas": fp_alarms,
+                "alarmas_falsas_count": len(fp_alarms),
             }
         )
 
@@ -401,6 +467,17 @@ def main():
         choices=["filtered", "full"],
         default="filtered",
         help="Fuente de poses: 'filtered' (poses.npy) o 'full' (poses_full.npy).",
+    )
+    parser.add_argument(
+        "--split",
+        choices=["all", "train", "val", "test"],
+        default="test",
+        help=(
+            "Mismo split que train_model (shuffle+SEED): "
+            "'test' = ~15%% reservado (no visto en train ni val; recomendado para evaluar); "
+            "'val' = ~15%% usado en val_loader durante el entrenamiento; "
+            "'train' = solo entrenamiento; 'all' = todo."
+        ),
     )
     parser.add_argument("--balanced", action="store_true", help="En modo binario, balancea eval recortando la clase no-robo.")
     parser.add_argument("--balanced-ratio", type=float, default=1.0, help="neg_kept = pos_count * ratio (solo si --balanced).")
@@ -419,7 +496,12 @@ def main():
     parser.add_argument(
         "--show-fn-best",
         action="store_true",
-        help="Al final, muestra rutas de falsos negativos solo del mejor modelo por F1_pos.",
+        help="(Obsoleto) Usa el bloque TOP 3 al final.",
+    )
+    parser.add_argument(
+        "--no-top3-detail",
+        action="store_true",
+        help="No imprimir el bloque detallado de los 3 mejores modelos (binario).",
     )
     args = parser.parse_args()
 
@@ -435,6 +517,7 @@ def main():
         res = evaluate_model_on_singleuser(
             mp,
             pose_source=args.pose_source,
+            data_split=args.split,
             balanced_eval=args.balanced,
             balanced_ratio=args.balanced_ratio,
             seed=args.seed,
@@ -451,7 +534,9 @@ def main():
         return
 
     print("\n" + "=" * 80)
-    print("RESUMEN MODELOS EN SINGLE-USER (enfocado en clase positiva / clase 6)")
+    print(
+        f"RESUMEN MODELOS EN SINGLE-USER — split={args.split} (enfocado en clase positiva / clase 6)"
+    )
     print("=" * 80)
     header = (
         f"{'ID':>3} | {'Modelo':>12} | {'Arch':>11} | "
@@ -464,10 +549,12 @@ def main():
 
     sorted_results = sorted(
         enumerate(results, start=1),
-        key=lambda p: (-p[1]["class6_f1"], -p[1]["macro_f1"]),
+        key=lambda p: (-p[1].get("class6_f1", 0.0), -p[1].get("macro_f1", 0.0)),
     )
 
     for idx, r in sorted_results:
+        if r.get("skipped_empty"):
+            continue
         name = Path(r["model_path"]).name
         pos_prec = r.get("pos_precision", r["class6_precision"])
         print(
@@ -477,21 +564,54 @@ def main():
             f"{r['class6_f1']:7.3f} | {r['class6_recall']:7.3f} | {pos_prec:8.3f} | {r['class6_support']:7d}"
         )
 
-    if args.show_fn_best and sorted_results:
-        best_rank, best_result = sorted_results[0]
-        best_name = Path(best_result["model_path"]).name
-        fn_paths = best_result.get("false_negative_paths", [])
-        print("\n" + "=" * 80)
+    if not args.no_top3_detail:
+        top_binary = [
+            (rank, r)
+            for rank, r in sorted_results
+            if r.get("task") == "binary" and not r.get("skipped_empty")
+        ][:3]
+        if top_binary:
+            print("\n" + "=" * 80)
+            print("TOP 3 MODELOS (binario, por F1_pos de la tabla — métricas con argmax / --apply-threshold)")
+            print("=" * 80)
+            for place, (rank, r) in enumerate(top_binary, start=1):
+                name = Path(r["model_path"]).name
+                f1p = float(r.get("class6_f1", 0.0)) * 100.0
+                nclips = int(r.get("filtered_single", 0))
+                dt = r.get("detail_threshold")
+                dsrc = r.get("detail_threshold_source", "")
+                pct_corte = float(dt) * 100.0 if dt is not None else None
+                fn_list = r.get("robos_no_detectados") or []
+                fp_list = r.get("alarmas_falsas") or []
+                print(f"\n--- #{place} | rank_tabla={rank} | {name} | arch={r.get('arch')} ---")
+                print(f"  F1_pos (clase robo): {f1p:.2f}%")
+                print(f"  Clips evaluados en este split: {nclips}")
+                if pct_corte is not None:
+                    print(
+                        f"  Umbral de corte P(robo) para listas FN/FP: {pct_corte:.2f}% "
+                        f"({dsrc})"
+                    )
+                print(
+                    f"  Robos NO detectados (etiqueta robo, predicho no-robo): {len(fn_list)}"
+                )
+                for row in fn_list:
+                    print(
+                        f"     • {row['path']}"
+                        f"  |  P(robo)={row['prob_robo_pct']:.2f}%"
+                    )
+                print(
+                    f"  Alarmas falsas (etiqueta no-robo, predicho robo): {len(fp_list)}"
+                )
+                for row in fp_list:
+                    print(
+                        f"     • {row['path']}"
+                        f"  |  P(robo)={row['prob_robo_pct']:.2f}%"
+                    )
+
+    if args.show_fn_best:
         print(
-            f"FALSE-NEGATIVES DEL MEJOR MODELO (rank={best_rank}, modelo={best_name}, "
-            f"F1_pos={best_result.get('class6_f1', 0.0):.3f})"
+            "\n[!] --show-fn-best está obsoleto: el bloque TOP 3 ya incluye las listas del mejor modelo."
         )
-        print("=" * 80)
-        if fn_paths:
-            for p in fn_paths:
-                print(f"  - {p}")
-        else:
-            print("  (No hay robos etiquetados no detectados)")
 
 
 if __name__ == "__main__":
