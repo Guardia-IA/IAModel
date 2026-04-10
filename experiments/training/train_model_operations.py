@@ -298,7 +298,14 @@ def collect_examples(
             if single_user_only:
                 if len(users) != 1:
                     continue
-            for user in users:
+            clip_cat_int = _to_int(meta.get("cat", cat_str), default=_to_int(cat_str, default=0))
+            # Regla de selección por clip:
+            # - cat != 6: usar todos los usuarios válidos.
+            # - cat == 6: también usar todos los usuarios válidos.
+            #   La etiqueta final se resuelve por user_cat (robos=6, resto a su clase no-6).
+            users_selected = users
+
+            for user in users_selected:
                 track_id = user.get("track_id")
                 if track_id is None:
                     continue
