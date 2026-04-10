@@ -1,0 +1,84 @@
+{
+  "profiles": {
+    "default": {
+      "steps": {
+        "global": 0.01,
+        "rotate": 0.5,
+        "scale": 1.0,
+        "shift": 0.01,
+        "noise": 0.001
+      },
+      "rotate": {
+        "min": -90.0,
+        "max": 90.0
+      },
+      "noise": {
+        "sigma_cap": 0.03
+      }
+    },
+    "conservador": {
+      "steps": {
+        "global": 0.01,
+        "rotate": 1.0,
+        "scale": 2.0,
+        "shift": 0.02,
+        "noise": 0.002
+      },
+      "rotate": {
+        "min": -45.0,
+        "max": 45.0
+      },
+      "noise": {
+        "sigma_cap": 0.02
+      }
+    },
+    "agresivo": {
+      "steps": {
+        "global": 0.01,
+        "rotate": 0.25,
+        "scale": 0.5,
+        "shift": 0.005,
+        "noise": 0.0005
+      },
+      "rotate": {
+        "min": -120.0,
+        "max": 120.0
+      },
+      "noise": {
+        "sigma_cap": 0.05
+      }
+    },
+    "realista": {
+      "steps": {
+        "global": 0.01,
+        "rotate": 2.0,
+        "scale": 2.0,
+        "shift": 0.02,
+        "noise": 0.002
+      },
+      "rotate": {
+        "min": -12.0,
+        "max": 12.0
+      },
+      "noise": {
+        "sigma_cap": 0.008
+      }
+    },
+    "industrial": {
+      "steps": {
+        "global": 0.01,
+        "rotate": 3.0,
+        "scale": 3.0,
+        "shift": 0.03,
+        "noise": 0.003
+      },
+      "rotate": {
+        "min": -15.0,
+        "max": 15.0
+      },
+      "noise": {
+        "sigma_cap": 0.009
+      }
+    }
+  }
+}

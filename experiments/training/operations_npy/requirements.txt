@@ -1,0 +1,5 @@
+opencv-python
+pandas
+ultralytics  # Para YOLOv8/v11 Pose y Tracking
+numpy
+tqdm         # Para ver la barra de progreso

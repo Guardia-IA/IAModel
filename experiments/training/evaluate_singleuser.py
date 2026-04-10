@@ -2,7 +2,7 @@ import argparse
 import json
 import random
 from pathlib import Path
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Optional
 
 import numpy as np
 import torch
@@ -75,11 +75,26 @@ def _sweep_best_threshold(
     return best_thr, best_prec, best_rec, best_f1
 
 
+def _load_split_uids(split_manifest_path: Path, split_name: str) -> set[str]:
+    if not split_manifest_path.exists():
+        raise RuntimeError(f"No existe split_manifest: {split_manifest_path}")
+    with open(split_manifest_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    split = data.get("split", {})
+    if split_name not in split:
+        raise RuntimeError(
+            f"Split '{split_name}' no encontrado en manifest. Disponibles: {list(split.keys())}"
+        )
+    return {str(x) for x in split.get(split_name, [])}
+
+
 def build_examples_singleuser(
     pose_source: str,
     task: str,
     positive_class: int,
     data_split: str,
+    split_manifest_path: Optional[Path] = None,
+    split_name: str = "test",
 ) -> Tuple[List[PoseExample], dict[str, Any]]:
     """
     Misma recolección y partición que train_model.py:
@@ -107,6 +122,18 @@ def build_examples_singleuser(
     if task == "binary":
         examples = make_binary_examples(examples, positive_class=positive_class)
         info["pool_after_binary"] = len(examples)
+
+    if split_manifest_path is not None:
+        split_uids = _load_split_uids(split_manifest_path, split_name)
+        before = len(examples)
+        examples = [ex for ex in examples if str(ex.pose_path.resolve()) in split_uids]
+        info["split_manifest_path"] = str(split_manifest_path)
+        info["split_manifest_name"] = split_name
+        info["pool_after_manifest_filter"] = len(examples)
+        info["note"] = (
+            f"Subset fijo desde split_manifest ({split_name}): {before} -> {len(examples)}."
+        )
+        return examples, info
 
     if data_split == "all":
         info["note"] = "Sin split: incluye train+val+test (métricas optimistas si el modelo entrenó con estos datos)."
@@ -147,6 +174,8 @@ def evaluate_model_on_singleuser(
     threshold_max: float = 0.95,
     threshold_step: float = 0.05,
     print_false_negatives: bool = False,
+    split_manifest_path: Optional[Path] = None,
+    split_name: str = "test",
 ) -> Dict[str, Any]:
     print(f"\nEvaluando modelo en single-user: {model_path}")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -157,6 +186,10 @@ def evaluate_model_on_singleuser(
     seq_len = checkpoint.get("seq_len", 64)
     task = checkpoint.get("task", "multiclass")
     positive_class = checkpoint.get("positive_class", 6)
+    if split_manifest_path is None:
+        cp_manifest = checkpoint.get("split_manifest_path")
+        if cp_manifest:
+            split_manifest_path = Path(cp_manifest)
 
     try:
         from .train_model import build_model  # type: ignore[attr-defined]
@@ -180,6 +213,8 @@ def evaluate_model_on_singleuser(
         task=task,
         positive_class=int(positive_class),
         data_split=data_split,
+        split_manifest_path=split_manifest_path,
+        split_name=split_name,
     )
     print(f"[SPLIT] {split_info.get('note', '')}")
     if "train_n" in split_info:
@@ -518,6 +553,19 @@ def main():
         action="store_true",
         help="No imprimir el bloque detallado de los 3 mejores modelos (binario).",
     )
+    parser.add_argument(
+        "--split-manifest",
+        type=str,
+        default=None,
+        help="Ruta a split_manifest.json. Si se pasa, prevalece sobre --split.",
+    )
+    parser.add_argument(
+        "--split-name",
+        type=str,
+        default="test",
+        choices=["train", "val", "test"],
+        help="Subset del split_manifest a evaluar.",
+    )
     args = parser.parse_args()
 
     default_models_dir = Path(__file__).parent / "models-single"
@@ -543,6 +591,8 @@ def main():
             threshold_max=args.threshold_max,
             threshold_step=args.threshold_step,
             print_false_negatives=False,
+            split_manifest_path=(Path(args.split_manifest) if args.split_manifest else None),
+            split_name=args.split_name,
         )
         results.append(res)
 

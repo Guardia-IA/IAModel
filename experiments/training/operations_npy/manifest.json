@@ -1,0 +1,4482 @@
+{
+  "source_npy": "/home/debian/Proyectos/GuardIA/ResultadosExperimentos/data_result2/6/clips_output_clip2_000000_000007_6/user_4/poses.npy",
+  "profile": "industrial",
+  "summary": {
+    "candidates_total": 284,
+    "n_min": 8,
+    "n_objetivo_industrial": 80,
+    "coverage_at_n_min": 0.7715898007708023
+  },
+  "selected_n_min": [
+    {
+      "operation": "mirror",
+      "params": {
+        "apply": true
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.54,
+        "dy": -0.21
+      }
+    },
+    {
+      "operation": "rotate",
+      "params": {
+        "degrees": -15.0
+      }
+    },
+    {
+      "operation": "rotate",
+      "params": {
+        "degrees": 15.0
+      }
+    },
+    {
+      "operation": "scale",
+      "params": {
+        "percentage": 110.99999999999999
+      }
+    },
+    {
+      "operation": "noise",
+      "params": {
+        "sigma_x": 0.006,
+        "sigma_y": 0.006
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": 0.17999999999999994,
+        "dy": 0.03
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.45000000000000007,
+        "dy": 0.03
+      }
+    }
+  ],
+  "selected_n_objetivo_industrial": [
+    {
+      "operation": "mirror",
+      "params": {
+        "apply": true
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.54,
+        "dy": -0.21
+      }
+    },
+    {
+      "operation": "rotate",
+      "params": {
+        "degrees": -15.0
+      }
+    },
+    {
+      "operation": "rotate",
+      "params": {
+        "degrees": 15.0
+      }
+    },
+    {
+      "operation": "scale",
+      "params": {
+        "percentage": 110.99999999999999
+      }
+    },
+    {
+      "operation": "noise",
+      "params": {
+        "sigma_x": 0.006,
+        "sigma_y": 0.006
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": 0.17999999999999994,
+        "dy": 0.03
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.45000000000000007,
+        "dy": 0.03
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": 0.08999999999999997,
+        "dy": -0.21
+      }
+    },
+    {
+      "operation": "rotate",
+      "params": {
+        "degrees": 0.0
+      }
+    },
+    {
+      "operation": "scale",
+      "params": {
+        "percentage": 0.0
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.18000000000000005,
+        "dy": -0.09
+      }
+    },
+    {
+      "operation": "noise",
+      "params": {
+        "sigma_x": 0.0,
+        "sigma_y": 0.0
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.51,
+        "dy": -0.09
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": 0.1499999999999999,
+        "dy": -0.09
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.15000000000000002,
+        "dy": 0.03
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.24000000000000005,
+        "dy": -0.21
+      }
+    },
+    {
+      "operation": "scale",
+      "params": {
+        "percentage": 54.0
+      }
+    },
+    {
+      "operation": "rotate",
+      "params": {
+        "degrees": -9.0
+      }
+    },
+    {
+      "operation": "rotate",
+      "params": {
+        "degrees": 6.0
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": 0.0,
+        "dy": -0.03
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.36000000000000004,
+        "dy": -0.15
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.030000000000000027,
+        "dy": -0.15
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.33000000000000007,
+        "dy": -0.03
+      }
+    },
+    {
+      "operation": "noise",
+      "params": {
+        "sigma_x": 0.0,
+        "sigma_y": 0.006
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.54,
+        "dy": -0.03
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": 0.17999999999999994,
+        "dy": -0.15
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.54,
+        "dy": -0.15
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": 0.17999999999999994,
+        "dy": -0.03
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.18000000000000005,
+        "dy": -0.15
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.030000000000000027,
+        "dy": -0.09
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.33000000000000007,
+        "dy": -0.09
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.30000000000000004,
+        "dy": 0.03
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.18000000000000005,
+        "dy": -0.03
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.06000000000000005,
+        "dy": -0.21
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": 0.0,
+        "dy": 0.03
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.39,
+        "dy": -0.21
+      }
+    },
+    {
+      "operation": "scale",
+      "params": {
+        "percentage": 27.0
+      }
+    },
+    {
+      "operation": "scale",
+      "params": {
+        "percentage": 81.0
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.42000000000000004,
+        "dy": -0.06
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": 0.05999999999999994,
+        "dy": -0.12
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": 0.08999999999999997,
+        "dy": 0.0
+      }
+    },
+    {
+      "operation": "rotate",
+      "params": {
+        "degrees": -3.0
+      }
+    },
+    {
+      "operation": "rotate",
+      "params": {
+        "degrees": 3.0
+      }
+    },
+    {
+      "operation": "rotate",
+      "params": {
+        "degrees": -12.0
+      }
+    },
+    {
+      "operation": "rotate",
+      "params": {
+        "degrees": -6.0
+      }
+    },
+    {
+      "operation": "rotate",
+      "params": {
+        "degrees": 9.0
+      }
+    },
+    {
+      "operation": "rotate",
+      "params": {
+        "degrees": 12.0
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.09000000000000008,
+        "dy": -0.06
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.06000000000000005,
+        "dy": 0.0
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.48000000000000004,
+        "dy": -0.18
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.42000000000000004,
+        "dy": -0.12
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.27,
+        "dy": -0.06
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.09000000000000008,
+        "dy": -0.12
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.27,
+        "dy": -0.12
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.12000000000000005,
+        "dy": -0.18
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.30000000000000004,
+        "dy": -0.18
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": 0.08999999999999997,
+        "dy": -0.06
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.39,
+        "dy": 0.0
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.24000000000000005,
+        "dy": 0.0
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": 0.029999999999999916,
+        "dy": -0.18
+      }
+    },
+    {
+      "operation": "noise",
+      "params": {
+        "sigma_x": 0.0,
+        "sigma_y": 0.003
+      }
+    },
+    {
+      "operation": "noise",
+      "params": {
+        "sigma_x": 0.003,
+        "sigma_y": 0.006
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.54,
+        "dy": 0.03
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": 0.17999999999999994,
+        "dy": -0.21
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": 0.08999999999999997,
+        "dy": -0.15
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.51,
+        "dy": 0.0
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.45000000000000007,
+        "dy": -0.15
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.21000000000000008,
+        "dy": -0.18
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": 0.1499999999999999,
+        "dy": -0.18
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.45000000000000007,
+        "dy": -0.03
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.15000000000000002,
+        "dy": -0.21
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.54,
+        "dy": -0.12
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.51,
+        "dy": -0.06
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.39,
+        "dy": -0.18
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.27,
+        "dy": -0.15
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": 0.17999999999999994,
+        "dy": -0.12
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.18000000000000005,
+        "dy": -0.06
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.15000000000000002,
+        "dy": 0.0
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.09000000000000008,
+        "dy": -0.03
+      }
+    }
+  ],
+  "selected_n_objetivo_industrial_with_mirror_composed": [
+    {
+      "operation": "mirror",
+      "params": {
+        "apply": true
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.54,
+        "dy": -0.21
+      }
+    },
+    {
+      "operation": "compose",
+      "params": {
+        "pipeline": [
+          {
+            "operation": "shift",
+            "params": {
+              "dx": -0.54,
+              "dy": -0.21
+            }
+          },
+          {
+            "operation": "mirror",
+            "params": {
+              "apply": true
+            }
+          }
+        ]
+      }
+    },
+    {
+      "operation": "rotate",
+      "params": {
+        "degrees": -15.0
+      }
+    },
+    {
+      "operation": "compose",
+      "params": {
+        "pipeline": [
+          {
+            "operation": "rotate",
+            "params": {
+              "degrees": -15.0
+            }
+          },
+          {
+            "operation": "mirror",
+            "params": {
+              "apply": true
+            }
+          }
+        ]
+      }
+    },
+    {
+      "operation": "rotate",
+      "params": {
+        "degrees": 15.0
+      }
+    },
+    {
+      "operation": "compose",
+      "params": {
+        "pipeline": [
+          {
+            "operation": "rotate",
+            "params": {
+              "degrees": 15.0
+            }
+          },
+          {
+            "operation": "mirror",
+            "params": {
+              "apply": true
+            }
+          }
+        ]
+      }
+    },
+    {
+      "operation": "scale",
+      "params": {
+        "percentage": 110.99999999999999
+      }
+    },
+    {
+      "operation": "compose",
+      "params": {
+        "pipeline": [
+          {
+            "operation": "scale",
+            "params": {
+              "percentage": 110.99999999999999
+            }
+          },
+          {
+            "operation": "mirror",
+            "params": {
+              "apply": true
+            }
+          }
+        ]
+      }
+    },
+    {
+      "operation": "noise",
+      "params": {
+        "sigma_x": 0.006,
+        "sigma_y": 0.006
+      }
+    },
+    {
+      "operation": "compose",
+      "params": {
+        "pipeline": [
+          {
+            "operation": "noise",
+            "params": {
+              "sigma_x": 0.006,
+              "sigma_y": 0.006
+            }
+          },
+          {
+            "operation": "mirror",
+            "params": {
+              "apply": true
+            }
+          }
+        ]
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": 0.17999999999999994,
+        "dy": 0.03
+      }
+    },
+    {
+      "operation": "compose",
+      "params": {
+        "pipeline": [
+          {
+            "operation": "shift",
+            "params": {
+              "dx": 0.17999999999999994,
+              "dy": 0.03
+            }
+          },
+          {
+            "operation": "mirror",
+            "params": {
+              "apply": true
+            }
+          }
+        ]
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.45000000000000007,
+        "dy": 0.03
+      }
+    },
+    {
+      "operation": "compose",
+      "params": {
+        "pipeline": [
+          {
+            "operation": "shift",
+            "params": {
+              "dx": -0.45000000000000007,
+              "dy": 0.03
+            }
+          },
+          {
+            "operation": "mirror",
+            "params": {
+              "apply": true
+            }
+          }
+        ]
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": 0.08999999999999997,
+        "dy": -0.21
+      }
+    },
+    {
+      "operation": "compose",
+      "params": {
+        "pipeline": [
+          {
+            "operation": "shift",
+            "params": {
+              "dx": 0.08999999999999997,
+              "dy": -0.21
+            }
+          },
+          {
+            "operation": "mirror",
+            "params": {
+              "apply": true
+            }
+          }
+        ]
+      }
+    },
+    {
+      "operation": "rotate",
+      "params": {
+        "degrees": 0.0
+      }
+    },
+    {
+      "operation": "compose",
+      "params": {
+        "pipeline": [
+          {
+            "operation": "rotate",
+            "params": {
+              "degrees": 0.0
+            }
+          },
+          {
+            "operation": "mirror",
+            "params": {
+              "apply": true
+            }
+          }
+        ]
+      }
+    },
+    {
+      "operation": "scale",
+      "params": {
+        "percentage": 0.0
+      }
+    },
+    {
+      "operation": "compose",
+      "params": {
+        "pipeline": [
+          {
+            "operation": "scale",
+            "params": {
+              "percentage": 0.0
+            }
+          },
+          {
+            "operation": "mirror",
+            "params": {
+              "apply": true
+            }
+          }
+        ]
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.18000000000000005,
+        "dy": -0.09
+      }
+    },
+    {
+      "operation": "compose",
+      "params": {
+        "pipeline": [
+          {
+            "operation": "shift",
+            "params": {
+              "dx": -0.18000000000000005,
+              "dy": -0.09
+            }
+          },
+          {
+            "operation": "mirror",
+            "params": {
+              "apply": true
+            }
+          }
+        ]
+      }
+    },
+    {
+      "operation": "noise",
+      "params": {
+        "sigma_x": 0.0,
+        "sigma_y": 0.0
+      }
+    },
+    {
+      "operation": "compose",
+      "params": {
+        "pipeline": [
+          {
+            "operation": "noise",
+            "params": {
+              "sigma_x": 0.0,
+              "sigma_y": 0.0
+            }
+          },
+          {
+            "operation": "mirror",
+            "params": {
+              "apply": true
+            }
+          }
+        ]
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.51,
+        "dy": -0.09
+      }
+    },
+    {
+      "operation": "compose",
+      "params": {
+        "pipeline": [
+          {
+            "operation": "shift",
+            "params": {
+              "dx": -0.51,
+              "dy": -0.09
+            }
+          },
+          {
+            "operation": "mirror",
+            "params": {
+              "apply": true
+            }
+          }
+        ]
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": 0.1499999999999999,
+        "dy": -0.09
+      }
+    },
+    {
+      "operation": "compose",
+      "params": {
+        "pipeline": [
+          {
+            "operation": "shift",
+            "params": {
+              "dx": 0.1499999999999999,
+              "dy": -0.09
+            }
+          },
+          {
+            "operation": "mirror",
+            "params": {
+              "apply": true
+            }
+          }
+        ]
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.15000000000000002,
+        "dy": 0.03
+      }
+    },
+    {
+      "operation": "compose",
+      "params": {
+        "pipeline": [
+          {
+            "operation": "shift",
+            "params": {
+              "dx": -0.15000000000000002,
+              "dy": 0.03
+            }
+          },
+          {
+            "operation": "mirror",
+            "params": {
+              "apply": true
+            }
+          }
+        ]
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.24000000000000005,
+        "dy": -0.21
+      }
+    },
+    {
+      "operation": "compose",
+      "params": {
+        "pipeline": [
+          {
+            "operation": "shift",
+            "params": {
+              "dx": -0.24000000000000005,
+              "dy": -0.21
+            }
+          },
+          {
+            "operation": "mirror",
+            "params": {
+              "apply": true
+            }
+          }
+        ]
+      }
+    },
+    {
+      "operation": "scale",
+      "params": {
+        "percentage": 54.0
+      }
+    },
+    {
+      "operation": "compose",
+      "params": {
+        "pipeline": [
+          {
+            "operation": "scale",
+            "params": {
+              "percentage": 54.0
+            }
+          },
+          {
+            "operation": "mirror",
+            "params": {
+              "apply": true
+            }
+          }
+        ]
+      }
+    },
+    {
+      "operation": "rotate",
+      "params": {
+        "degrees": -9.0
+      }
+    },
+    {
+      "operation": "compose",
+      "params": {
+        "pipeline": [
+          {
+            "operation": "rotate",
+            "params": {
+              "degrees": -9.0
+            }
+          },
+          {
+            "operation": "mirror",
+            "params": {
+              "apply": true
+            }
+          }
+        ]
+      }
+    },
+    {
+      "operation": "rotate",
+      "params": {
+        "degrees": 6.0
+      }
+    },
+    {
+      "operation": "compose",
+      "params": {
+        "pipeline": [
+          {
+            "operation": "rotate",
+            "params": {
+              "degrees": 6.0
+            }
+          },
+          {
+            "operation": "mirror",
+            "params": {
+              "apply": true
+            }
+          }
+        ]
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": 0.0,
+        "dy": -0.03
+      }
+    },
+    {
+      "operation": "compose",
+      "params": {
+        "pipeline": [
+          {
+            "operation": "shift",
+            "params": {
+              "dx": 0.0,
+              "dy": -0.03
+            }
+          },
+          {
+            "operation": "mirror",
+            "params": {
+              "apply": true
+            }
+          }
+        ]
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.36000000000000004,
+        "dy": -0.15
+      }
+    },
+    {
+      "operation": "compose",
+      "params": {
+        "pipeline": [
+          {
+            "operation": "shift",
+            "params": {
+              "dx": -0.36000000000000004,
+              "dy": -0.15
+            }
+          },
+          {
+            "operation": "mirror",
+            "params": {
+              "apply": true
+            }
+          }
+        ]
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.030000000000000027,
+        "dy": -0.15
+      }
+    },
+    {
+      "operation": "compose",
+      "params": {
+        "pipeline": [
+          {
+            "operation": "shift",
+            "params": {
+              "dx": -0.030000000000000027,
+              "dy": -0.15
+            }
+          },
+          {
+            "operation": "mirror",
+            "params": {
+              "apply": true
+            }
+          }
+        ]
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.33000000000000007,
+        "dy": -0.03
+      }
+    },
+    {
+      "operation": "compose",
+      "params": {
+        "pipeline": [
+          {
+            "operation": "shift",
+            "params": {
+              "dx": -0.33000000000000007,
+              "dy": -0.03
+            }
+          },
+          {
+            "operation": "mirror",
+            "params": {
+              "apply": true
+            }
+          }
+        ]
+      }
+    },
+    {
+      "operation": "noise",
+      "params": {
+        "sigma_x": 0.0,
+        "sigma_y": 0.006
+      }
+    },
+    {
+      "operation": "compose",
+      "params": {
+        "pipeline": [
+          {
+            "operation": "noise",
+            "params": {
+              "sigma_x": 0.0,
+              "sigma_y": 0.006
+            }
+          },
+          {
+            "operation": "mirror",
+            "params": {
+              "apply": true
+            }
+          }
+        ]
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.54,
+        "dy": -0.03
+      }
+    },
+    {
+      "operation": "compose",
+      "params": {
+        "pipeline": [
+          {
+            "operation": "shift",
+            "params": {
+              "dx": -0.54,
+              "dy": -0.03
+            }
+          },
+          {
+            "operation": "mirror",
+            "params": {
+              "apply": true
+            }
+          }
+        ]
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": 0.17999999999999994,
+        "dy": -0.15
+      }
+    },
+    {
+      "operation": "compose",
+      "params": {
+        "pipeline": [
+          {
+            "operation": "shift",
+            "params": {
+              "dx": 0.17999999999999994,
+              "dy": -0.15
+            }
+          },
+          {
+            "operation": "mirror",
+            "params": {
+              "apply": true
+            }
+          }
+        ]
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.54,
+        "dy": -0.15
+      }
+    },
+    {
+      "operation": "compose",
+      "params": {
+        "pipeline": [
+          {
+            "operation": "shift",
+            "params": {
+              "dx": -0.54,
+              "dy": -0.15
+            }
+          },
+          {
+            "operation": "mirror",
+            "params": {
+              "apply": true
+            }
+          }
+        ]
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": 0.17999999999999994,
+        "dy": -0.03
+      }
+    },
+    {
+      "operation": "compose",
+      "params": {
+        "pipeline": [
+          {
+            "operation": "shift",
+            "params": {
+              "dx": 0.17999999999999994,
+              "dy": -0.03
+            }
+          },
+          {
+            "operation": "mirror",
+            "params": {
+              "apply": true
+            }
+          }
+        ]
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.18000000000000005,
+        "dy": -0.15
+      }
+    },
+    {
+      "operation": "compose",
+      "params": {
+        "pipeline": [
+          {
+            "operation": "shift",
+            "params": {
+              "dx": -0.18000000000000005,
+              "dy": -0.15
+            }
+          },
+          {
+            "operation": "mirror",
+            "params": {
+              "apply": true
+            }
+          }
+        ]
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.030000000000000027,
+        "dy": -0.09
+      }
+    },
+    {
+      "operation": "compose",
+      "params": {
+        "pipeline": [
+          {
+            "operation": "shift",
+            "params": {
+              "dx": -0.030000000000000027,
+              "dy": -0.09
+            }
+          },
+          {
+            "operation": "mirror",
+            "params": {
+              "apply": true
+            }
+          }
+        ]
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.33000000000000007,
+        "dy": -0.09
+      }
+    },
+    {
+      "operation": "compose",
+      "params": {
+        "pipeline": [
+          {
+            "operation": "shift",
+            "params": {
+              "dx": -0.33000000000000007,
+              "dy": -0.09
+            }
+          },
+          {
+            "operation": "mirror",
+            "params": {
+              "apply": true
+            }
+          }
+        ]
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.30000000000000004,
+        "dy": 0.03
+      }
+    },
+    {
+      "operation": "compose",
+      "params": {
+        "pipeline": [
+          {
+            "operation": "shift",
+            "params": {
+              "dx": -0.30000000000000004,
+              "dy": 0.03
+            }
+          },
+          {
+            "operation": "mirror",
+            "params": {
+              "apply": true
+            }
+          }
+        ]
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.18000000000000005,
+        "dy": -0.03
+      }
+    },
+    {
+      "operation": "compose",
+      "params": {
+        "pipeline": [
+          {
+            "operation": "shift",
+            "params": {
+              "dx": -0.18000000000000005,
+              "dy": -0.03
+            }
+          },
+          {
+            "operation": "mirror",
+            "params": {
+              "apply": true
+            }
+          }
+        ]
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.06000000000000005,
+        "dy": -0.21
+      }
+    },
+    {
+      "operation": "compose",
+      "params": {
+        "pipeline": [
+          {
+            "operation": "shift",
+            "params": {
+              "dx": -0.06000000000000005,
+              "dy": -0.21
+            }
+          },
+          {
+            "operation": "mirror",
+            "params": {
+              "apply": true
+            }
+          }
+        ]
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": 0.0,
+        "dy": 0.03
+      }
+    },
+    {
+      "operation": "compose",
+      "params": {
+        "pipeline": [
+          {
+            "operation": "shift",
+            "params": {
+              "dx": 0.0,
+              "dy": 0.03
+            }
+          },
+          {
+            "operation": "mirror",
+            "params": {
+              "apply": true
+            }
+          }
+        ]
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.39,
+        "dy": -0.21
+      }
+    },
+    {
+      "operation": "compose",
+      "params": {
+        "pipeline": [
+          {
+            "operation": "shift",
+            "params": {
+              "dx": -0.39,
+              "dy": -0.21
+            }
+          },
+          {
+            "operation": "mirror",
+            "params": {
+              "apply": true
+            }
+          }
+        ]
+      }
+    },
+    {
+      "operation": "scale",
+      "params": {
+        "percentage": 27.0
+      }
+    },
+    {
+      "operation": "compose",
+      "params": {
+        "pipeline": [
+          {
+            "operation": "scale",
+            "params": {
+              "percentage": 27.0
+            }
+          },
+          {
+            "operation": "mirror",
+            "params": {
+              "apply": true
+            }
+          }
+        ]
+      }
+    },
+    {
+      "operation": "scale",
+      "params": {
+        "percentage": 81.0
+      }
+    },
+    {
+      "operation": "compose",
+      "params": {
+        "pipeline": [
+          {
+            "operation": "scale",
+            "params": {
+              "percentage": 81.0
+            }
+          },
+          {
+            "operation": "mirror",
+            "params": {
+              "apply": true
+            }
+          }
+        ]
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.42000000000000004,
+        "dy": -0.06
+      }
+    },
+    {
+      "operation": "compose",
+      "params": {
+        "pipeline": [
+          {
+            "operation": "shift",
+            "params": {
+              "dx": -0.42000000000000004,
+              "dy": -0.06
+            }
+          },
+          {
+            "operation": "mirror",
+            "params": {
+              "apply": true
+            }
+          }
+        ]
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": 0.05999999999999994,
+        "dy": -0.12
+      }
+    },
+    {
+      "operation": "compose",
+      "params": {
+        "pipeline": [
+          {
+            "operation": "shift",
+            "params": {
+              "dx": 0.05999999999999994,
+              "dy": -0.12
+            }
+          },
+          {
+            "operation": "mirror",
+            "params": {
+              "apply": true
+            }
+          }
+        ]
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": 0.08999999999999997,
+        "dy": 0.0
+      }
+    },
+    {
+      "operation": "rotate",
+      "params": {
+        "degrees": -3.0
+      }
+    },
+    {
+      "operation": "rotate",
+      "params": {
+        "degrees": 3.0
+      }
+    },
+    {
+      "operation": "rotate",
+      "params": {
+        "degrees": -12.0
+      }
+    },
+    {
+      "operation": "rotate",
+      "params": {
+        "degrees": -6.0
+      }
+    },
+    {
+      "operation": "rotate",
+      "params": {
+        "degrees": 9.0
+      }
+    },
+    {
+      "operation": "rotate",
+      "params": {
+        "degrees": 12.0
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.09000000000000008,
+        "dy": -0.06
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.06000000000000005,
+        "dy": 0.0
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.48000000000000004,
+        "dy": -0.18
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.42000000000000004,
+        "dy": -0.12
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.27,
+        "dy": -0.06
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.09000000000000008,
+        "dy": -0.12
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.27,
+        "dy": -0.12
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.12000000000000005,
+        "dy": -0.18
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.30000000000000004,
+        "dy": -0.18
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": 0.08999999999999997,
+        "dy": -0.06
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.39,
+        "dy": 0.0
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.24000000000000005,
+        "dy": 0.0
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": 0.029999999999999916,
+        "dy": -0.18
+      }
+    },
+    {
+      "operation": "noise",
+      "params": {
+        "sigma_x": 0.0,
+        "sigma_y": 0.003
+      }
+    },
+    {
+      "operation": "noise",
+      "params": {
+        "sigma_x": 0.003,
+        "sigma_y": 0.006
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.54,
+        "dy": 0.03
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": 0.17999999999999994,
+        "dy": -0.21
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": 0.08999999999999997,
+        "dy": -0.15
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.51,
+        "dy": 0.0
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.45000000000000007,
+        "dy": -0.15
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.21000000000000008,
+        "dy": -0.18
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": 0.1499999999999999,
+        "dy": -0.18
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.45000000000000007,
+        "dy": -0.03
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.15000000000000002,
+        "dy": -0.21
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.54,
+        "dy": -0.12
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.51,
+        "dy": -0.06
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.39,
+        "dy": -0.18
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.27,
+        "dy": -0.15
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": 0.17999999999999994,
+        "dy": -0.12
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.18000000000000005,
+        "dy": -0.06
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.15000000000000002,
+        "dy": 0.0
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.09000000000000008,
+        "dy": -0.03
+      }
+    }
+  ],
+  "selected_n_objetivo_industrial_compose_light": [
+    {
+      "operation": "compose",
+      "params": {
+        "pipeline": [
+          {
+            "operation": "mirror",
+            "params": {
+              "apply": true
+            }
+          },
+          {
+            "operation": "rotate",
+            "params": {
+              "degrees": 0.0
+            }
+          }
+        ]
+      }
+    },
+    {
+      "operation": "compose",
+      "params": {
+        "pipeline": [
+          {
+            "operation": "shift",
+            "params": {
+              "dx": -0.54,
+              "dy": -0.21
+            }
+          },
+          {
+            "operation": "rotate",
+            "params": {
+              "degrees": 0.0
+            }
+          }
+        ]
+      }
+    },
+    {
+      "operation": "compose",
+      "params": {
+        "pipeline": [
+          {
+            "operation": "rotate",
+            "params": {
+              "degrees": -15.0
+            }
+          },
+          {
+            "operation": "scale",
+            "params": {
+              "percentage": 56.99999999999999
+            }
+          }
+        ]
+      }
+    },
+    {
+      "operation": "compose",
+      "params": {
+        "pipeline": [
+          {
+            "operation": "rotate",
+            "params": {
+              "degrees": 15.0
+            }
+          },
+          {
+            "operation": "scale",
+            "params": {
+              "percentage": 56.99999999999999
+            }
+          }
+        ]
+      }
+    },
+    {
+      "operation": "compose",
+      "params": {
+        "pipeline": [
+          {
+            "operation": "scale",
+            "params": {
+              "percentage": 110.99999999999999
+            }
+          },
+          {
+            "operation": "rotate",
+            "params": {
+              "degrees": 0.0
+            }
+          }
+        ]
+      }
+    },
+    {
+      "operation": "compose",
+      "params": {
+        "pipeline": [
+          {
+            "operation": "noise",
+            "params": {
+              "sigma_x": 0.006,
+              "sigma_y": 0.006
+            }
+          },
+          {
+            "operation": "rotate",
+            "params": {
+              "degrees": 0.0
+            }
+          }
+        ]
+      }
+    },
+    {
+      "operation": "compose",
+      "params": {
+        "pipeline": [
+          {
+            "operation": "shift",
+            "params": {
+              "dx": 0.17999999999999994,
+              "dy": 0.03
+            }
+          },
+          {
+            "operation": "rotate",
+            "params": {
+              "degrees": 0.0
+            }
+          }
+        ]
+      }
+    },
+    {
+      "operation": "compose",
+      "params": {
+        "pipeline": [
+          {
+            "operation": "shift",
+            "params": {
+              "dx": -0.45000000000000007,
+              "dy": 0.03
+            }
+          },
+          {
+            "operation": "rotate",
+            "params": {
+              "degrees": 0.0
+            }
+          }
+        ]
+      }
+    },
+    {
+      "operation": "compose",
+      "params": {
+        "pipeline": [
+          {
+            "operation": "shift",
+            "params": {
+              "dx": 0.08999999999999997,
+              "dy": -0.21
+            }
+          },
+          {
+            "operation": "rotate",
+            "params": {
+              "degrees": 0.0
+            }
+          }
+        ]
+      }
+    },
+    {
+      "operation": "compose",
+      "params": {
+        "pipeline": [
+          {
+            "operation": "rotate",
+            "params": {
+              "degrees": 0.0
+            }
+          },
+          {
+            "operation": "scale",
+            "params": {
+              "percentage": 56.99999999999999
+            }
+          }
+        ]
+      }
+    },
+    {
+      "operation": "compose",
+      "params": {
+        "pipeline": [
+          {
+            "operation": "scale",
+            "params": {
+              "percentage": 0.0
+            }
+          },
+          {
+            "operation": "rotate",
+            "params": {
+              "degrees": 0.0
+            }
+          }
+        ]
+      }
+    },
+    {
+      "operation": "compose",
+      "params": {
+        "pipeline": [
+          {
+            "operation": "shift",
+            "params": {
+              "dx": -0.18000000000000005,
+              "dy": -0.09
+            }
+          },
+          {
+            "operation": "rotate",
+            "params": {
+              "degrees": 0.0
+            }
+          }
+        ]
+      }
+    },
+    {
+      "operation": "compose",
+      "params": {
+        "pipeline": [
+          {
+            "operation": "noise",
+            "params": {
+              "sigma_x": 0.0,
+              "sigma_y": 0.0
+            }
+          },
+          {
+            "operation": "rotate",
+            "params": {
+              "degrees": 0.0
+            }
+          }
+        ]
+      }
+    },
+    {
+      "operation": "compose",
+      "params": {
+        "pipeline": [
+          {
+            "operation": "shift",
+            "params": {
+              "dx": -0.51,
+              "dy": -0.09
+            }
+          },
+          {
+            "operation": "rotate",
+            "params": {
+              "degrees": 0.0
+            }
+          }
+        ]
+      }
+    },
+    {
+      "operation": "compose",
+      "params": {
+        "pipeline": [
+          {
+            "operation": "shift",
+            "params": {
+              "dx": 0.1499999999999999,
+              "dy": -0.09
+            }
+          },
+          {
+            "operation": "rotate",
+            "params": {
+              "degrees": 0.0
+            }
+          }
+        ]
+      }
+    },
+    {
+      "operation": "compose",
+      "params": {
+        "pipeline": [
+          {
+            "operation": "shift",
+            "params": {
+              "dx": -0.15000000000000002,
+              "dy": 0.03
+            }
+          },
+          {
+            "operation": "rotate",
+            "params": {
+              "degrees": 0.0
+            }
+          }
+        ]
+      }
+    },
+    {
+      "operation": "compose",
+      "params": {
+        "pipeline": [
+          {
+            "operation": "shift",
+            "params": {
+              "dx": -0.24000000000000005,
+              "dy": -0.21
+            }
+          },
+          {
+            "operation": "rotate",
+            "params": {
+              "degrees": 0.0
+            }
+          }
+        ]
+      }
+    },
+    {
+      "operation": "compose",
+      "params": {
+        "pipeline": [
+          {
+            "operation": "scale",
+            "params": {
+              "percentage": 54.0
+            }
+          },
+          {
+            "operation": "rotate",
+            "params": {
+              "degrees": 0.0
+            }
+          }
+        ]
+      }
+    },
+    {
+      "operation": "compose",
+      "params": {
+        "pipeline": [
+          {
+            "operation": "rotate",
+            "params": {
+              "degrees": -9.0
+            }
+          },
+          {
+            "operation": "scale",
+            "params": {
+              "percentage": 56.99999999999999
+            }
+          }
+        ]
+      }
+    },
+    {
+      "operation": "compose",
+      "params": {
+        "pipeline": [
+          {
+            "operation": "rotate",
+            "params": {
+              "degrees": 6.0
+            }
+          },
+          {
+            "operation": "scale",
+            "params": {
+              "percentage": 56.99999999999999
+            }
+          }
+        ]
+      }
+    },
+    {
+      "operation": "compose",
+      "params": {
+        "pipeline": [
+          {
+            "operation": "shift",
+            "params": {
+              "dx": 0.0,
+              "dy": -0.03
+            }
+          },
+          {
+            "operation": "rotate",
+            "params": {
+              "degrees": 0.0
+            }
+          }
+        ]
+      }
+    },
+    {
+      "operation": "compose",
+      "params": {
+        "pipeline": [
+          {
+            "operation": "shift",
+            "params": {
+              "dx": -0.36000000000000004,
+              "dy": -0.15
+            }
+          },
+          {
+            "operation": "rotate",
+            "params": {
+              "degrees": 0.0
+            }
+          }
+        ]
+      }
+    },
+    {
+      "operation": "compose",
+      "params": {
+        "pipeline": [
+          {
+            "operation": "shift",
+            "params": {
+              "dx": -0.030000000000000027,
+              "dy": -0.15
+            }
+          },
+          {
+            "operation": "rotate",
+            "params": {
+              "degrees": 0.0
+            }
+          }
+        ]
+      }
+    },
+    {
+      "operation": "compose",
+      "params": {
+        "pipeline": [
+          {
+            "operation": "shift",
+            "params": {
+              "dx": -0.33000000000000007,
+              "dy": -0.03
+            }
+          },
+          {
+            "operation": "rotate",
+            "params": {
+              "degrees": 0.0
+            }
+          }
+        ]
+      }
+    },
+    {
+      "operation": "compose",
+      "params": {
+        "pipeline": [
+          {
+            "operation": "noise",
+            "params": {
+              "sigma_x": 0.0,
+              "sigma_y": 0.006
+            }
+          },
+          {
+            "operation": "rotate",
+            "params": {
+              "degrees": 0.0
+            }
+          }
+        ]
+      }
+    },
+    {
+      "operation": "compose",
+      "params": {
+        "pipeline": [
+          {
+            "operation": "shift",
+            "params": {
+              "dx": -0.54,
+              "dy": -0.03
+            }
+          },
+          {
+            "operation": "rotate",
+            "params": {
+              "degrees": 0.0
+            }
+          }
+        ]
+      }
+    },
+    {
+      "operation": "compose",
+      "params": {
+        "pipeline": [
+          {
+            "operation": "shift",
+            "params": {
+              "dx": 0.17999999999999994,
+              "dy": -0.15
+            }
+          },
+          {
+            "operation": "rotate",
+            "params": {
+              "degrees": 0.0
+            }
+          }
+        ]
+      }
+    },
+    {
+      "operation": "compose",
+      "params": {
+        "pipeline": [
+          {
+            "operation": "shift",
+            "params": {
+              "dx": -0.54,
+              "dy": -0.15
+            }
+          },
+          {
+            "operation": "rotate",
+            "params": {
+              "degrees": 0.0
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "on_the_fly_policy_recommended": {
+    "version": 1,
+    "note": "Recomendación automática derivada de validate_npy.py",
+    "apply_augmentation_prob": 0.65,
+    "max_ops_per_sample": 2,
+    "probabilities": {
+      "mirror": 0.3,
+      "rotate": 0.28,
+      "scale": 0.16,
+      "shift": 0.16,
+      "noise": 0.1
+    },
+    "ranges": {
+      "rotate_degrees": [
+        -15.0,
+        15.0
+      ],
+      "scale_percentage": [
+        0.0,
+        110.99999999999999
+      ],
+      "shift_dx": [
+        -0.54,
+        0.17999999999999994
+      ],
+      "shift_dy": [
+        -0.21,
+        0.03
+      ],
+      "noise_sigma_x": [
+        0.0,
+        0.006
+      ],
+      "noise_sigma_y": [
+        0.0,
+        0.006
+      ]
+    },
+    "sampling": {
+      "distribution": "uniform",
+      "preserve_original_prob": 0.35,
+      "compose_mirror_prob_when_augmented": 0.5,
+      "compose_light_prob_when_augmented": 0.35
+    }
+  },
+  "all_candidates": [
+    {
+      "operation": "mirror",
+      "params": {
+        "apply": true
+      }
+    },
+    {
+      "operation": "rotate",
+      "params": {
+        "degrees": -15.0
+      }
+    },
+    {
+      "operation": "rotate",
+      "params": {
+        "degrees": -12.0
+      }
+    },
+    {
+      "operation": "rotate",
+      "params": {
+        "degrees": -9.0
+      }
+    },
+    {
+      "operation": "rotate",
+      "params": {
+        "degrees": -6.0
+      }
+    },
+    {
+      "operation": "rotate",
+      "params": {
+        "degrees": -3.0
+      }
+    },
+    {
+      "operation": "rotate",
+      "params": {
+        "degrees": 0.0
+      }
+    },
+    {
+      "operation": "rotate",
+      "params": {
+        "degrees": 3.0
+      }
+    },
+    {
+      "operation": "rotate",
+      "params": {
+        "degrees": 6.0
+      }
+    },
+    {
+      "operation": "rotate",
+      "params": {
+        "degrees": 9.0
+      }
+    },
+    {
+      "operation": "rotate",
+      "params": {
+        "degrees": 12.0
+      }
+    },
+    {
+      "operation": "rotate",
+      "params": {
+        "degrees": 15.0
+      }
+    },
+    {
+      "operation": "scale",
+      "params": {
+        "percentage": 0.0
+      }
+    },
+    {
+      "operation": "scale",
+      "params": {
+        "percentage": 3.0
+      }
+    },
+    {
+      "operation": "scale",
+      "params": {
+        "percentage": 6.0
+      }
+    },
+    {
+      "operation": "scale",
+      "params": {
+        "percentage": 9.0
+      }
+    },
+    {
+      "operation": "scale",
+      "params": {
+        "percentage": 12.0
+      }
+    },
+    {
+      "operation": "scale",
+      "params": {
+        "percentage": 15.0
+      }
+    },
+    {
+      "operation": "scale",
+      "params": {
+        "percentage": 18.0
+      }
+    },
+    {
+      "operation": "scale",
+      "params": {
+        "percentage": 21.0
+      }
+    },
+    {
+      "operation": "scale",
+      "params": {
+        "percentage": 24.0
+      }
+    },
+    {
+      "operation": "scale",
+      "params": {
+        "percentage": 27.0
+      }
+    },
+    {
+      "operation": "scale",
+      "params": {
+        "percentage": 30.0
+      }
+    },
+    {
+      "operation": "scale",
+      "params": {
+        "percentage": 32.99999999999999
+      }
+    },
+    {
+      "operation": "scale",
+      "params": {
+        "percentage": 36.0
+      }
+    },
+    {
+      "operation": "scale",
+      "params": {
+        "percentage": 39.0
+      }
+    },
+    {
+      "operation": "scale",
+      "params": {
+        "percentage": 42.0
+      }
+    },
+    {
+      "operation": "scale",
+      "params": {
+        "percentage": 44.99999999999999
+      }
+    },
+    {
+      "operation": "scale",
+      "params": {
+        "percentage": 48.0
+      }
+    },
+    {
+      "operation": "scale",
+      "params": {
+        "percentage": 51.0
+      }
+    },
+    {
+      "operation": "scale",
+      "params": {
+        "percentage": 54.0
+      }
+    },
+    {
+      "operation": "scale",
+      "params": {
+        "percentage": 56.99999999999999
+      }
+    },
+    {
+      "operation": "scale",
+      "params": {
+        "percentage": 60.0
+      }
+    },
+    {
+      "operation": "scale",
+      "params": {
+        "percentage": 63.0
+      }
+    },
+    {
+      "operation": "scale",
+      "params": {
+        "percentage": 65.99999999999999
+      }
+    },
+    {
+      "operation": "scale",
+      "params": {
+        "percentage": 69.0
+      }
+    },
+    {
+      "operation": "scale",
+      "params": {
+        "percentage": 72.0
+      }
+    },
+    {
+      "operation": "scale",
+      "params": {
+        "percentage": 75.0
+      }
+    },
+    {
+      "operation": "scale",
+      "params": {
+        "percentage": 78.0
+      }
+    },
+    {
+      "operation": "scale",
+      "params": {
+        "percentage": 81.0
+      }
+    },
+    {
+      "operation": "scale",
+      "params": {
+        "percentage": 84.0
+      }
+    },
+    {
+      "operation": "scale",
+      "params": {
+        "percentage": 87.0
+      }
+    },
+    {
+      "operation": "scale",
+      "params": {
+        "percentage": 89.99999999999999
+      }
+    },
+    {
+      "operation": "scale",
+      "params": {
+        "percentage": 93.0
+      }
+    },
+    {
+      "operation": "scale",
+      "params": {
+        "percentage": 96.0
+      }
+    },
+    {
+      "operation": "scale",
+      "params": {
+        "percentage": 99.0
+      }
+    },
+    {
+      "operation": "scale",
+      "params": {
+        "percentage": 102.0
+      }
+    },
+    {
+      "operation": "scale",
+      "params": {
+        "percentage": 105.0
+      }
+    },
+    {
+      "operation": "scale",
+      "params": {
+        "percentage": 108.0
+      }
+    },
+    {
+      "operation": "scale",
+      "params": {
+        "percentage": 110.99999999999999
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.54,
+        "dy": -0.21
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.54,
+        "dy": -0.18
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.54,
+        "dy": -0.15
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.54,
+        "dy": -0.12
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.54,
+        "dy": -0.09
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.54,
+        "dy": -0.06
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.54,
+        "dy": -0.03
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.54,
+        "dy": 0.0
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.54,
+        "dy": 0.03
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.51,
+        "dy": -0.21
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.51,
+        "dy": -0.18
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.51,
+        "dy": -0.15
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.51,
+        "dy": -0.12
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.51,
+        "dy": -0.09
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.51,
+        "dy": -0.06
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.51,
+        "dy": -0.03
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.51,
+        "dy": 0.0
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.51,
+        "dy": 0.03
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.48000000000000004,
+        "dy": -0.21
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.48000000000000004,
+        "dy": -0.18
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.48000000000000004,
+        "dy": -0.15
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.48000000000000004,
+        "dy": -0.12
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.48000000000000004,
+        "dy": -0.09
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.48000000000000004,
+        "dy": -0.06
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.48000000000000004,
+        "dy": -0.03
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.48000000000000004,
+        "dy": 0.0
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.48000000000000004,
+        "dy": 0.03
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.45000000000000007,
+        "dy": -0.21
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.45000000000000007,
+        "dy": -0.18
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.45000000000000007,
+        "dy": -0.15
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.45000000000000007,
+        "dy": -0.12
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.45000000000000007,
+        "dy": -0.09
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.45000000000000007,
+        "dy": -0.06
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.45000000000000007,
+        "dy": -0.03
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.45000000000000007,
+        "dy": 0.0
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.45000000000000007,
+        "dy": 0.03
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.42000000000000004,
+        "dy": -0.21
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.42000000000000004,
+        "dy": -0.18
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.42000000000000004,
+        "dy": -0.15
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.42000000000000004,
+        "dy": -0.12
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.42000000000000004,
+        "dy": -0.09
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.42000000000000004,
+        "dy": -0.06
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.42000000000000004,
+        "dy": -0.03
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.42000000000000004,
+        "dy": 0.0
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.42000000000000004,
+        "dy": 0.03
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.39,
+        "dy": -0.21
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.39,
+        "dy": -0.18
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.39,
+        "dy": -0.15
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.39,
+        "dy": -0.12
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.39,
+        "dy": -0.09
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.39,
+        "dy": -0.06
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.39,
+        "dy": -0.03
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.39,
+        "dy": 0.0
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.39,
+        "dy": 0.03
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.36000000000000004,
+        "dy": -0.21
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.36000000000000004,
+        "dy": -0.18
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.36000000000000004,
+        "dy": -0.15
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.36000000000000004,
+        "dy": -0.12
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.36000000000000004,
+        "dy": -0.09
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.36000000000000004,
+        "dy": -0.06
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.36000000000000004,
+        "dy": -0.03
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.36000000000000004,
+        "dy": 0.0
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.36000000000000004,
+        "dy": 0.03
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.33000000000000007,
+        "dy": -0.21
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.33000000000000007,
+        "dy": -0.18
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.33000000000000007,
+        "dy": -0.15
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.33000000000000007,
+        "dy": -0.12
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.33000000000000007,
+        "dy": -0.09
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.33000000000000007,
+        "dy": -0.06
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.33000000000000007,
+        "dy": -0.03
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.33000000000000007,
+        "dy": 0.0
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.33000000000000007,
+        "dy": 0.03
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.30000000000000004,
+        "dy": -0.21
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.30000000000000004,
+        "dy": -0.18
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.30000000000000004,
+        "dy": -0.15
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.30000000000000004,
+        "dy": -0.12
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.30000000000000004,
+        "dy": -0.09
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.30000000000000004,
+        "dy": -0.06
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.30000000000000004,
+        "dy": -0.03
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.30000000000000004,
+        "dy": 0.0
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.30000000000000004,
+        "dy": 0.03
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.27,
+        "dy": -0.21
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.27,
+        "dy": -0.18
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.27,
+        "dy": -0.15
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.27,
+        "dy": -0.12
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.27,
+        "dy": -0.09
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.27,
+        "dy": -0.06
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.27,
+        "dy": -0.03
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.27,
+        "dy": 0.0
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.27,
+        "dy": 0.03
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.24000000000000005,
+        "dy": -0.21
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.24000000000000005,
+        "dy": -0.18
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.24000000000000005,
+        "dy": -0.15
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.24000000000000005,
+        "dy": -0.12
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.24000000000000005,
+        "dy": -0.09
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.24000000000000005,
+        "dy": -0.06
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.24000000000000005,
+        "dy": -0.03
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.24000000000000005,
+        "dy": 0.0
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.24000000000000005,
+        "dy": 0.03
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.21000000000000008,
+        "dy": -0.21
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.21000000000000008,
+        "dy": -0.18
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.21000000000000008,
+        "dy": -0.15
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.21000000000000008,
+        "dy": -0.12
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.21000000000000008,
+        "dy": -0.09
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.21000000000000008,
+        "dy": -0.06
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.21000000000000008,
+        "dy": -0.03
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.21000000000000008,
+        "dy": 0.0
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.21000000000000008,
+        "dy": 0.03
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.18000000000000005,
+        "dy": -0.21
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.18000000000000005,
+        "dy": -0.18
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.18000000000000005,
+        "dy": -0.15
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.18000000000000005,
+        "dy": -0.12
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.18000000000000005,
+        "dy": -0.09
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.18000000000000005,
+        "dy": -0.06
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.18000000000000005,
+        "dy": -0.03
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.18000000000000005,
+        "dy": 0.0
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.18000000000000005,
+        "dy": 0.03
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.15000000000000002,
+        "dy": -0.21
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.15000000000000002,
+        "dy": -0.18
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.15000000000000002,
+        "dy": -0.15
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.15000000000000002,
+        "dy": -0.12
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.15000000000000002,
+        "dy": -0.09
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.15000000000000002,
+        "dy": -0.06
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.15000000000000002,
+        "dy": -0.03
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.15000000000000002,
+        "dy": 0.0
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.15000000000000002,
+        "dy": 0.03
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.12000000000000005,
+        "dy": -0.21
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.12000000000000005,
+        "dy": -0.18
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.12000000000000005,
+        "dy": -0.15
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.12000000000000005,
+        "dy": -0.12
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.12000000000000005,
+        "dy": -0.09
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.12000000000000005,
+        "dy": -0.06
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.12000000000000005,
+        "dy": -0.03
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.12000000000000005,
+        "dy": 0.0
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.12000000000000005,
+        "dy": 0.03
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.09000000000000008,
+        "dy": -0.21
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.09000000000000008,
+        "dy": -0.18
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.09000000000000008,
+        "dy": -0.15
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.09000000000000008,
+        "dy": -0.12
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.09000000000000008,
+        "dy": -0.09
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.09000000000000008,
+        "dy": -0.06
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.09000000000000008,
+        "dy": -0.03
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.09000000000000008,
+        "dy": 0.0
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.09000000000000008,
+        "dy": 0.03
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.06000000000000005,
+        "dy": -0.21
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.06000000000000005,
+        "dy": -0.18
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.06000000000000005,
+        "dy": -0.15
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.06000000000000005,
+        "dy": -0.12
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.06000000000000005,
+        "dy": -0.09
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.06000000000000005,
+        "dy": -0.06
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.06000000000000005,
+        "dy": -0.03
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.06000000000000005,
+        "dy": 0.0
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.06000000000000005,
+        "dy": 0.03
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.030000000000000027,
+        "dy": -0.21
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.030000000000000027,
+        "dy": -0.18
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.030000000000000027,
+        "dy": -0.15
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.030000000000000027,
+        "dy": -0.12
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.030000000000000027,
+        "dy": -0.09
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.030000000000000027,
+        "dy": -0.06
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.030000000000000027,
+        "dy": -0.03
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.030000000000000027,
+        "dy": 0.0
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": -0.030000000000000027,
+        "dy": 0.03
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": 0.0,
+        "dy": -0.21
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": 0.0,
+        "dy": -0.18
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": 0.0,
+        "dy": -0.15
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": 0.0,
+        "dy": -0.12
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": 0.0,
+        "dy": -0.09
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": 0.0,
+        "dy": -0.06
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": 0.0,
+        "dy": -0.03
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": 0.0,
+        "dy": 0.0
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": 0.0,
+        "dy": 0.03
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": 0.029999999999999916,
+        "dy": -0.21
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": 0.029999999999999916,
+        "dy": -0.18
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": 0.029999999999999916,
+        "dy": -0.15
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": 0.029999999999999916,
+        "dy": -0.12
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": 0.029999999999999916,
+        "dy": -0.09
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": 0.029999999999999916,
+        "dy": -0.06
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": 0.029999999999999916,
+        "dy": -0.03
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": 0.029999999999999916,
+        "dy": 0.0
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": 0.029999999999999916,
+        "dy": 0.03
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": 0.05999999999999994,
+        "dy": -0.21
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": 0.05999999999999994,
+        "dy": -0.18
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": 0.05999999999999994,
+        "dy": -0.15
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": 0.05999999999999994,
+        "dy": -0.12
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": 0.05999999999999994,
+        "dy": -0.09
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": 0.05999999999999994,
+        "dy": -0.06
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": 0.05999999999999994,
+        "dy": -0.03
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": 0.05999999999999994,
+        "dy": 0.0
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": 0.05999999999999994,
+        "dy": 0.03
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": 0.08999999999999997,
+        "dy": -0.21
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": 0.08999999999999997,
+        "dy": -0.18
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": 0.08999999999999997,
+        "dy": -0.15
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": 0.08999999999999997,
+        "dy": -0.12
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": 0.08999999999999997,
+        "dy": -0.09
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": 0.08999999999999997,
+        "dy": -0.06
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": 0.08999999999999997,
+        "dy": -0.03
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": 0.08999999999999997,
+        "dy": 0.0
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": 0.08999999999999997,
+        "dy": 0.03
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": 0.11999999999999988,
+        "dy": -0.21
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": 0.11999999999999988,
+        "dy": -0.18
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": 0.11999999999999988,
+        "dy": -0.15
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": 0.11999999999999988,
+        "dy": -0.12
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": 0.11999999999999988,
+        "dy": -0.09
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": 0.11999999999999988,
+        "dy": -0.06
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": 0.11999999999999988,
+        "dy": -0.03
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": 0.11999999999999988,
+        "dy": 0.0
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": 0.11999999999999988,
+        "dy": 0.03
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": 0.1499999999999999,
+        "dy": -0.21
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": 0.1499999999999999,
+        "dy": -0.18
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": 0.1499999999999999,
+        "dy": -0.15
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": 0.1499999999999999,
+        "dy": -0.12
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": 0.1499999999999999,
+        "dy": -0.09
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": 0.1499999999999999,
+        "dy": -0.06
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": 0.1499999999999999,
+        "dy": -0.03
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": 0.1499999999999999,
+        "dy": 0.0
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": 0.1499999999999999,
+        "dy": 0.03
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": 0.17999999999999994,
+        "dy": -0.21
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": 0.17999999999999994,
+        "dy": -0.18
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": 0.17999999999999994,
+        "dy": -0.15
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": 0.17999999999999994,
+        "dy": -0.12
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": 0.17999999999999994,
+        "dy": -0.09
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": 0.17999999999999994,
+        "dy": -0.06
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": 0.17999999999999994,
+        "dy": -0.03
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": 0.17999999999999994,
+        "dy": 0.0
+      }
+    },
+    {
+      "operation": "shift",
+      "params": {
+        "dx": 0.17999999999999994,
+        "dy": 0.03
+      }
+    },
+    {
+      "operation": "noise",
+      "params": {
+        "sigma_x": 0.0,
+        "sigma_y": 0.0
+      }
+    },
+    {
+      "operation": "noise",
+      "params": {
+        "sigma_x": 0.0,
+        "sigma_y": 0.003
+      }
+    },
+    {
+      "operation": "noise",
+      "params": {
+        "sigma_x": 0.0,
+        "sigma_y": 0.006
+      }
+    },
+    {
+      "operation": "noise",
+      "params": {
+        "sigma_x": 0.003,
+        "sigma_y": 0.0
+      }
+    },
+    {
+      "operation": "noise",
+      "params": {
+        "sigma_x": 0.003,
+        "sigma_y": 0.003
+      }
+    },
+    {
+      "operation": "noise",
+      "params": {
+        "sigma_x": 0.003,
+        "sigma_y": 0.006
+      }
+    },
+    {
+      "operation": "noise",
+      "params": {
+        "sigma_x": 0.006,
+        "sigma_y": 0.0
+      }
+    },
+    {
+      "operation": "noise",
+      "params": {
+        "sigma_x": 0.006,
+        "sigma_y": 0.003
+      }
+    },
+    {
+      "operation": "noise",
+      "params": {
+        "sigma_x": 0.006,
+        "sigma_y": 0.006
+      }
+    }
+  ]
+}

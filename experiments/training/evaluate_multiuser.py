@@ -2,7 +2,7 @@ import argparse
 import json
 import random
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 import numpy as np
 import torch
@@ -114,6 +114,19 @@ def collect_multiuser_examples(
     return examples
 
 
+def _load_split_uids(split_manifest_path: Path, split_name: str) -> set[str]:
+    if not split_manifest_path.exists():
+        raise RuntimeError(f"No existe split_manifest: {split_manifest_path}")
+    with open(split_manifest_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    split = data.get("split", {})
+    if split_name not in split:
+        raise RuntimeError(
+            f"Split '{split_name}' no encontrado en manifest. Disponibles: {list(split.keys())}"
+        )
+    return {str(x) for x in split.get(split_name, [])}
+
+
 @torch.no_grad()
 def evaluate_model_on_multiuser(
     model_path: Path,
@@ -127,6 +140,8 @@ def evaluate_model_on_multiuser(
     threshold_min: float = 0.05,
     threshold_max: float = 0.95,
     threshold_step: float = 0.05,
+    split_manifest_path: Optional[Path] = None,
+    split_name: str = "test",
 ) -> Dict[str, Any]:
     print(f"\nEvaluando modelo en multiusuario: {model_path}")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -195,6 +210,19 @@ def evaluate_model_on_multiuser(
                 print(
                     f"[BALANCED-EVAL] pos={len(pos)} neg={len(neg)} => sin balance (pocos datos)"
                 )
+
+    if split_manifest_path is None:
+        cp_manifest = checkpoint.get("split_manifest_path")
+        if cp_manifest:
+            split_manifest_path = Path(cp_manifest)
+    if split_manifest_path is not None:
+        split_uids = _load_split_uids(split_manifest_path, split_name)
+        before = len(examples)
+        examples = [ex for ex in examples if str(ex.pose_path.resolve()) in split_uids]
+        print(
+            f"[SPLIT-MANIFEST] split={split_name} | antes={before} -> después={len(examples)} "
+            f"usando {split_manifest_path}"
+        )
 
     # Filtrar ejemplos a solo labels que el modelo conoce
     examples = [ex for ex in examples if ex.label in label_to_idx]
@@ -481,6 +509,19 @@ def main():
     parser.add_argument("--threshold-min", type=float, default=0.05, help="Umbral mínimo del barrido (0..1).")
     parser.add_argument("--threshold-max", type=float, default=0.95, help="Umbral máximo del barrido (0..1).")
     parser.add_argument("--threshold-step", type=float, default=0.05, help="Paso del barrido de umbral.")
+    parser.add_argument(
+        "--split-manifest",
+        type=str,
+        default=None,
+        help="Ruta a split_manifest.json generado por train_model_operations.py",
+    )
+    parser.add_argument(
+        "--split-name",
+        type=str,
+        default="test",
+        choices=["train", "val", "test"],
+        help="Subset del split_manifest a evaluar.",
+    )
     args = parser.parse_args()
 
     models_dir = Path(__file__).parent / "models"
@@ -503,6 +544,8 @@ def main():
             threshold_min=args.threshold_min,
             threshold_max=args.threshold_max,
             threshold_step=args.threshold_step,
+            split_manifest_path=(Path(args.split_manifest) if args.split_manifest else None),
+            split_name=args.split_name,
         )
         results.append(res)
 

@@ -1,0 +1,9 @@
+por 2
+5 funciones que se le pase npy y devuelva enl np
+- escalado con controles (ok)
+- desplazamiento con controles(ok)
+- efecto espejo (ok)
+- meter micro ruido a X e Y control interno
+- rotación de x grados (ok)
+
+ meter comentarios de cada una de las pruebas en función de los valores.
