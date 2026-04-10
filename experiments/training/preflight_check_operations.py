@@ -322,11 +322,14 @@ def estimate_times(
         "res_tcn": 0.005,
         "stgcn": 0.005,
         "lstm": 0.006,
+        "gru": 0.0055,
         "transformer": 0.008,
+        "conformer_lite": 0.009,
         "pose_cnn2d": 0.006,
         "joint_attn": 0.008,
         "dilated_tcn": 0.005,
         "tcn_lstm": 0.007,
+        "tcn_gru": 0.0065,
     }
     cpu_multiplier = 8.0
     frame_factor = avg_frames / 64.0 if avg_frames > 0 else 1.0

@@ -889,6 +889,155 @@ class PoseTCNLSTMClassifier(nn.Module):
         return self.fc(last)
 
 
+class PoseGRUClassifier(nn.Module):
+    """
+    Variante GRU bidireccional (más ligera que LSTM en cómputo/memoria).
+    """
+
+    def __init__(
+        self,
+        input_dim: int,
+        num_classes: int,
+        hidden_dim: int = 128,
+        num_layers: int = 2,
+        dropout: float = 0.1,
+    ):
+        super().__init__()
+        self.gru = nn.GRU(
+            input_size=input_dim,
+            hidden_size=hidden_dim,
+            num_layers=num_layers,
+            batch_first=True,
+            dropout=dropout if num_layers > 1 else 0.0,
+            bidirectional=True,
+        )
+        self.fc = nn.Linear(hidden_dim * 2, num_classes)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        out, _ = self.gru(x)   # [B, T, 2*H]
+        last = out[:, -1, :]
+        return self.fc(last)
+
+
+class PoseTCNGRUClassifier(nn.Module):
+    """
+    Híbrido TCN + BiGRU:
+      - TCN captura patrones locales
+      - GRU captura dependencias temporales con menor coste que LSTM
+    """
+
+    def __init__(
+        self,
+        input_dim: int,
+        num_classes: int,
+        tcn_hidden_dim: int = 128,
+        tcn_layers: int = 2,
+        gru_hidden_dim: int = 128,
+        gru_layers: int = 1,
+        dropout: float = 0.1,
+    ):
+        super().__init__()
+        self.in_proj = nn.Conv1d(input_dim, tcn_hidden_dim, kernel_size=1)
+        blocks = []
+        for _ in range(tcn_layers):
+            blocks.append(
+                nn.Sequential(
+                    nn.Conv1d(tcn_hidden_dim, tcn_hidden_dim, kernel_size=3, padding=1),
+                    nn.ReLU(),
+                    nn.Dropout(dropout),
+                )
+            )
+        self.tcn_blocks = nn.ModuleList(blocks)
+        self.gru = nn.GRU(
+            input_size=tcn_hidden_dim,
+            hidden_size=gru_hidden_dim,
+            num_layers=gru_layers,
+            batch_first=True,
+            dropout=dropout if gru_layers > 1 else 0.0,
+            bidirectional=True,
+        )
+        self.fc = nn.Linear(gru_hidden_dim * 2, num_classes)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        h = x.permute(0, 2, 1)   # [B, F, T]
+        h = self.in_proj(h)
+        for block in self.tcn_blocks:
+            h = h + block(h)
+        h = h.permute(0, 2, 1)   # [B, T, C]
+        out, _ = self.gru(h)
+        last = out[:, -1, :]
+        return self.fc(last)
+
+
+class PoseConformerLiteClassifier(nn.Module):
+    """
+    Conformer temporal ligero:
+      - Bloque MHSA (TransformerEncoderLayer)
+      - Bloque conv depthwise temporal
+      - Residuales sobre secuencia
+    """
+
+    def __init__(
+        self,
+        input_dim: int,
+        num_classes: int,
+        d_model: int = 128,
+        nhead: int = 4,
+        num_layers: int = 2,
+        dim_feedforward: int = 256,
+        dropout: float = 0.1,
+        conv_kernel: int = 7,
+    ):
+        super().__init__()
+        self.input_proj = nn.Linear(input_dim, d_model)
+        self.attn_layers = nn.ModuleList(
+            [
+                nn.TransformerEncoderLayer(
+                    d_model=d_model,
+                    nhead=nhead,
+                    dim_feedforward=dim_feedforward,
+                    dropout=dropout,
+                    batch_first=True,
+                    activation="gelu",
+                )
+                for _ in range(num_layers)
+            ]
+        )
+        padding = conv_kernel // 2
+        self.conv_pw1 = nn.ModuleList([nn.Conv1d(d_model, 2 * d_model, kernel_size=1) for _ in range(num_layers)])
+        self.conv_dw = nn.ModuleList(
+            [
+                nn.Conv1d(
+                    2 * d_model,
+                    2 * d_model,
+                    kernel_size=conv_kernel,
+                    padding=padding,
+                    groups=2 * d_model,
+                )
+                for _ in range(num_layers)
+            ]
+        )
+        self.conv_pw2 = nn.ModuleList([nn.Conv1d(2 * d_model, d_model, kernel_size=1) for _ in range(num_layers)])
+        self.conv_act = nn.GELU()
+        self.norm = nn.LayerNorm(d_model)
+        self.fc = nn.Linear(d_model, num_classes)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        h = self.input_proj(x)  # [B, T, D]
+        for i, attn in enumerate(self.attn_layers):
+            h = h + attn(h)
+            hc = h.transpose(1, 2)  # [B, D, T]
+            hc = self.conv_pw1[i](hc)
+            hc = self.conv_act(hc)
+            hc = self.conv_dw[i](hc)
+            hc = self.conv_act(hc)
+            hc = self.conv_pw2[i](hc)
+            hc = hc.transpose(1, 2)  # [B, T, D]
+            h = self.norm(h + hc)
+        pooled = h.mean(dim=1)  # [B, D]
+        return self.fc(pooled)
+
+
 def split_examples(
     examples: List[PoseExample],
     seed: int = SEED,
@@ -1298,6 +1447,35 @@ def build_model(arch: str, input_dim: int, num_classes: int, cfg: Dict[str, Any]
             lstm_hidden_dim=cfg.get("lstm_hidden_dim", 128),
             lstm_layers=cfg.get("lstm_layers", 1),
             dropout=cfg.get("dropout", 0.1),
+        )
+    if arch == "gru":
+        return PoseGRUClassifier(
+            input_dim=input_dim,
+            num_classes=num_classes,
+            hidden_dim=cfg.get("hidden_dim", 128),
+            num_layers=cfg.get("num_layers", 2),
+            dropout=cfg.get("dropout", 0.1),
+        )
+    if arch == "tcn_gru":
+        return PoseTCNGRUClassifier(
+            input_dim=input_dim,
+            num_classes=num_classes,
+            tcn_hidden_dim=cfg.get("tcn_hidden_dim", 128),
+            tcn_layers=cfg.get("tcn_layers", 2),
+            gru_hidden_dim=cfg.get("gru_hidden_dim", 128),
+            gru_layers=cfg.get("gru_layers", 1),
+            dropout=cfg.get("dropout", 0.1),
+        )
+    if arch == "conformer_lite":
+        return PoseConformerLiteClassifier(
+            input_dim=input_dim,
+            num_classes=num_classes,
+            d_model=cfg.get("d_model", 128),
+            nhead=cfg.get("nhead", 4),
+            num_layers=cfg.get("num_layers", 2),
+            dim_feedforward=cfg.get("dim_feedforward", 256),
+            dropout=cfg.get("dropout", 0.1),
+            conv_kernel=cfg.get("conv_kernel", 7),
         )
     raise ValueError(f"Arquitectura desconocida: {arch}")
 
