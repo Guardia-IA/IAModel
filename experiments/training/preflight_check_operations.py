@@ -308,6 +308,7 @@ def estimate_times(
     augment_on_the_fly: bool = False,
     augment_prob: float = 0.65,
     aug_variants_per_clip: float = 0.0,
+    mirror_compose_ratio_estimate: float = 0.0,
     maintain_class_ratio: bool = False,
     target_neg_pos_ratio: Optional[float] = None,
     per_cat_counts: Optional[Dict[str, int]] = None,
@@ -330,13 +331,22 @@ def estimate_times(
     cpu_multiplier = 8.0
     frame_factor = avg_frames / 64.0 if avg_frames > 0 else 1.0
     if aug_variants_per_clip > 0:
-        expansion_factor = 1.0 + float(aug_variants_per_clip)
+        avg_var_base = max(0.0, float(aug_variants_per_clip))
+        avg_var_mirror_extra = avg_var_base * max(0.0, min(1.0, float(mirror_compose_ratio_estimate)))
+        avg_var_total = avg_var_base + avg_var_mirror_extra
+        expansion_factor = 1.0 + avg_var_total
         effective_examples = int(round(n_examples * expansion_factor))
         extra_aug = effective_examples - n_examples
         print(
             "Clips efectivos por época => "
-            f"originales={n_examples}, variantes_por_clip={aug_variants_per_clip:.2f}, "
+            f"originales={n_examples}, variantes_por_clip_base={avg_var_base:.2f}, "
+            f"extra_mirror_promedio={avg_var_mirror_extra:.2f}, "
+            f"variantes_por_clip_total={avg_var_total:.2f}, "
             f"factor={expansion_factor:.2f}, total={color(str(effective_examples), CYAN)}"
+        )
+        print(
+            f"Promedio por NPY real => base={avg_var_base:.2f}, "
+            f"mirror_extra={avg_var_mirror_extra:.2f}, total_variantes={avg_var_total:.2f}"
         )
     else:
         extra_aug = int(round(n_examples * max(0.0, min(1.0, augment_prob)))) if augment_on_the_fly else 0
@@ -345,6 +355,11 @@ def estimate_times(
             f"Clips efectivos por época => originales={n_examples}, augment_virtual={extra_aug}, "
             f"total={color(str(effective_examples), CYAN)}"
         )
+        if augment_on_the_fly:
+            print(
+                "Promedio por NPY real en modo on-the-fly: no es fijo (varía por época/muestra). "
+                "Para estimación equivalente usa --aug-variants-per-clip."
+            )
     if maintain_class_ratio and per_cat_counts is not None:
         neg = sum(v for k, v in per_cat_counts.items() if str(k) != "6")
         pos = per_cat_counts.get("6", 0)
@@ -352,6 +367,17 @@ def estimate_times(
             obs = neg / pos
             tgt = target_neg_pos_ratio if target_neg_pos_ratio is not None else obs
             print(f"Ratio no-robo/robo observado={obs:.3f} | objetivo sampler={tgt:.3f}")
+            # Mostrar conteos explícitos por clase (original y virtual estimado)
+            print(
+                f"Conteo original por clase => no-robo={neg} | robo={pos} | total={neg + pos}"
+            )
+            if (neg + pos) > 0:
+                virt_neg = int(round(effective_examples * (neg / (neg + pos))))
+                virt_pos = int(max(0, effective_examples - virt_neg))
+                print(
+                    f"Conteo virtual estimado por clase => no-robo={virt_neg} | "
+                    f"robo={virt_pos} | total={effective_examples}"
+                )
 
     sorted_exps = sorted(enumerate(EXPERIMENTS, start=1), key=lambda p: (p[1].get("arch", ""), int(p[1].get("epochs", 0))))
     iter_exps = tqdm(sorted_exps, desc="Estimando tiempos", unit="exp") if tqdm is not None else sorted_exps
@@ -418,6 +444,15 @@ def parse_args() -> argparse.Namespace:
             "Ej: 75 => original + 75 variantes."
         ),
     )
+    parser.add_argument(
+        "--mirror-compose-ratio-estimate",
+        type=float,
+        default=0.0,
+        help=(
+            "Fracción [0..1] de variantes base a las que además se aplica mirror "
+            "en la estimación por expansión explícita."
+        ),
+    )
     parser.add_argument("--maintain-class-ratio", action="store_true")
     parser.add_argument("--target-neg-pos-ratio", type=float, default=None)
     parser.add_argument("--min-clip-seconds", type=float, default=MIN_CLIP_SECONDS)
@@ -457,6 +492,7 @@ def main() -> None:
         augment_on_the_fly=args.augment_on_the_fly,
         augment_prob=args.augment_prob,
         aug_variants_per_clip=args.aug_variants_per_clip,
+        mirror_compose_ratio_estimate=args.mirror_compose_ratio_estimate,
         maintain_class_ratio=args.maintain_class_ratio,
         target_neg_pos_ratio=args.target_neg_pos_ratio,
         per_cat_counts=data_info["per_cat_counts"],
