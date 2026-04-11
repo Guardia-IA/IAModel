@@ -38,10 +38,8 @@ except ImportError:
         PREFLIGHT_MIRROR_COMPOSE_RATIO_ESTIMATE,
     )
 
-try:
-    from .train_model_operations import MANIFEST_CACHE_DIR as _MANIFEST_CACHE_DIR  # type: ignore[attr-defined]
-except ImportError:
-    from train_model_operations import MANIFEST_CACHE_DIR as _MANIFEST_CACHE_DIR  # type: ignore[attr-defined]
+# Misma ruta que train_model_operations.MANIFEST_CACHE_DIR; evita importar torch/train al ejecutar este script directamente.
+_MANIFEST_CACHE_DIR = Path(__file__).resolve().parent / "operations_npy" / "manifest_cache"
 
 try:
     from tqdm import tqdm
