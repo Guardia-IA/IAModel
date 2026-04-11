@@ -21,6 +21,9 @@ try:
         AUGMENT_PROB,
         PREFLIGHT_AUG_VARIANTS_PER_CLIP,
         PREFLIGHT_MIRROR_COMPOSE_RATIO_ESTIMATE,
+        MAX_DETERMINISTIC_VARIANTS,
+        TRAIN_DETERMINISTIC_PROB,
+        VALIDATE_NPY_MIRROR_COMPOSE_RATIO,
     )
 except ImportError:
     from model_config import (  # type: ignore[attr-defined]
@@ -36,6 +39,9 @@ except ImportError:
         AUGMENT_PROB,
         PREFLIGHT_AUG_VARIANTS_PER_CLIP,
         PREFLIGHT_MIRROR_COMPOSE_RATIO_ESTIMATE,
+        MAX_DETERMINISTIC_VARIANTS,
+        TRAIN_DETERMINISTIC_PROB,
+        VALIDATE_NPY_MIRROR_COMPOSE_RATIO,
     )
 
 # Misma ruta que train_model_operations.MANIFEST_CACHE_DIR; evita importar torch/train al ejecutar este script directamente.
@@ -352,9 +358,16 @@ def check_manifest_cache_section(
         warn("No pasaste --manifest-cache-dir: el entrenamiento usará solo la rejilla global (sin manifests por fichero).")
         return
     mdir = Path(manifest_cache_dir).expanduser().resolve()
-    if not mdir.is_dir():
-        fail(f"No existe o no es carpeta: {mdir}")
+    if mdir.exists() and not mdir.is_dir():
+        fail(f"No es una carpeta (es un fichero): {mdir}")
         return
+    if not mdir.exists():
+        try:
+            mdir.mkdir(parents=True, exist_ok=True)
+            ok(f"Carpeta de caché creada (vacía; rellénala con validate_npy / batch_build): {mdir}")
+        except OSError as exc:
+            fail(f"No se pudo crear la carpeta de caché: {mdir} ({exc})")
+            return
     json_n = len(list(mdir.glob("*.json")))
     ok(f"Carpeta de caché: {mdir} | ficheros *.json = {json_n}")
     try:
@@ -463,10 +476,21 @@ def estimate_times(
             f"Clips efectivos por época => originales={n_examples}, augment_virtual={extra_aug}, "
             f"total={color(str(effective_examples), CYAN)}"
         )
+        if not augment_on_the_fly and extra_aug == 0:
+            print(
+                f"Nota: augment_virtual solo refleja --augment-on-the-fly o --aug-variants-per-clip>0. "
+                f"En train, variantes determinísticas (hasta {MAX_DETERMINISTIC_VARIANTS}, "
+                f"p={TRAIN_DETERMINISTIC_PROB} en train) no aumentan len(dataset); diversifican cada muestra en __getitem__."
+            )
+            print(
+                "Para inflar esta estimación como si hubiera K variantes explícitas por clip, usa p. ej. "
+                f"--aug-variants-per-clip K (y opc. --mirror-compose-ratio-estimate; ref. validate_npy: "
+                f"{VALIDATE_NPY_MIRROR_COMPOSE_RATIO})."
+            )
         if augment_on_the_fly:
             print(
-                "Promedio por NPY real en modo on-the-fly: no es fijo (varía por época/muestra). "
-                "Para estimación equivalente usa --aug-variants-per-clip."
+                "Heurística on-the-fly: no duplica ítems en el DataLoader; es coste extra aproximado. "
+                "Para expansión explícita usa --aug-variants-per-clip."
             )
     if maintain_class_ratio and per_cat_counts is not None:
         neg = sum(v for k, v in per_cat_counts.items() if str(k) != "6")
@@ -595,7 +619,8 @@ def parse_args() -> argparse.Namespace:
         "--manifest-cache-dir",
         type=str,
         default=None,
-        help="Si se indica, cuenta cuántos ejemplos de collect_examples tienen JSON en esa carpeta (mismo uso que train --manifest-cache-dir).",
+        help="Si se indica, cuenta cuántos ejemplos de collect_examples tienen JSON en esa carpeta (mismo uso que train --manifest-cache-dir). "
+        "Si no existe, se crea vacía.",
     )
     return parser.parse_args()
 

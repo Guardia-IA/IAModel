@@ -55,13 +55,16 @@ TRAIN_DETERMINISTIC_PROB = 0.5
 AUGMENT_PROFILE_DEFAULT = "industrial"
 MANIFEST_VARIANT_SET_DEFAULT = "industrial"
 
-# Preflight: solo estimación de tiempos (expansión explícita “N variantes por clip”).
-PREFLIGHT_AUG_VARIANTS_PER_CLIP = 0.0
-PREFLIGHT_MIRROR_COMPOSE_RATIO_ESTIMATE = 0.0
-
-# validate_npy.py / batch_build_manifest_cache (mismos defaults que el script).
+# validate_npy.py / batch_build_manifest_cache (mismos defaults que el script CLI).
 VALIDATE_NPY_MIRROR_COMPOSE_RATIO = 0.5
 VALIDATE_NPY_COMPOSE_LIGHT_RATIO = 0.35
+
+# Preflight: solo estimación de tiempos (--aug-variants-per-clip / --mirror-compose-ratio-estimate).
+# - variantes por clip: típicamente |selected_n_objetivo_industrial| en el manifest (validate fija N en ~20–80
+#   según candidatas y cobertura); 0 = no asumir expansión hasta que pases el flag.
+# - mirror: alinea con validate_npy --mirror-compose-ratio (fracción de bases a las que se añade compose+mirror).
+PREFLIGHT_AUG_VARIANTS_PER_CLIP = 0.0
+PREFLIGHT_MIRROR_COMPOSE_RATIO_ESTIMATE = VALIDATE_NPY_MIRROR_COMPOSE_RATIO
 
 
 EXPERIMENTS: List[Dict[str, Any]] = [
