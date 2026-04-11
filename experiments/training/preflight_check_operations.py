@@ -8,9 +8,40 @@ import json
 import math
 
 try:
-    from .model_config import DATA_RESULT_ROOT, EXPERIMENTS  # type: ignore[attr-defined]
+    from .model_config import (  # type: ignore[attr-defined]
+        DATA_RESULT_ROOT,
+        EXPERIMENTS,
+        SPLIT_RATIO_TRAIN,
+        SPLIT_RATIO_VAL,
+        suggest_split_ratios,
+        MIN_CLIP_SECONDS,
+        MIN_VALID_FRAMES,
+        MIN_VALID_PCT,
+        MAX_OCCLUSION_RATIO,
+        AUGMENT_PROB,
+        PREFLIGHT_AUG_VARIANTS_PER_CLIP,
+        PREFLIGHT_MIRROR_COMPOSE_RATIO_ESTIMATE,
+    )
 except ImportError:
-    from model_config import DATA_RESULT_ROOT, EXPERIMENTS  # type: ignore[attr-defined]
+    from model_config import (  # type: ignore[attr-defined]
+        DATA_RESULT_ROOT,
+        EXPERIMENTS,
+        SPLIT_RATIO_TRAIN,
+        SPLIT_RATIO_VAL,
+        suggest_split_ratios,
+        MIN_CLIP_SECONDS,
+        MIN_VALID_FRAMES,
+        MIN_VALID_PCT,
+        MAX_OCCLUSION_RATIO,
+        AUGMENT_PROB,
+        PREFLIGHT_AUG_VARIANTS_PER_CLIP,
+        PREFLIGHT_MIRROR_COMPOSE_RATIO_ESTIMATE,
+    )
+
+try:
+    from .train_model_operations import MANIFEST_CACHE_DIR as _MANIFEST_CACHE_DIR  # type: ignore[attr-defined]
+except ImportError:
+    from train_model_operations import MANIFEST_CACHE_DIR as _MANIFEST_CACHE_DIR  # type: ignore[attr-defined]
 
 try:
     from tqdm import tqdm
@@ -24,15 +55,10 @@ YELLOW = "\033[93m"
 CYAN = "\033[96m"
 BOLD = "\033[1m"
 
-TRAIN_RATIO = 0.7
-VAL_RATIO = 0.15
+TRAIN_RATIO = float(SPLIT_RATIO_TRAIN)
+VAL_RATIO = float(SPLIT_RATIO_VAL)
 MIN_SEQ_LEN = 4
-# Defaults "legacy" para comportarse como preflight_check.py:
-# - sin filtros extra de calidad, salvo longitud mínima de secuencia (MIN_SEQ_LEN)
-MIN_CLIP_SECONDS = 0.0
-MIN_VALID_FRAMES = 1
-MIN_VALID_PCT = 0.0
-MAX_OCCLUSION_RATIO = 100.0
+# MIN_* / MAX_OCCLUSION_* por defecto desde model_config (alineado con train_model_operations).
 
 
 def color(text: str, code: str) -> str:
@@ -302,6 +328,81 @@ def scan_embeddings(
     }
 
 
+def check_manifest_cache_section(
+    manifest_cache_dir: Optional[str],
+    pose_source: str,
+    single_user_only: bool,
+    min_clip_seconds: float,
+    min_valid_frames: int,
+    min_valid_pct: float,
+    max_occlusion_ratio: float,
+    legacy_selection: bool = False,
+) -> None:
+    """Alineación entre collect_examples (mismos filtros que train) y JSON en manifest_cache."""
+    header("5) Caché de manifests validate_npy (opcional)")
+    print(
+        "Si entrenas con --manifest-cache-dir, cada UID (ruta absoluta del .npy) puede tener un JSON "
+        "generado por operations_npy/validate_npy.py; el resto usa la rejilla global."
+    )
+    print(f"Directorio por defecto en el proyecto: {_MANIFEST_CACHE_DIR}")
+    if legacy_selection:
+        warn(
+            "Activaste --legacy-selection: la sección 4 (escaneo) usa reglas antiguas; "
+            "train y esta sección usan collect_examples (reglas actuales). El total N puede no coincidir."
+        )
+    if not manifest_cache_dir:
+        warn("No pasaste --manifest-cache-dir: el entrenamiento usará solo la rejilla global (sin manifests por fichero).")
+        return
+    mdir = Path(manifest_cache_dir).expanduser().resolve()
+    if not mdir.is_dir():
+        fail(f"No existe o no es carpeta: {mdir}")
+        return
+    json_n = len(list(mdir.glob("*.json")))
+    ok(f"Carpeta de caché: {mdir} | ficheros *.json = {json_n}")
+    try:
+        from .train_model_operations import (  # type: ignore[attr-defined]
+            collect_examples,
+            manifest_cache_path_for_uid,
+            _example_uid,
+        )
+    except ImportError:
+        from train_model_operations import (  # type: ignore[attr-defined]
+            collect_examples,
+            manifest_cache_path_for_uid,
+            _example_uid,
+        )
+    ex = collect_examples(
+        pose_source=pose_source,
+        single_user_only=single_user_only,
+        min_clip_seconds=float(min_clip_seconds),
+        min_valid_frames=int(min_valid_frames),
+        min_valid_pct=float(min_valid_pct),
+        max_occlusion_ratio=float(max_occlusion_ratio),
+    )
+    print(
+        f"collect_examples => {len(ex)} ejemplos (misma base que train; "
+        "compara con el total de la sección 4 si usaste los mismos filtros y sin --legacy-selection)."
+    )
+    hits = 0
+    seen: set[str] = set()
+    for e in ex:
+        uid = _example_uid(e)
+        if uid in seen:
+            continue
+        seen.add(uid)
+        p = manifest_cache_path_for_uid(mdir, uid)
+        if p.exists():
+            hits += 1
+    uids = len(seen)
+    pct = (100.0 * hits / uids) if uids else 0.0
+    ok(f"UIDs únicos (mismo criterio que train): {uids} | con JSON en caché: {hits} ({pct:.1f}%)")
+    if hits < uids:
+        warn(
+            f"Faltan manifests para {uids - hits} UIDs. Genera caché con "
+            "batch_build_manifest_cache.py (o validate_npy.py por fichero)."
+        )
+
+
 def estimate_times(
     n_examples: int,
     avg_frames: float,
@@ -312,17 +413,23 @@ def estimate_times(
     maintain_class_ratio: bool = False,
     target_neg_pos_ratio: Optional[float] = None,
     per_cat_counts: Optional[Dict[str, int]] = None,
+    train_ratio: float = TRAIN_RATIO,
+    val_ratio: float = VAL_RATIO,
 ) -> None:
-    header("5) Estimación aproximada de tiempos por experimento")
+    header("6) Estimación aproximada de tiempos por experimento")
     if n_examples == 0:
         warn("No hay ejemplos para estimar tiempos.")
         return
     base_time_per_batch = {
         "tcn": 0.004,
+        "ms_tcn": 0.0058,
+        "tcn_attn": 0.0060,
         "res_tcn": 0.005,
         "stgcn": 0.005,
+        "gat_tcn": 0.0072,
         "lstm": 0.006,
         "gru": 0.0055,
+        "gru_attn": 0.0062,
         "transformer": 0.008,
         "conformer_lite": 0.009,
         "pose_cnn2d": 0.006,
@@ -396,8 +503,12 @@ def estimate_times(
         arch = cfg["arch"]
         epochs = int(cfg.get("epochs", 20))
         batch_size = int(cfg.get("batch_size", 32))
-        n_train = int(effective_examples * TRAIN_RATIO)
-        n_val = int(effective_examples * VAL_RATIO)
+        tr = float(max(0.0, min(1.0, train_ratio)))
+        vr = float(max(0.0, min(1.0, val_ratio)))
+        if tr + vr > 1.0:
+            tr, vr = TRAIN_RATIO, VAL_RATIO
+        n_train = int(effective_examples * tr)
+        n_val = int(effective_examples * vr)
         train_batches = max(1, math.ceil(n_train / batch_size))
         val_batches = max(1, math.ceil(n_val / batch_size))
         batches_per_epoch = train_batches + val_batches
@@ -437,23 +548,28 @@ def parse_args() -> argparse.Namespace:
         help="Activa selección antigua de preflight_check.py (no-cat6 único usuario, cat6 usuario mayoritario).",
     )
     parser.add_argument("--augment-on-the-fly", action="store_true")
-    parser.add_argument("--augment-prob", type=float, default=0.65)
+    parser.add_argument(
+        "--augment-prob",
+        type=float,
+        default=AUGMENT_PROB,
+        help=f"Probabilidad augment on-the-fly (alineado con train; default {AUGMENT_PROB}).",
+    )
     parser.add_argument(
         "--aug-variants-per-clip",
         type=float,
-        default=0.0,
+        default=PREFLIGHT_AUG_VARIANTS_PER_CLIP,
         help=(
             "Si >0, estima tiempo como expansión explícita por clip: total = N * (1 + valor). "
-            "Ej: 75 => original + 75 variantes."
+            f"Default model_config: {PREFLIGHT_AUG_VARIANTS_PER_CLIP}. Ej: 75 => original + 75 variantes."
         ),
     )
     parser.add_argument(
         "--mirror-compose-ratio-estimate",
         type=float,
-        default=0.0,
+        default=PREFLIGHT_MIRROR_COMPOSE_RATIO_ESTIMATE,
         help=(
             "Fracción [0..1] de variantes base a las que además se aplica mirror "
-            "en la estimación por expansión explícita."
+            f"en la estimación por expansión explícita (default {PREFLIGHT_MIRROR_COMPOSE_RATIO_ESTIMATE})."
         ),
     )
     parser.add_argument("--maintain-class-ratio", action="store_true")
@@ -462,6 +578,27 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-valid-frames", type=int, default=MIN_VALID_FRAMES)
     parser.add_argument("--min-valid-pct", type=float, default=MIN_VALID_PCT)
     parser.add_argument("--max-occlusion-ratio", type=float, default=MAX_OCCLUSION_RATIO)
+    parser.add_argument(
+        "--train-ratio",
+        type=float,
+        default=None,
+        help=(
+            "Fracción train para estimación de batches. Omitir junto con --val-ratio para usar "
+            f"suggest_split_ratios(N) (igual que train sin flags). Referencia: {SPLIT_RATIO_TRAIN:.3f}."
+        ),
+    )
+    parser.add_argument(
+        "--val-ratio",
+        type=float,
+        default=None,
+        help="Fracción val. Omitir junto con --train-ratio para heurística automática.",
+    )
+    parser.add_argument(
+        "--manifest-cache-dir",
+        type=str,
+        default=None,
+        help="Si se indica, cuenta cuántos ejemplos de collect_examples tienen JSON en esa carpeta (mismo uso que train --manifest-cache-dir).",
+    )
     return parser.parse_args()
 
 
@@ -489,6 +626,45 @@ def main() -> None:
         single_user_only=args.single_user_only,
         legacy_selection=args.legacy_selection,
     )
+    n_tot = int(data_info["total"])
+    if (args.train_ratio is None) ^ (args.val_ratio is None):
+        fail("Indica ambos --train-ratio y --val-ratio, o ninguno (heurística suggest_split_ratios).")
+        return
+
+    if args.train_ratio is None and args.val_ratio is None:
+        tr_eff, va_eff, _te_eff = suggest_split_ratios(max(n_tot, 1))
+    else:
+        tr_eff = float(args.train_ratio)
+        va_eff = float(args.val_ratio)
+
+    if n_tot > 0:
+        s_tr, s_va, s_te = suggest_split_ratios(n_tot)
+        print(
+            f"\n{BOLD}Reparto sugerido (heurística por N={n_tot}): "
+            f"train/val/test = {s_tr:.3f} / {s_va:.3f} / {s_te:.3f}{RESET}"
+        )
+        if args.train_ratio is None and args.val_ratio is None:
+            te_cur = s_te
+            print(
+                f"{BOLD}Reparto en uso (automático, mismo que train sin --train-ratio/--val-ratio): "
+                f"{s_tr:.3f} / {s_va:.3f} / {te_cur:.3f}{RESET}"
+            )
+        else:
+            te_cur = 1.0 - float(args.train_ratio) - float(args.val_ratio)
+            print(
+                f"{BOLD}Reparto en uso (args explícitos): "
+                f"{float(args.train_ratio):.3f} / {float(args.val_ratio):.3f} / {te_cur:.3f}{RESET}"
+            )
+    check_manifest_cache_section(
+        manifest_cache_dir=args.manifest_cache_dir,
+        pose_source=args.pose_source,
+        single_user_only=args.single_user_only,
+        min_clip_seconds=args.min_clip_seconds,
+        min_valid_frames=args.min_valid_frames,
+        min_valid_pct=args.min_valid_pct,
+        max_occlusion_ratio=args.max_occlusion_ratio,
+        legacy_selection=args.legacy_selection,
+    )
     estimate_times(
         n_examples=data_info["total"],
         avg_frames=data_info["avg_frames"],
@@ -499,6 +675,8 @@ def main() -> None:
         maintain_class_ratio=args.maintain_class_ratio,
         target_neg_pos_ratio=args.target_neg_pos_ratio,
         per_cat_counts=data_info["per_cat_counts"],
+        train_ratio=tr_eff,
+        val_ratio=va_eff,
     )
     print(f"\nScript de pre-chequeo completado en {time.time() - start:.1f} segundos.")
 

@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Tuple
 
 """
 Configuración específica para la parte de entrenamiento de modelos (training/).
@@ -8,8 +8,60 @@ Configuración específica para la parte de entrenamiento de modelos (training/)
 - EXPERIMENTS: catálogo de experimentos para train_model.py
 """
 
+
+def suggest_split_ratios(n_examples: int) -> Tuple[float, float, float]:
+    """
+    Heurística única para preflight y train (si no pasas --train-ratio/--val-ratio).
+    Con pocos ejemplos conviene más val/test; con muchos, más train.
+    Devuelve (train, val, test) sumando 1.0.
+    """
+    n = int(max(0, n_examples))
+    if n < 200:
+        return 0.60, 0.20, 0.20
+    if n < 2000:
+        return 0.70, 0.15, 0.15
+    if n < 20000:
+        return 0.75, 0.125, 0.125
+    return 0.80, 0.10, 0.10
+
+
 # Ajusta esta ruta si cambias la ubicación de los resultados de pose_extractor_clean
-DATA_RESULT_ROOT = Path("/home/debian/Proyectos/GuardIA/ResultadosExperimentos/data_result")
+#/home/debian/Proyectos/GuardIA/ResultadosExperimentos/data_result
+DATA_RESULT_ROOT = Path("/home/angel/videos_output/data_result")
+
+# Referencia para código que aún lee constantes (p. ej. CLI explícito o tests): banda "típica" 200≤N<2000.
+# El entrenamiento por defecto usa suggest_split_ratios(N real) vía train_model_operations, no estos valores fijos.
+SPLIT_RATIO_TRAIN, SPLIT_RATIO_VAL, SPLIT_RATIO_TEST = suggest_split_ratios(1500)
+
+# Filtros de calidad por usuario/recorte (collect_examples, preflight, batch_build_manifest_cache).
+# Conservadores: descartan clips muy cortos, pocas keypoints visibles o demasiada oclusión.
+MIN_CLIP_SECONDS = 3.0
+MIN_VALID_FRAMES = 12
+MIN_VALID_PCT = 20.0
+MAX_OCCLUSION_RATIO = 90.0
+
+# Semilla (split, augment, PoseDataset).
+SEED = 42
+
+# Augment on-the-fly en train (probabilidad por muestra y ops consecutivas).
+AUGMENT_PROB = 0.65
+AUGMENT_MAX_OPS = 2
+
+# Rejilla determinista alineada con validate_npy + cuánto mezclar con augment aleatorio en train.
+MAX_DETERMINISTIC_VARIANTS = 64
+TRAIN_DETERMINISTIC_PROB = 0.5
+
+# Perfil dentro de operations_npy/validate_npy.json y lista selected_n_* en manifests por UID.
+AUGMENT_PROFILE_DEFAULT = "industrial"
+MANIFEST_VARIANT_SET_DEFAULT = "industrial"
+
+# Preflight: solo estimación de tiempos (expansión explícita “N variantes por clip”).
+PREFLIGHT_AUG_VARIANTS_PER_CLIP = 0.0
+PREFLIGHT_MIRROR_COMPOSE_RATIO_ESTIMATE = 0.0
+
+# validate_npy.py / batch_build_manifest_cache (mismos defaults que el script).
+VALIDATE_NPY_MIRROR_COMPOSE_RATIO = 0.5
+VALIDATE_NPY_COMPOSE_LIGHT_RATIO = 0.35
 
 
 EXPERIMENTS: List[Dict[str, Any]] = [
@@ -612,6 +664,45 @@ EXPERIMENTS: List[Dict[str, Any]] = [
         "pose_source": "filtered",
         "done": False,
     },
+    # ============================
+    # GRU + atención temporal
+    # ============================
+    {
+        "arch": "gru_attn",
+        "hidden_dim": 128,
+        "num_layers": 2,
+        "dropout": 0.2,
+        "seq_len": 64,
+        "batch_size": 64,
+        "lr": 8e-4,
+        "epochs": 40,
+        "pose_source": "filtered",
+        "done": False,
+    },
+    {
+        "arch": "gru_attn",
+        "hidden_dim": 128,
+        "num_layers": 2,
+        "dropout": 0.3,
+        "seq_len": 96,
+        "batch_size": 64,
+        "lr": 5e-4,
+        "epochs": 55,
+        "pose_source": "filtered",
+        "done": False,
+    },
+    {
+        "arch": "gru_attn",
+        "hidden_dim": 256,
+        "num_layers": 2,
+        "dropout": 0.3,
+        "seq_len": 96,
+        "batch_size": 32,
+        "lr": 3e-4,
+        "epochs": 70,
+        "pose_source": "filtered",
+        "done": False,
+    },
     {
         "arch": "tcn_gru",
         "tcn_hidden_dim": 128,
@@ -713,6 +804,83 @@ EXPERIMENTS: List[Dict[str, Any]] = [
         "seq_len": 96,
         "batch_size": 32,
         "lr": 3e-4,
+        "epochs": 70,
+        "pose_source": "filtered",
+        "done": False,
+    },
+    # ============================
+    # Nuevas arquitecturas (robustez comercial)
+    # ============================
+    # MS-TCN (multi-scale temporal conv)
+    {
+        "arch": "ms_tcn",
+        "hidden_dim": 128,
+        "num_blocks": 3,
+        "dropout": 0.15,
+        "seq_len": 64,
+        "batch_size": 64,
+        "lr": 8e-4,
+        "epochs": 35,
+        "pose_source": "filtered",
+        "done": False,
+    },
+    {
+        "arch": "ms_tcn",
+        "hidden_dim": 128,
+        "num_blocks": 4,
+        "dropout": 0.2,
+        "seq_len": 96,
+        "batch_size": 64,
+        "lr": 6e-4,
+        "epochs": 50,
+        "pose_source": "filtered",
+        "done": False,
+    },
+    {
+        "arch": "ms_tcn",
+        "hidden_dim": 256,
+        "num_blocks": 4,
+        "dropout": 0.25,
+        "seq_len": 96,
+        "batch_size": 32,
+        "lr": 4e-4,
+        "epochs": 70,
+        "pose_source": "filtered",
+        "done": False,
+    },
+    # GAT espacial ligero + TCN temporal
+    {
+        "arch": "gat_tcn",
+        "hidden_dim": 64,
+        "tcn_hidden_dim": 128,
+        "dropout": 0.15,
+        "seq_len": 64,
+        "batch_size": 64,
+        "lr": 8e-4,
+        "epochs": 35,
+        "pose_source": "filtered",
+        "done": False,
+    },
+    {
+        "arch": "gat_tcn",
+        "hidden_dim": 64,
+        "tcn_hidden_dim": 128,
+        "dropout": 0.2,
+        "seq_len": 96,
+        "batch_size": 64,
+        "lr": 6e-4,
+        "epochs": 50,
+        "pose_source": "filtered",
+        "done": False,
+    },
+    {
+        "arch": "gat_tcn",
+        "hidden_dim": 96,
+        "tcn_hidden_dim": 256,
+        "dropout": 0.25,
+        "seq_len": 96,
+        "batch_size": 32,
+        "lr": 4e-4,
         "epochs": 70,
         "pose_source": "filtered",
         "done": False,

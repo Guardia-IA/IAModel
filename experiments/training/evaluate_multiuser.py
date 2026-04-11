@@ -8,13 +8,39 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
-# Soportar ejecución como módulo (-m training.evaluate_multiuser) y como script (python training/evaluate_multiuser.py)
+# Preferir train_model_operations (etiquetas por user_cat como en entrenamiento).
 try:
     from .model_config import DATA_RESULT_ROOT  # type: ignore[attr-defined]
-    from .train_model import PoseExample, PoseDataset  # type: ignore[attr-defined]
+    from .train_model_operations import (  # type: ignore[attr-defined]
+        PoseExample,
+        PoseDataset,
+        collect_examples,
+        make_binary_examples,
+        build_model,
+        build_pose_dataset_for_eval,
+        MAX_DETERMINISTIC_VARIANTS,
+        AUGMENT_CONFIG_PATH,
+        AUGMENT_PROFILE_DEFAULT,
+        SEED,
+    )
+    _USE_OPERATIONS = True
 except ImportError:
     from model_config import DATA_RESULT_ROOT  # type: ignore[attr-defined]
-    from train_model import PoseExample, PoseDataset  # type: ignore[attr-defined]
+    from train_model import (  # type: ignore[attr-defined]
+        PoseExample,
+        PoseDataset,
+        make_binary_examples,
+        build_model,
+    )
+    _USE_OPERATIONS = False
+    AUGMENT_CONFIG_PATH = None  # type: ignore[assignment]
+    AUGMENT_PROFILE_DEFAULT = "industrial"
+    MAX_DETERMINISTIC_VARIANTS = 64
+
+    def collect_examples(*args: Any, **kwargs: Any) -> List[PoseExample]:  # type: ignore[misc,no-redef]
+        raise RuntimeError("collect_examples requiere train_model_operations")
+
+    SEED = 42
 
 
 # Umbral mínimo de frames totales por usuario para considerar el track en test multiusuario
@@ -154,14 +180,6 @@ def evaluate_model_on_multiuser(
     task = checkpoint.get("task", "multiclass")
     positive_class = checkpoint.get("positive_class", 6)
 
-    # Reconstruir modelo según config guardada
-    try:
-        # Cuando se ejecuta como módulo: python -m training.evaluate_multiuser
-        from .train_model import build_model  # type: ignore[attr-defined]
-    except ImportError:
-        # Cuando se ejecuta como script: python training/evaluate_multiuser.py
-        from train_model import build_model  # type: ignore[attr-defined]
-
     cfg = checkpoint.get("config", {})
     arch = cfg.get("arch", "tcn")
     input_dim = checkpoint["input_dim"]
@@ -173,43 +191,44 @@ def evaluate_model_on_multiuser(
     model.eval()
 
     print(f"Construyendo dataset multiusuario (pose_source='{pose_source}')...")
-    examples = collect_multiuser_examples(
-        pose_source=pose_source,
-        label_mode=("primary_thief" if task == "binary" else "clip_cat"),
-        positive_class=int(positive_class),
-    )
+    if _USE_OPERATIONS:
+        all_ex = collect_examples(pose_source=pose_source, single_user_only=False)
+        examples = [e for e in all_ex if getattr(e, "users_in_clip", 1) > 1]
+        print(
+            f"[MULTI] Recolección train_model_operations: total={len(all_ex)} | "
+            f"multiusuario (users_in_clip>1)={len(examples)}"
+        )
+    else:
+        examples = collect_multiuser_examples(
+            pose_source=pose_source,
+            label_mode="clip_cat",
+            positive_class=int(positive_class),
+        )
+        print(f"[MULTI] Modo legacy collect_multiuser_examples: {len(examples)}")
     total_multi = len(examples)
-    print(f"Ejemplos multiusuario: {total_multi}")
 
-    # Si el modelo es binario, reetiquetamos a 0/1 igual que en train_model
     if task == "binary":
-        try:
-            # Ejecución como módulo: python -m training.evaluate_multiuser
-            from .train_model import make_binary_examples  # type: ignore[attr-defined]
-        except ImportError:
-            # Ejecución como script: python training/evaluate_multiuser.py
-            from train_model import make_binary_examples  # type: ignore[attr-defined]
         print(f"[BINARIO] Reetiquetando multiusuario con positive_class={positive_class}")
         examples = make_binary_examples(examples, positive_class=positive_class)
 
-        if balanced_eval:
-            pos = [ex for ex in examples if ex.label == 1]
-            neg = [ex for ex in examples if ex.label == 0]
-            if len(pos) > 0 and len(neg) > 0:
-                target_neg = int(len(pos) * balanced_ratio)
-                target_neg = max(1, target_neg)
-                target_neg = min(target_neg, len(neg))
-                neg_sel = random.sample(neg, target_neg) if target_neg < len(neg) else neg
-                examples = pos + neg_sel
-                random.shuffle(examples)
-                print(
-                    f"[BALANCED-EVAL] pos={len(pos)} neg_total={len(neg)} "
-                    f"neg_kept={target_neg} total_eval={len(examples)}"
-                )
-            else:
-                print(
-                    f"[BALANCED-EVAL] pos={len(pos)} neg={len(neg)} => sin balance (pocos datos)"
-                )
+    if task == "binary" and balanced_eval:
+        pos = [ex for ex in examples if ex.label == 1]
+        neg = [ex for ex in examples if ex.label == 0]
+        if len(pos) > 0 and len(neg) > 0:
+            target_neg = int(len(pos) * balanced_ratio)
+            target_neg = max(1, target_neg)
+            target_neg = min(target_neg, len(neg))
+            neg_sel = random.sample(neg, target_neg) if target_neg < len(neg) else neg
+            examples = pos + neg_sel
+            random.shuffle(examples)
+            print(
+                f"[BALANCED-EVAL] pos={len(pos)} neg_total={len(neg)} "
+                f"neg_kept={target_neg} total_eval={len(examples)}"
+            )
+        else:
+            print(
+                f"[BALANCED-EVAL] pos={len(pos)} neg={len(neg)} => sin balance (pocos datos)"
+            )
 
     if split_manifest_path is None:
         cp_manifest = checkpoint.get("split_manifest_path")
@@ -229,8 +248,27 @@ def evaluate_model_on_multiuser(
     filtered_multi = len(examples)
     print(f"Ejemplos después de filtrar por clases conocidas: {filtered_multi}")
 
-    # Dataset y loader
-    ds = PoseDataset(examples, label_to_idx, seq_len)
+    # Dataset y loader (val/test: solo augment determinista como en train_model_operations)
+    if _USE_OPERATIONS:
+        aug_profile = checkpoint.get("augment_profile", AUGMENT_PROFILE_DEFAULT)
+        max_v = int(checkpoint.get("deterministic_variants_count") or MAX_DETERMINISTIC_VARIANTS)
+        mdir = checkpoint.get("manifest_cache_dir")
+        mset = str(checkpoint.get("manifest_variant_set", "industrial"))
+        ds_split = "test" if split_name == "test" else "val"
+        print(
+            f"[EVAL] PoseDataset operations: split={ds_split} | "
+            f"deterministic_variants≈{max_v} | profile={aug_profile} | "
+            f"manifest_cache={mdir or '—'} | variant_set={mset}"
+        )
+        ds = build_pose_dataset_for_eval(
+            examples,
+            label_to_idx,
+            seq_len,
+            dataset_split=ds_split,
+            checkpoint=checkpoint,
+        )
+    else:
+        ds = PoseDataset(examples, label_to_idx, seq_len)
     loader = DataLoader(ds, batch_size=64, shuffle=False, num_workers=4)
 
     num_classes = len(label_to_idx)
@@ -522,9 +560,22 @@ def main():
         choices=["train", "val", "test"],
         help="Subset del split_manifest a evaluar.",
     )
+    parser.add_argument(
+        "--models-dir",
+        type=str,
+        default=None,
+        help="Carpeta con modelo_*.pt. Por defecto training/models-operation (igual que train_model_operations sin --single-user-only).",
+    )
+    parser.add_argument(
+        "--pose-source",
+        choices=["filtered", "full"],
+        default="filtered",
+        help="Debe coincidir con el entrenamiento (poses.npy vs poses_full.npy).",
+    )
     args = parser.parse_args()
 
-    models_dir = Path(__file__).parent / "models"
+    default_models_dir = Path(__file__).parent / "models-operation"
+    models_dir = Path(args.models_dir).expanduser().resolve() if args.models_dir else default_models_dir
     model_paths = sorted(models_dir.glob("modelo_*.pt"))
     if not model_paths:
         print(f"No se encontraron modelos modelo_*.pt en {models_dir}")
@@ -535,7 +586,7 @@ def main():
     for mp in model_paths:
         res = evaluate_model_on_multiuser(
             mp,
-            pose_source="filtered",
+            pose_source=args.pose_source,
             balanced_eval=args.balanced,
             balanced_ratio=args.balanced_ratio,
             seed=args.seed,

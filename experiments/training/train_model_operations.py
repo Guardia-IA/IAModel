@@ -1,5 +1,7 @@
 import argparse
+import hashlib
 import json
+import math
 import random
 import sys
 from dataclasses import dataclass
@@ -10,28 +12,331 @@ from typing import List, Dict, Tuple, Any, Optional
 import numpy as np
 import torch
 from torch import nn
+import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader, WeightedRandomSampler, get_worker_info
 
 # Soportar ejecución como módulo (-m training.train_model) y como script (python training/train_model.py)
 try:
-    from .model_config import EXPERIMENTS, DATA_RESULT_ROOT  # type: ignore[attr-defined]
+    from .model_config import (  # type: ignore[attr-defined]
+        EXPERIMENTS,
+        DATA_RESULT_ROOT,
+        SPLIT_RATIO_TRAIN,
+        SPLIT_RATIO_VAL,
+        suggest_split_ratios,
+        MIN_CLIP_SECONDS,
+        MIN_VALID_FRAMES,
+        MIN_VALID_PCT,
+        MAX_OCCLUSION_RATIO,
+        SEED,
+        AUGMENT_PROB,
+        AUGMENT_MAX_OPS,
+        MAX_DETERMINISTIC_VARIANTS,
+        TRAIN_DETERMINISTIC_PROB,
+        AUGMENT_PROFILE_DEFAULT,
+        MANIFEST_VARIANT_SET_DEFAULT,
+    )
 except ImportError:
-    from model_config import EXPERIMENTS, DATA_RESULT_ROOT  # type: ignore[attr-defined]
+    from model_config import (  # type: ignore[attr-defined]
+        DATA_RESULT_ROOT,
+        EXPERIMENTS,
+        SPLIT_RATIO_TRAIN,
+        SPLIT_RATIO_VAL,
+        suggest_split_ratios,
+        MIN_CLIP_SECONDS,
+        MIN_VALID_FRAMES,
+        MIN_VALID_PCT,
+        MAX_OCCLUSION_RATIO,
+        SEED,
+        AUGMENT_PROB,
+        AUGMENT_MAX_OPS,
+        MAX_DETERMINISTIC_VARIANTS,
+        TRAIN_DETERMINISTIC_PROB,
+        AUGMENT_PROFILE_DEFAULT,
+        MANIFEST_VARIANT_SET_DEFAULT,
+    )
 
 
-# Semillas y splits
-SEED = 42
-TRAIN_RATIO = 0.7
-VAL_RATIO = 0.15  # resto será test
+# Semillas y splits (por defecto desde model_config; CLI puede sobrescribir en build_datasets)
+TRAIN_RATIO = SPLIT_RATIO_TRAIN
+VAL_RATIO = SPLIT_RATIO_VAL  # resto será test
 MIN_SEQ_LEN = 4   # descartar secuencias demasiado cortas
 
-# Filtros de calidad para aceptar usuarios/recortes en entrenamiento.
-# Objetivo: usar clips de 1 o varios usuarios, pero excluir ejemplos muy pobres
-# (poca visibilidad, muy cortos, casi sin cuerpo visible, etc.).
-MIN_CLIP_SECONDS = 3.0
-MIN_VALID_FRAMES = 12
-MIN_VALID_PCT = 20.0
-MAX_OCCLUSION_RATIO = 90.0
+
+def _step_bounds(lo: float, hi: float, step: float) -> Tuple[float | None, float | None]:
+    if step <= 0:
+        return None, None
+    first = math.ceil(lo / step) * step
+    last = math.floor(hi / step) * step
+    if first > last:
+        return None, None
+    return first, last
+
+
+def _grid_values(lo: float, hi: float, step: float) -> List[float]:
+    first, last = _step_bounds(lo, hi, step)
+    if first is None or last is None:
+        return []
+    n = int(math.floor((last - first) / step + 1e-9)) + 1
+    return [first + i * step for i in range(max(0, n))]
+
+
+def build_deterministic_variant_specs(
+    prof: Dict[str, Any],
+    *,
+    max_variants: int = 64,
+    scale_lo: float = 95.0,
+    scale_hi: float = 111.0,
+    shift_abs: float = 0.06,
+) -> List[Dict[str, Any]]:
+    """
+    Variantes deterministas alineadas con la rejilla por steps del perfil (como validate_npy).
+    Cada spec: {"name": str, "ops": [ {"op": ...}, ... ] }
+    """
+    steps = prof.get("steps", {}) if isinstance(prof, dict) else {}
+    rot_cfg = prof.get("rotate", {}) if isinstance(prof, dict) else {}
+    noise_cfg = prof.get("noise", {}) if isinstance(prof, dict) else {}
+    r_step = float(steps.get("rotate", 2.0))
+    s_step = float(steps.get("scale", 2.0))
+    sh_step = float(steps.get("shift", 0.02))
+    r_lo = float(rot_cfg.get("min", -12.0))
+    r_hi = float(rot_cfg.get("max", 12.0))
+    sigma_cap = float(noise_cfg.get("sigma_cap", 0.006))
+
+    specs: List[Dict[str, Any]] = [{"name": "identity", "ops": []}]
+    specs.append({"name": "mirror", "ops": [{"op": "mirror"}]})
+
+    for deg in _grid_values(r_lo, r_hi, r_step):
+        if abs(deg) < 1e-9:
+            continue
+        specs.append({"name": f"rotate_{deg:.2f}", "ops": [{"op": "rotate", "deg": float(deg)}]})
+
+    for pct in _grid_values(scale_lo, scale_hi, s_step):
+        if abs(pct - 100.0) < 1e-6:
+            continue
+        specs.append({"name": f"scale_{pct:.2f}", "ops": [{"op": "scale", "pct": float(pct)}]})
+
+    for dx in _grid_values(-shift_abs, shift_abs, sh_step):
+        specs.append({"name": f"shift_x_{dx:.4f}", "ops": [{"op": "shift", "dx": float(dx), "dy": 0.0}]})
+    for dy in _grid_values(-shift_abs, shift_abs, sh_step):
+        specs.append({"name": f"shift_y_{dy:.4f}", "ops": [{"op": "shift", "dx": 0.0, "dy": float(dy)}]})
+
+    specs.append(
+        {
+            "name": f"noise_{sigma_cap:.6f}",
+            "ops": [{"op": "noise", "sx": sigma_cap, "sy": sigma_cap}],
+        }
+    )
+
+    # Desduplicar por nombre y limitar tamaño (prioridad: identity, mirror, luego orden)
+    seen = set()
+    out: List[Dict[str, Any]] = []
+    for s in specs:
+        k = s["name"]
+        if k in seen:
+            continue
+        seen.add(k)
+        out.append(s)
+        if len(out) >= max(1, int(max_variants)):
+            break
+    return out
+
+
+def _stable_uid_hash(uid: str) -> int:
+    h = hashlib.md5(uid.encode("utf-8")).hexdigest()
+    return int(h[:8], 16)
+
+
+def _stable_str_hash(s: str) -> int:
+    h = hashlib.md5(s.encode("utf-8")).hexdigest()
+    return int(h[8:16], 16)
+
+
+def _apply_deterministic_ops(
+    poses: np.ndarray,
+    ops: List[Dict[str, Any]],
+    rng: np.random.Generator,
+) -> np.ndarray:
+    out = poses.copy()
+    for op in ops:
+        kind = op.get("op")
+        if kind == "mirror":
+            out = _apply_mirror(out)
+        elif kind == "rotate":
+            out = _apply_rotate(out, float(op["deg"]))
+        elif kind == "scale":
+            out = _apply_scale(out, float(op["pct"]))
+        elif kind == "shift":
+            out = _apply_shift(out, float(op["dx"]), float(op["dy"]))
+        elif kind == "noise":
+            sx = float(op.get("sx", 0.0))
+            sy = float(op.get("sy", 0.0))
+            out = _apply_noise(out, rng, sx, sy)
+        np.clip(out, 0.0, 1.0, out=out)
+    return out
+
+
+# Caché de manifests por NPY (salida de validate_npy.py, un JSON por UID)
+MANIFEST_CACHE_DIR = Path(__file__).parent / "operations_npy" / "manifest_cache"
+
+
+def _flatten_validate_manifest_item(item: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Convierte un ítem del manifest de validate_npy al formato interno de ops."""
+    if not isinstance(item, dict):
+        return []
+    op = item.get("operation")
+    params = item.get("params") or {}
+    if op == "compose":
+        pipeline = params.get("pipeline") or []
+        out: List[Dict[str, Any]] = []
+        for step in pipeline:
+            out.extend(_flatten_validate_manifest_item(step))
+        return out
+    if op == "mirror":
+        if params.get("apply", True):
+            return [{"op": "mirror"}]
+        return []
+    if op == "rotate":
+        return [{"op": "rotate", "deg": float(params["degrees"])}]
+    if op == "scale":
+        return [{"op": "scale", "pct": float(params["percentage"])}]
+    if op == "shift":
+        return [{"op": "shift", "dx": float(params["dx"]), "dy": float(params["dy"])}]
+    if op == "noise":
+        return [{"op": "noise", "sx": float(params["sigma_x"]), "sy": float(params["sigma_y"])}]
+    return []
+
+
+def _variant_specs_from_validate_items(items: List[Dict[str, Any]], prefix: str) -> List[Dict[str, Any]]:
+    specs: List[Dict[str, Any]] = []
+    for i, item in enumerate(items):
+        ops = _flatten_validate_manifest_item(item)
+        name = f"{prefix}_{i}_{item.get('operation', 'op')}"
+        specs.append({"name": name, "ops": ops})
+    return specs
+
+
+def specs_from_validate_manifest_payload(
+    data: Dict[str, Any],
+    variant_set: str = MANIFEST_VARIANT_SET_DEFAULT,
+) -> List[Dict[str, Any]]:
+    """
+    Construye lista de variantes deterministas desde un manifest.json de validate_npy.
+    variant_set: 'min' | 'industrial' | 'full'
+      - min: selected_n_min
+      - industrial: selected_n_objetivo_industrial
+      - full: industrial + mirror_composed + compose_light (deduplicado)
+    Siempre incluye identity al inicio.
+    """
+    vs = str(variant_set).lower().strip()
+    chunks: List[List[Dict[str, Any]]] = []
+    if vs == "min":
+        chunks.append(data.get("selected_n_min") or [])
+    elif vs == "industrial":
+        chunks.append(data.get("selected_n_objetivo_industrial") or [])
+    elif vs == "full":
+        chunks.append(data.get("selected_n_objetivo_industrial") or [])
+        chunks.append(data.get("selected_n_objetivo_industrial_with_mirror_composed") or [])
+        chunks.append(data.get("selected_n_objetivo_industrial_compose_light") or [])
+    else:
+        chunks.append(data.get("selected_n_objetivo_industrial") or [])
+
+    seen_json = set()
+    merged: List[Dict[str, Any]] = []
+    for chunk in chunks:
+        for it in chunk:
+            key = json.dumps(it, sort_keys=True, ensure_ascii=False)
+            if key in seen_json:
+                continue
+            seen_json.add(key)
+            merged.append(it)
+
+    out: List[Dict[str, Any]] = [{"name": "identity", "ops": []}]
+    out.extend(_variant_specs_from_validate_items(merged, "m"))
+    return out
+
+
+def manifest_cache_path_for_uid(cache_dir: Path, uid: str) -> Path:
+    h = hashlib.md5(uid.encode("utf-8")).hexdigest()
+    return cache_dir / f"{h}.json"
+
+
+def build_per_uid_variant_map(
+    examples: List[PoseExample],
+    manifest_cache_dir: Path,
+    variant_set: str,
+    verify_source_path: bool = True,
+) -> Dict[str, List[Dict[str, Any]]]:
+    """
+    Carga manifests desde manifest_cache_dir (un JSON por UID md5).
+    Solo incluye UIDs con fichero válido; el resto usará fallback en PoseDataset.
+    """
+    manifest_cache_dir = Path(manifest_cache_dir)
+    if not manifest_cache_dir.is_dir():
+        return {}
+
+    per_uid: Dict[str, List[Dict[str, Any]]] = {}
+    for ex in examples:
+        uid = _example_uid(ex)
+        if uid in per_uid:
+            continue
+        p = manifest_cache_path_for_uid(manifest_cache_dir, uid)
+        if not p.exists():
+            continue
+        try:
+            with open(p, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if verify_source_path:
+                src = data.get("source_npy")
+                if src and Path(str(src)).resolve() != Path(uid).resolve():
+                    continue
+            specs = specs_from_validate_manifest_payload(data, variant_set=variant_set)
+            if specs:
+                per_uid[uid] = specs
+        except Exception:
+            continue
+    return per_uid
+
+
+def build_pose_dataset_for_eval(
+    examples: List[PoseExample],
+    label_to_idx: Dict[int, int],
+    seq_len: int,
+    dataset_split: str,
+    checkpoint: Dict[str, Any],
+) -> "PoseDataset":
+    """
+    Dataset de evaluación alineado con el checkpoint (misma rejilla o caché de manifests).
+    """
+    augment_profile = checkpoint.get("augment_profile", AUGMENT_PROFILE_DEFAULT)
+    aug_path = Path(checkpoint.get("augment_config_path", str(AUGMENT_CONFIG_PATH)))
+    prof = _load_augment_profile(aug_path, str(augment_profile))
+    max_v = int(checkpoint.get("deterministic_variants_count") or MAX_DETERMINISTIC_VARIANTS)
+    det_specs = build_deterministic_variant_specs(prof if prof else {}, max_variants=max_v)
+    mdir = checkpoint.get("manifest_cache_dir")
+    variant_set = str(checkpoint.get("manifest_variant_set", MANIFEST_VARIANT_SET_DEFAULT))
+    per_uid: Optional[Dict[str, List[Dict[str, Any]]]] = None
+    if mdir:
+        per_uid = build_per_uid_variant_map(
+            examples,
+            Path(str(mdir)),
+            variant_set=variant_set,
+            verify_source_path=True,
+        )
+        if not per_uid:
+            per_uid = None
+    return PoseDataset(
+        examples,
+        label_to_idx,
+        seq_len,
+        augment_on_the_fly=False,
+        dataset_split=dataset_split,
+        deterministic_variants=det_specs,
+        per_uid_variants=per_uid,
+        augment_seed=SEED,
+    )
+
+
+# MIN_CLIP_SECONDS, MIN_VALID_FRAMES, MIN_VALID_PCT, MAX_OCCLUSION_RATIO: model_config
 
 # Modo debug: usar muy pocos datos y un experimento por arquitectura
 DEBUG_MODE = False          # ponlo a True en local para pruebas rápidas
@@ -48,9 +353,8 @@ MODELS_SINGLE_DIR.mkdir(parents=True, exist_ok=True)
 LOGS_DIR.mkdir(parents=True, exist_ok=True)
 SPLITS_DIR.mkdir(parents=True, exist_ok=True)
 
-# Augment on-the-fly (sin crear ficheros .npy en disco)
+# Augment on-the-fly (sin crear ficheros .npy en disco); AUGMENT_PROFILE_DEFAULT en model_config
 AUGMENT_CONFIG_PATH = BASE_DIR / "operations_npy" / "validate_npy.json"
-AUGMENT_PROFILE_DEFAULT = "industrial"
 
 
 random.seed(SEED)
@@ -66,6 +370,7 @@ class PoseExample:
     clip_name: str
     category_str: str   # por si quieres inspeccionar
     valid_mask_path: Optional[Path] = None  # si usa poses_full.npy: máscara de frames válidos (sin NaN)
+    users_in_clip: int = 1  # número de usuarios en meta["users"] para este clip
 
 
 def _example_uid(ex: PoseExample) -> str:
@@ -370,6 +675,7 @@ def collect_examples(
                         clip_name=str(meta.get("clip_name", clip_dir.name)),
                         category_str=cat_str,
                         valid_mask_path=valid_mask_path,
+                        users_in_clip=int(len(users)),
                     )
                 )
 
@@ -424,6 +730,10 @@ class PoseDataset(Dataset):
       - concatenación de velocidades
       - resize temporal a seq_len
       - flatten de joints a un vector de features por frame
+
+    Política de augment:
+      - split="train": opcional (1) variantes deterministas (rejilla validate_npy) y (2) augment aleatorio
+      - split="val"/"test": solo variantes deterministas (sin muestreo aleatorio en rangos)
     """
 
     def __init__(
@@ -432,11 +742,16 @@ class PoseDataset(Dataset):
         label_to_idx: Dict[int, int],
         seq_len: int,
         augment_on_the_fly: bool = False,
-        augment_prob: float = 0.65,
-        augment_max_ops: int = 2,
+        augment_prob: float = AUGMENT_PROB,
+        augment_max_ops: int = AUGMENT_MAX_OPS,
         augment_op_probs: Optional[Dict[str, float]] = None,
         augment_ranges: Optional[Dict[str, Tuple[float, float]]] = None,
-        augment_seed: int = 42,
+        augment_seed: int = SEED,
+        dataset_split: str = "train",
+        deterministic_variants: Optional[List[Dict[str, Any]]] = None,
+        train_deterministic_prob: float = TRAIN_DETERMINISTIC_PROB,
+        use_deterministic_in_train: bool = True,
+        per_uid_variants: Optional[Dict[str, List[Dict[str, Any]]]] = None,
     ):
         self.examples = examples
         self.label_to_idx = label_to_idx
@@ -460,6 +775,16 @@ class PoseDataset(Dataset):
             "noise_sigma_y": (0.0, 0.006),
         }
         self.augment_seed = int(augment_seed)
+        self.dataset_split = dataset_split
+        self.deterministic_variants = deterministic_variants or [{"name": "identity", "ops": []}]
+        self.train_deterministic_prob = float(max(0.0, min(1.0, train_deterministic_prob)))
+        self.use_deterministic_in_train = bool(use_deterministic_in_train)
+        self.per_uid_variants = per_uid_variants or {}
+
+    def _variants_for_uid(self, uid: str) -> List[Dict[str, Any]]:
+        if self.per_uid_variants and uid in self.per_uid_variants:
+            return self.per_uid_variants[uid]
+        return self.deterministic_variants
 
     def __len__(self) -> int:
         return len(self.examples)
@@ -472,20 +797,40 @@ class PoseDataset(Dataset):
             poses = poses[valid_mask].copy()
         if np.any(np.isnan(poses)):
             poses = np.nan_to_num(poses, nan=0.0, posinf=0.0, neginf=0.0)
-        if self.augment_on_the_fly:
-            worker = get_worker_info()
-            # Semilla por worker+sample para evitar patrones repetidos entre workers.
-            base_seed = worker.seed if worker is not None else self.augment_seed
-            sample_seed = (int(base_seed) + int(idx) * 1000003) & 0xFFFFFFFF
-            rng = np.random.default_rng(sample_seed)
-            poses = _augment_poses_on_the_fly(
-                poses=poses,
-                rng=rng,
-                augment_prob=self.augment_prob,
-                max_ops=self.augment_max_ops,
-                op_probs=self.augment_op_probs,
-                ranges=self.augment_ranges,
-            )
+
+        uid = _example_uid(ex)
+        variants = self._variants_for_uid(uid)
+        n_var = len(variants)
+        worker = get_worker_info()
+        base_seed = worker.seed if worker is not None else self.augment_seed
+        sample_seed = (int(base_seed) + int(idx) * 1000003) & 0xFFFFFFFF
+        rng = np.random.default_rng(sample_seed)
+
+        if self.dataset_split in ("val", "test"):
+            vidx = _stable_uid_hash(uid) % max(1, n_var)
+            spec = variants[vidx]
+            ops = spec.get("ops", [])
+            det_seed = (_stable_uid_hash(uid) * 1009 + vidx * 17 + _stable_str_hash(str(spec.get("name", "")))) & 0xFFFFFFFF
+            rng_det = np.random.default_rng(int(det_seed))
+            poses = _apply_deterministic_ops(poses, ops, rng=rng_det)
+        else:
+            # train: primero determinista (opcional), luego aleatorio
+            if self.use_deterministic_in_train and n_var > 0 and rng.random() < self.train_deterministic_prob:
+                vidx = int(rng.integers(0, n_var))
+                spec = variants[vidx]
+                det_seed = (sample_seed ^ (vidx * 7919)) & 0xFFFFFFFF
+                rng_det = np.random.default_rng(int(det_seed))
+                poses = _apply_deterministic_ops(poses, spec.get("ops", []), rng=rng_det)
+            if self.augment_on_the_fly:
+                poses = _augment_poses_on_the_fly(
+                    poses=poses,
+                    rng=rng,
+                    augment_prob=self.augment_prob,
+                    max_ops=self.augment_max_ops,
+                    op_probs=self.augment_op_probs,
+                    ranges=self.augment_ranges,
+                )
+
         poses = normalize_sequence(poses)
         poses = add_velocity(poses)  # [T, J, 4]
         poses = temporal_resize(poses, self.seq_len)  # [seq_len, J, 4]
@@ -919,6 +1264,47 @@ class PoseGRUClassifier(nn.Module):
         return self.fc(last)
 
 
+class PoseGRUAttnClassifier(nn.Module):
+    """
+    GRU bidireccional + atención temporal:
+      - BiGRU extrae features temporales
+      - Atención aprende a ponderar frames relevantes para la decisión
+    """
+
+    def __init__(
+        self,
+        input_dim: int,
+        num_classes: int,
+        hidden_dim: int = 128,
+        num_layers: int = 2,
+        dropout: float = 0.1,
+    ):
+        super().__init__()
+        self.gru = nn.GRU(
+            input_size=input_dim,
+            hidden_size=hidden_dim,
+            num_layers=num_layers,
+            batch_first=True,
+            dropout=dropout if num_layers > 1 else 0.0,
+            bidirectional=True,
+        )
+        attn_dim = hidden_dim * 2
+        self.attn = nn.Sequential(
+            nn.Linear(attn_dim, attn_dim),
+            nn.Tanh(),
+            nn.Linear(attn_dim, 1),
+        )
+        self.fc = nn.Linear(attn_dim, num_classes)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # x: [B, T, F]
+        out, _ = self.gru(x)  # [B, T, 2H]
+        scores = self.attn(out).squeeze(-1)  # [B, T]
+        weights = torch.softmax(scores, dim=1)  # [B, T]
+        context = torch.sum(out * weights.unsqueeze(-1), dim=1)  # [B, 2H]
+        return self.fc(context)
+
+
 class PoseTCNGRUClassifier(nn.Module):
     """
     Híbrido TCN + BiGRU:
@@ -1038,19 +1424,181 @@ class PoseConformerLiteClassifier(nn.Module):
         return self.fc(pooled)
 
 
+class PoseMSTCNClassifier(nn.Module):
+    """
+    Multi-Scale TCN:
+      - ramas paralelas con distintos kernels/dilataciones
+      - fusión + residual para capturar acciones rápidas/lentas
+    """
+
+    def __init__(
+        self,
+        input_dim: int,
+        num_classes: int,
+        hidden_dim: int = 128,
+        num_blocks: int = 3,
+        dropout: float = 0.1,
+    ):
+        super().__init__()
+        self.in_proj = nn.Conv1d(input_dim, hidden_dim, kernel_size=1)
+        self.blocks = nn.ModuleList()
+        for _ in range(num_blocks):
+            self.blocks.append(
+                nn.ModuleDict(
+                    {
+                        "b1": nn.Sequential(
+                            nn.Conv1d(hidden_dim, hidden_dim, kernel_size=3, padding=1, dilation=1),
+                            nn.ReLU(),
+                            nn.Dropout(dropout),
+                        ),
+                        "b2": nn.Sequential(
+                            nn.Conv1d(hidden_dim, hidden_dim, kernel_size=5, padding=4, dilation=2),
+                            nn.ReLU(),
+                            nn.Dropout(dropout),
+                        ),
+                        "b3": nn.Sequential(
+                            nn.Conv1d(hidden_dim, hidden_dim, kernel_size=7, padding=9, dilation=3),
+                            nn.ReLU(),
+                            nn.Dropout(dropout),
+                        ),
+                        "fuse": nn.Conv1d(hidden_dim * 3, hidden_dim, kernel_size=1),
+                    }
+                )
+            )
+        self.pool = nn.AdaptiveAvgPool1d(1)
+        self.fc = nn.Linear(hidden_dim, num_classes)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        h = self.in_proj(x.permute(0, 2, 1))  # [B, C, T]
+        for blk in self.blocks:
+            residual = h
+            m1 = blk["b1"](h)
+            m2 = blk["b2"](h)
+            m3 = blk["b3"](h)
+            h = blk["fuse"](torch.cat([m1, m2, m3], dim=1))
+            h = h + residual
+        h = self.pool(h).squeeze(-1)
+        return self.fc(h)
+
+
+class PoseTCNAttnClassifier(nn.Module):
+    """
+    TCN + atención temporal:
+      - TCN extrae features locales
+      - atención pondera frames críticos de la acción
+    """
+
+    def __init__(
+        self,
+        input_dim: int,
+        num_classes: int,
+        hidden_dim: int = 128,
+        num_layers: int = 2,
+        dropout: float = 0.1,
+    ):
+        super().__init__()
+        self.in_proj = nn.Conv1d(input_dim, hidden_dim, kernel_size=1)
+        layers = []
+        for _ in range(num_layers):
+            layers.append(
+                nn.Sequential(
+                    nn.Conv1d(hidden_dim, hidden_dim, kernel_size=3, padding=1),
+                    nn.ReLU(),
+                    nn.Dropout(dropout),
+                )
+            )
+        self.layers = nn.ModuleList(layers)
+        self.attn = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.Tanh(),
+            nn.Linear(hidden_dim, 1),
+        )
+        self.fc = nn.Linear(hidden_dim, num_classes)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        h = self.in_proj(x.permute(0, 2, 1))  # [B, C, T]
+        for layer in self.layers:
+            h = h + layer(h)
+        ht = h.permute(0, 2, 1)  # [B, T, C]
+        scores = self.attn(ht).squeeze(-1)  # [B, T]
+        w = torch.softmax(scores, dim=1)
+        context = torch.sum(ht * w.unsqueeze(-1), dim=1)  # [B, C]
+        return self.fc(context)
+
+
+class PoseGATTCNClassifier(nn.Module):
+    """
+    GAT espacial ligero + TCN temporal:
+      - atención entre joints por frame (no adyacencia fija)
+      - TCN sobre secuencia temporal del embedding espacial
+    """
+
+    def __init__(
+        self,
+        input_dim: int,
+        num_classes: int,
+        hidden_dim: int = 64,
+        tcn_hidden_dim: int = 128,
+        dropout: float = 0.1,
+    ):
+        super().__init__()
+        if input_dim % 4 != 0:
+            raise ValueError(f"PoseGATTCNClassifier espera input_dim múltiplo de 4, recibido {input_dim}")
+        self.num_joints = input_dim // 4
+        self.joint_proj = nn.Linear(4, hidden_dim)
+        self.q_proj = nn.Linear(hidden_dim, hidden_dim, bias=False)
+        self.k_proj = nn.Linear(hidden_dim, hidden_dim, bias=False)
+        self.v_proj = nn.Linear(hidden_dim, hidden_dim, bias=False)
+        self.out_proj = nn.Linear(hidden_dim, hidden_dim)
+        self.tcn_in = nn.Conv1d(hidden_dim * self.num_joints, tcn_hidden_dim, kernel_size=1)
+        self.tcn = nn.Sequential(
+            nn.Conv1d(tcn_hidden_dim, tcn_hidden_dim, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Conv1d(tcn_hidden_dim, tcn_hidden_dim, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+        )
+        self.pool = nn.AdaptiveAvgPool1d(1)
+        self.fc = nn.Linear(tcn_hidden_dim, num_classes)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        b, t, f = x.shape
+        j = self.num_joints
+        h = x.view(b, t, j, 4)  # [B, T, J, 4]
+        h = self.joint_proj(h)  # [B, T, J, H]
+        h_bt = h.reshape(b * t, j, -1)  # [B*T, J, H]
+        q = self.q_proj(h_bt)
+        k = self.k_proj(h_bt)
+        v = self.v_proj(h_bt)
+        attn = torch.softmax(torch.matmul(q, k.transpose(1, 2)) / (q.shape[-1] ** 0.5), dim=-1)  # [B*T, J, J]
+        h_bt = self.out_proj(torch.matmul(attn, v)) + h_bt  # [B*T, J, H]
+        h = h_bt.reshape(b, t, j, -1).reshape(b, t, -1)  # [B, T, J*H]
+        h = self.tcn_in(h.permute(0, 2, 1))  # [B, C, T]
+        h = self.tcn(h)
+        h = self.pool(h).squeeze(-1)
+        return self.fc(h)
+
+
 def split_examples(
     examples: List[PoseExample],
     seed: int = SEED,
+    train_ratio: float = TRAIN_RATIO,
+    val_ratio: float = VAL_RATIO,
 ) -> Tuple[List[PoseExample], List[PoseExample], List[PoseExample]]:
     # Split determinista y estable entre ejecuciones/experimentos:
     # 1) orden base estable por UID
     # 2) shuffle con RNG local semillado
+    tr = float(max(0.0, min(1.0, train_ratio)))
+    vr = float(max(0.0, min(1.0, val_ratio)))
+    if tr + vr > 1.0:
+        raise ValueError(f"train_ratio+val_ratio debe ser <= 1.0 (got {tr}+{vr})")
     ordered = sorted(examples, key=_example_uid)
     rng = random.Random(seed)
     rng.shuffle(ordered)
     n = len(ordered)
-    n_train = int(n * TRAIN_RATIO)
-    n_val = int(n * VAL_RATIO)
+    n_train = int(n * tr)
+    n_val = int(n * vr)
     train = ordered[:n_train]
     val = ordered[n_train:n_train + n_val]
     test = ordered[n_train + n_val:]
@@ -1082,6 +1630,7 @@ def make_binary_examples(
                 clip_name=ex.clip_name,
                 category_str=ex.category_str,
                 valid_mask_path=getattr(ex, "valid_mask_path", None),
+                users_in_clip=getattr(ex, "users_in_clip", 1),
             )
         )
     return binary_examples
@@ -1097,6 +1646,128 @@ def train_one_epoch(model, loader, criterion, optimizer, device) -> float:
         optimizer.zero_grad()
         logits = model(x)
         loss = criterion(logits, y)
+        loss.backward()
+        optimizer.step()
+        total_loss += loss.item() * x.size(0)
+        total += x.size(0)
+    return total_loss / max(total, 1)
+
+
+def _classification_loss_per_sample(
+    logits: torch.Tensor,
+    y: torch.Tensor,
+    loss_type: str = "ce",
+    focal_gamma: float = 2.0,
+    asym_gamma_neg: float = 4.0,
+    asym_gamma_pos: float = 1.0,
+) -> torch.Tensor:
+    loss_type = str(loss_type).lower()
+    ce = F.cross_entropy(logits, y, reduction="none")
+    if loss_type == "ce":
+        return ce
+    probs = torch.softmax(logits, dim=1)
+    pt = probs.gather(1, y.view(-1, 1)).squeeze(1).clamp(min=1e-6, max=1.0 - 1e-6)
+    if loss_type == "focal":
+        mod = torch.pow(1.0 - pt, float(max(0.0, focal_gamma)))
+        return ce * mod
+    if loss_type == "asymmetric":
+        if logits.shape[1] == 2:
+            yb = (y > 0).float()
+            p_pos = probs[:, 1].clamp(min=1e-6, max=1.0 - 1e-6)
+            p_t = yb * p_pos + (1.0 - yb) * (1.0 - p_pos)
+            gam = yb * float(max(0.0, asym_gamma_pos)) + (1.0 - yb) * float(max(0.0, asym_gamma_neg))
+            bce = -(yb * torch.log(p_pos) + (1.0 - yb) * torch.log(1.0 - p_pos))
+            return bce * torch.pow(1.0 - p_t, gam)
+        # fallback multiclase
+        mod = torch.pow(1.0 - pt, float(max(0.0, focal_gamma)))
+        return ce * mod
+    return ce
+
+
+def _mixstyle_features(x: torch.Tensor, p: float = 0.0, alpha: float = 0.3) -> torch.Tensor:
+    # MixStyle simple en espacio de features temporales [B,T,F] para robustez de dominio/cámara.
+    if p <= 0.0 or x.dim() != 3:
+        return x
+    if torch.rand(1, device=x.device).item() >= p or x.shape[0] < 2:
+        return x
+    eps = 1e-6
+    mu = x.mean(dim=1, keepdim=True)
+    std = x.std(dim=1, keepdim=True).clamp(min=eps)
+    x_norm = (x - mu) / std
+    perm = torch.randperm(x.size(0), device=x.device)
+    mu2 = mu[perm]
+    std2 = std[perm]
+    lam = torch.distributions.Beta(alpha, alpha).sample((x.size(0), 1, 1)).to(x.device)
+    mu_mix = lam * mu + (1.0 - lam) * mu2
+    std_mix = lam * std + (1.0 - lam) * std2
+    return x_norm * std_mix + mu_mix
+
+
+def _ssl_view_jitter(x: torch.Tensor, noise_std: float = 0.01, drop_prob: float = 0.05) -> torch.Tensor:
+    out = x
+    if noise_std > 0.0:
+        out = out + torch.randn_like(out) * float(noise_std)
+    if drop_prob > 0.0:
+        keep = (torch.rand_like(out[..., :1]) >= float(drop_prob)).float()
+        out = out * keep
+    return out
+
+
+def train_one_epoch_advanced(
+    model,
+    loader,
+    optimizer,
+    device,
+    loss_type: str = "ce",
+    focal_gamma: float = 2.0,
+    asym_gamma_neg: float = 4.0,
+    asym_gamma_pos: float = 1.0,
+    hard_negative_mining: bool = False,
+    hard_negative_topk_frac: float = 0.2,
+    hard_negative_weight: float = 1.5,
+    mixstyle_prob: float = 0.0,
+    mixstyle_alpha: float = 0.3,
+    ssl_consistency_weight: float = 0.0,
+    ssl_noise_std: float = 0.01,
+    ssl_drop_prob: float = 0.05,
+    supervised_weight: float = 1.0,
+) -> float:
+    model.train()
+    total_loss = 0.0
+    total = 0
+    for x, y in loader:
+        x = x.to(device)
+        y = y.to(device)
+        x = _mixstyle_features(x, p=float(max(0.0, mixstyle_prob)), alpha=float(max(1e-3, mixstyle_alpha)))
+        optimizer.zero_grad()
+        logits = model(x)
+        per_sample = _classification_loss_per_sample(
+            logits,
+            y,
+            loss_type=loss_type,
+            focal_gamma=focal_gamma,
+            asym_gamma_neg=asym_gamma_neg,
+            asym_gamma_pos=asym_gamma_pos,
+        )
+        if hard_negative_mining and logits.shape[1] == 2:
+            weights = torch.ones_like(per_sample)
+            neg_mask = y == 0
+            neg_idx = torch.where(neg_mask)[0]
+            if neg_idx.numel() > 0:
+                p_pos = torch.softmax(logits, dim=1)[:, 1]
+                k = max(1, int(round(float(max(0.0, min(1.0, hard_negative_topk_frac))) * neg_idx.numel())))
+                hardest_local = torch.topk(p_pos[neg_idx], k=min(k, neg_idx.numel()), largest=True).indices
+                hard_idx = neg_idx[hardest_local]
+                weights[hard_idx] = float(max(1.0, hard_negative_weight))
+            per_sample = per_sample * weights
+        sup_loss = per_sample.mean()
+        loss = sup_loss * float(max(0.0, supervised_weight))
+        if ssl_consistency_weight > 0.0:
+            x_ssl = _ssl_view_jitter(x, noise_std=ssl_noise_std, drop_prob=ssl_drop_prob)
+            logits_ssl = model(x_ssl)
+            p_detached = torch.softmax(logits.detach(), dim=1)
+            ssl_loss = F.kl_div(F.log_softmax(logits_ssl, dim=1), p_detached, reduction="batchmean")
+            loss = loss + float(ssl_consistency_weight) * ssl_loss
         loss.backward()
         optimizer.step()
         total_loss += loss.item() * x.size(0)
@@ -1239,12 +1910,19 @@ def build_datasets_and_loaders(
     augment_on_the_fly: bool = False,
     augment_config_path: Path = AUGMENT_CONFIG_PATH,
     augment_profile: str = AUGMENT_PROFILE_DEFAULT,
-    augment_prob: float = 0.65,
-    augment_max_ops: int = 2,
+    augment_prob: float = AUGMENT_PROB,
+    augment_max_ops: int = AUGMENT_MAX_OPS,
     augment_seed: int = SEED,
     maintain_class_ratio: bool = False,
     target_neg_pos_ratio: Optional[float] = None,
-) -> Tuple[Dict[str, DataLoader], int, Dict[int, int], Dict[str, List[str]]]:
+    train_ratio: Optional[float] = None,
+    val_ratio: Optional[float] = None,
+    max_deterministic_variants: int = MAX_DETERMINISTIC_VARIANTS,
+    train_deterministic_prob: float = TRAIN_DETERMINISTIC_PROB,
+    use_deterministic_in_train: bool = True,
+    manifest_cache_dir: Optional[Path] = None,
+    manifest_variant_set: str = MANIFEST_VARIANT_SET_DEFAULT,
+) -> Tuple[Dict[str, DataLoader], int, Dict[int, int], Dict[str, Any]]:
     print(f"Recolectando ejemplos desde data_result... (pose_source='{pose_source}')")
     examples = collect_examples(
         pose_source=pose_source,
@@ -1264,18 +1942,69 @@ def build_datasets_and_loaders(
     # En modo binario reetiquetamos a 0/1 manteniendo el resto del flujo igual
     if task == "binary":
         print(f"[BINARIO] Usando clase positiva original: {positive_class}")
-        examples = make_binary_examples(examples, positive_class=positive_class)
 
-    train_ex, val_ex, test_ex = split_examples(examples)
-    print(f"Train: {len(train_ex)} | Val: {len(val_ex)} | Test: {len(test_ex)}")
+    n_ex = len(examples)
+    if (train_ratio is None) ^ (val_ratio is None):
+        raise ValueError("Indica ambos --train-ratio y --val-ratio, o ninguno para usar la heurística suggest_split_ratios(N).")
+    if train_ratio is None or val_ratio is None:
+        tr, vr, te = suggest_split_ratios(n_ex)
+        print(
+            f"[SPLIT] Heurística suggest_split_ratios(N={n_ex}) = "
+            f"{tr:.3f}/{vr:.3f}/{te:.3f} train/val/test (misma lógica que preflight; "
+            "o pasa --train-ratio y --val-ratio para fijar a mano)."
+        )
+    else:
+        tr = float(train_ratio)
+        vr = float(val_ratio)
+        if tr + vr > 1.0:
+            raise ValueError(f"train_ratio+val_ratio debe ser <= 1.0 (got {tr}+{vr})")
+        te = 1.0 - tr - vr
+        sug_tr, sug_vr, sug_te = suggest_split_ratios(n_ex)
+        print(
+            f"[SPLIT] Ratios explícitos: {tr:.3f}/{vr:.3f}/{te:.3f} train/val/test | "
+            f"heurística para N={n_ex} sería {sug_tr:.3f}/{sug_vr:.3f}/{sug_te:.3f}"
+        )
+
+    train_ex, val_ex, test_ex = split_examples(examples, seed=SEED, train_ratio=tr, val_ratio=vr)
+    print(
+        f"Split aplicado => Train: {len(train_ex)} | Val: {len(val_ex)} | Test: {len(test_ex)}"
+    )
 
     label_to_idx = build_label_mapping(examples)
     num_classes = len(label_to_idx)
     print(f"Número de clases: {num_classes} | mapping: {label_to_idx}")
 
     aug_cfg = _load_augment_profile(augment_config_path, augment_profile)
+    if not aug_cfg:
+        aug_cfg = {
+            "steps": {"rotate": 2.0, "scale": 2.0, "shift": 0.02},
+            "rotate": {"min": -15.0, "max": 15.0},
+            "noise": {"sigma_cap": 0.006},
+        }
     rotate_cfg = aug_cfg.get("rotate", {}) if isinstance(aug_cfg, dict) else {}
     noise_cfg = aug_cfg.get("noise", {}) if isinstance(aug_cfg, dict) else {}
+    det_specs = build_deterministic_variant_specs(
+        aug_cfg if isinstance(aug_cfg, dict) else {},
+        max_variants=max(1, int(max_deterministic_variants)),
+    )
+    print(
+        f"[AUGMENT] Perfil={augment_profile} | variantes deterministas (rejilla validate_npy): {len(det_specs)}"
+    )
+    per_uid_map: Optional[Dict[str, List[Dict[str, Any]]]] = None
+    manifest_hits = 0
+    if manifest_cache_dir is not None:
+        mdir = Path(manifest_cache_dir)
+        per_uid_map = build_per_uid_variant_map(
+            train_ex + val_ex + test_ex,
+            mdir,
+            variant_set=manifest_variant_set,
+            verify_source_path=True,
+        )
+        manifest_hits = len(per_uid_map)
+        print(
+            f"[MANIFEST-CACHE] dir={mdir} | UIDs con manifest propio: {manifest_hits} | "
+            f"variant_set={manifest_variant_set} | resto usa rejilla global"
+        )
     aug_ranges = {
         "rotate_degrees": (float(rotate_cfg.get("min", -15.0)), float(rotate_cfg.get("max", 15.0))),
         "scale_percentage": (95.0, 111.0),
@@ -1300,9 +2029,32 @@ def build_datasets_and_loaders(
         },
         augment_ranges=aug_ranges,
         augment_seed=augment_seed,
+        dataset_split="train",
+        deterministic_variants=det_specs,
+        train_deterministic_prob=train_deterministic_prob,
+        use_deterministic_in_train=use_deterministic_in_train,
+        per_uid_variants=per_uid_map,
     )
-    val_ds = PoseDataset(val_ex, label_to_idx, seq_len)
-    test_ds = PoseDataset(test_ex, label_to_idx, seq_len)
+    val_ds = PoseDataset(
+        val_ex,
+        label_to_idx,
+        seq_len,
+        augment_on_the_fly=False,
+        dataset_split="val",
+        deterministic_variants=det_specs,
+        augment_seed=augment_seed,
+        per_uid_variants=per_uid_map,
+    )
+    test_ds = PoseDataset(
+        test_ex,
+        label_to_idx,
+        seq_len,
+        augment_on_the_fly=False,
+        dataset_split="test",
+        deterministic_variants=det_specs,
+        augment_seed=augment_seed,
+        per_uid_variants=per_uid_map,
+    )
 
     if balanced and task == "binary":
         # WeightedRandomSampler para reducir desbalance (en binario: labels 0/1)
@@ -1366,6 +2118,18 @@ def build_datasets_and_loaders(
         "train": [_example_uid(ex) for ex in train_ex],
         "val": [_example_uid(ex) for ex in val_ex],
         "test": [_example_uid(ex) for ex in test_ex],
+        "split_ratios": {"train": tr, "val": vr, "test": te},
+        "augment_profile": augment_profile,
+        "deterministic_variants_count": len(det_specs),
+        "manifest_cache_dir": str(manifest_cache_dir) if manifest_cache_dir else None,
+        "manifest_variant_set": manifest_variant_set,
+        "manifest_uids_with_cache": manifest_hits,
+        "augment_policy": {
+            "train": "deterministic_grid (opcional) + random on-the-fly (opcional)",
+            "val": "solo determinista (rejilla por UID estable)",
+            "test": "solo determinista (rejilla por UID estable)",
+            "note": "Val/test no usan muestreo aleatorio en rangos; si hay manifest_cache por UID, se usan variantes validate_npy; si no, rejilla global.",
+        },
     }
     return loaders, input_dim, label_to_idx, split_manifest
 
@@ -1456,6 +2220,14 @@ def build_model(arch: str, input_dim: int, num_classes: int, cfg: Dict[str, Any]
             num_layers=cfg.get("num_layers", 2),
             dropout=cfg.get("dropout", 0.1),
         )
+    if arch == "gru_attn":
+        return PoseGRUAttnClassifier(
+            input_dim=input_dim,
+            num_classes=num_classes,
+            hidden_dim=cfg.get("hidden_dim", 128),
+            num_layers=cfg.get("num_layers", 2),
+            dropout=cfg.get("dropout", 0.1),
+        )
     if arch == "tcn_gru":
         return PoseTCNGRUClassifier(
             input_dim=input_dim,
@@ -1477,6 +2249,30 @@ def build_model(arch: str, input_dim: int, num_classes: int, cfg: Dict[str, Any]
             dropout=cfg.get("dropout", 0.1),
             conv_kernel=cfg.get("conv_kernel", 7),
         )
+    if arch == "ms_tcn":
+        return PoseMSTCNClassifier(
+            input_dim=input_dim,
+            num_classes=num_classes,
+            hidden_dim=cfg.get("hidden_dim", 128),
+            num_blocks=cfg.get("num_blocks", 3),
+            dropout=cfg.get("dropout", 0.1),
+        )
+    if arch == "tcn_attn":
+        return PoseTCNAttnClassifier(
+            input_dim=input_dim,
+            num_classes=num_classes,
+            hidden_dim=cfg.get("hidden_dim", 128),
+            num_layers=cfg.get("num_layers", 2),
+            dropout=cfg.get("dropout", 0.1),
+        )
+    if arch == "gat_tcn":
+        return PoseGATTCNClassifier(
+            input_dim=input_dim,
+            num_classes=num_classes,
+            hidden_dim=cfg.get("hidden_dim", 64),
+            tcn_hidden_dim=cfg.get("tcn_hidden_dim", 128),
+            dropout=cfg.get("dropout", 0.1),
+        )
     raise ValueError(f"Arquitectura desconocida: {arch}")
 
 
@@ -1497,12 +2293,32 @@ def run_experiment(
     augment_on_the_fly: bool = False,
     augment_config_path: Path = AUGMENT_CONFIG_PATH,
     augment_profile: str = AUGMENT_PROFILE_DEFAULT,
-    augment_prob: float = 0.65,
-    augment_max_ops: int = 2,
+    augment_prob: float = AUGMENT_PROB,
+    augment_max_ops: int = AUGMENT_MAX_OPS,
     augment_seed: int = SEED,
     maintain_class_ratio: bool = False,
     target_neg_pos_ratio: Optional[float] = None,
     split_manifest_out: Optional[Path] = None,
+    loss_type: str = "ce",
+    focal_gamma: float = 2.0,
+    asym_gamma_neg: float = 4.0,
+    asym_gamma_pos: float = 1.0,
+    hard_negative_mining: bool = False,
+    hard_negative_topk_frac: float = 0.2,
+    hard_negative_weight: float = 1.5,
+    mixstyle_prob: float = 0.0,
+    mixstyle_alpha: float = 0.3,
+    ssl_warmup_epochs: int = 0,
+    ssl_consistency_weight: float = 0.0,
+    ssl_noise_std: float = 0.01,
+    ssl_drop_prob: float = 0.05,
+    train_ratio: Optional[float] = None,
+    val_ratio: Optional[float] = None,
+    max_deterministic_variants: int = MAX_DETERMINISTIC_VARIANTS,
+    train_deterministic_prob: float = TRAIN_DETERMINISTIC_PROB,
+    use_deterministic_in_train: bool = True,
+    manifest_cache_dir: Optional[Path] = None,
+    manifest_variant_set: str = MANIFEST_VARIANT_SET_DEFAULT,
 ) -> Dict[str, Any]:
     print("\n" + "=" * 80)
     print(f"Experimento {exp_id:02d} | config={cfg}")
@@ -1534,6 +2350,13 @@ def run_experiment(
         augment_seed=augment_seed,
         maintain_class_ratio=maintain_class_ratio,
         target_neg_pos_ratio=target_neg_pos_ratio,
+        train_ratio=train_ratio,
+        val_ratio=val_ratio,
+        max_deterministic_variants=max_deterministic_variants,
+        train_deterministic_prob=train_deterministic_prob,
+        use_deterministic_in_train=use_deterministic_in_train,
+        manifest_cache_dir=manifest_cache_dir,
+        manifest_variant_set=manifest_variant_set,
     )
     num_classes = len(label_to_idx)
 
@@ -1546,7 +2369,26 @@ def run_experiment(
     history = []
 
     for epoch in range(1, epochs + 1):
-        train_loss = train_one_epoch(model, loaders["train"], criterion, optimizer, device)
+        in_ssl_warmup = epoch <= int(max(0, ssl_warmup_epochs))
+        train_loss = train_one_epoch_advanced(
+            model,
+            loaders["train"],
+            optimizer,
+            device,
+            loss_type=loss_type,
+            focal_gamma=focal_gamma,
+            asym_gamma_neg=asym_gamma_neg,
+            asym_gamma_pos=asym_gamma_pos,
+            hard_negative_mining=hard_negative_mining,
+            hard_negative_topk_frac=hard_negative_topk_frac,
+            hard_negative_weight=hard_negative_weight,
+            mixstyle_prob=mixstyle_prob,
+            mixstyle_alpha=mixstyle_alpha,
+            ssl_consistency_weight=ssl_consistency_weight,
+            ssl_noise_std=ssl_noise_std,
+            ssl_drop_prob=ssl_drop_prob,
+            supervised_weight=(0.0 if in_ssl_warmup else 1.0),
+        )
         val_loss, val_acc = evaluate(model, loaders["val"], criterion, device)
         print(
             f"[Exp {exp_id:02d}] Epoch {epoch:03d} | "
@@ -1635,6 +2477,28 @@ def run_experiment(
             "history": history,
         },
         "split_manifest_path": str(split_manifest_out) if split_manifest_out is not None else None,
+        "split_ratios": split_manifest.get("split_ratios"),
+        "augment_profile": augment_profile,
+        "augment_config_path": str(augment_config_path),
+        "deterministic_variants_count": split_manifest.get("deterministic_variants_count"),
+        "manifest_cache_dir": split_manifest.get("manifest_cache_dir"),
+        "manifest_variant_set": split_manifest.get("manifest_variant_set"),
+        "manifest_uids_with_cache": split_manifest.get("manifest_uids_with_cache"),
+        "advanced_training": {
+            "loss_type": loss_type,
+            "focal_gamma": float(focal_gamma),
+            "asym_gamma_neg": float(asym_gamma_neg),
+            "asym_gamma_pos": float(asym_gamma_pos),
+            "hard_negative_mining": bool(hard_negative_mining),
+            "hard_negative_topk_frac": float(hard_negative_topk_frac),
+            "hard_negative_weight": float(hard_negative_weight),
+            "mixstyle_prob": float(mixstyle_prob),
+            "mixstyle_alpha": float(mixstyle_alpha),
+            "ssl_warmup_epochs": int(ssl_warmup_epochs),
+            "ssl_consistency_weight": float(ssl_consistency_weight),
+            "ssl_noise_std": float(ssl_noise_std),
+            "ssl_drop_prob": float(ssl_drop_prob),
+        },
     }
 
     torch.save(checkpoint, save_path)
@@ -1653,7 +2517,15 @@ def run_experiment(
                 "min_valid_pct": float(min_valid_pct),
                 "max_occlusion_ratio": float(max_occlusion_ratio),
             },
-            "split": split_manifest,
+            "split": {
+                "train": split_manifest["train"],
+                "val": split_manifest["val"],
+                "test": split_manifest["test"],
+            },
+            "split_ratios": split_manifest.get("split_ratios"),
+            "augment_profile": split_manifest.get("augment_profile"),
+            "deterministic_variants_count": split_manifest.get("deterministic_variants_count"),
+            "augment_policy": split_manifest.get("augment_policy"),
         }
         with open(split_manifest_out, "w", encoding="utf-8") as f:
             json.dump(split_payload, f, indent=2, ensure_ascii=False)
@@ -1764,8 +2636,18 @@ def parse_args() -> argparse.Namespace:
         default=AUGMENT_PROFILE_DEFAULT,
         help=f"Perfil de augment en validate_npy.json (default {AUGMENT_PROFILE_DEFAULT}).",
     )
-    parser.add_argument("--augment-prob", type=float, default=0.65, help="Probabilidad de aplicar augment por muestra.")
-    parser.add_argument("--augment-max-ops", type=int, default=2, help="Máximo de operaciones por muestra aumentada.")
+    parser.add_argument(
+        "--augment-prob",
+        type=float,
+        default=AUGMENT_PROB,
+        help=f"Probabilidad de aplicar augment por muestra (default {AUGMENT_PROB}).",
+    )
+    parser.add_argument(
+        "--augment-max-ops",
+        type=int,
+        default=AUGMENT_MAX_OPS,
+        help=f"Máximo de operaciones por muestra aumentada (default {AUGMENT_MAX_OPS}).",
+    )
     parser.add_argument("--augment-seed", type=int, default=SEED, help="Semilla de augment on-the-fly.")
     parser.add_argument(
         "--maintain-class-ratio",
@@ -1777,6 +2659,73 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=None,
         help="Ratio objetivo no-robo/robo para sampler en binario. Si no se indica, usa ratio observado.",
+    )
+    parser.add_argument("--loss-type", choices=["ce", "focal", "asymmetric"], default="ce", help="Pérdida de entrenamiento.")
+    parser.add_argument("--focal-gamma", type=float, default=2.0, help="Gamma para focal loss.")
+    parser.add_argument("--asym-gamma-neg", type=float, default=4.0, help="Gamma negativo para asymmetric loss.")
+    parser.add_argument("--asym-gamma-pos", type=float, default=1.0, help="Gamma positivo para asymmetric loss.")
+    parser.add_argument("--hard-negative-mining", action="store_true", help="Repondera negativos más confusos (binario).")
+    parser.add_argument("--hard-negative-topk-frac", type=float, default=0.2, help="Fracción de negativos duros por batch.")
+    parser.add_argument("--hard-negative-weight", type=float, default=1.5, help="Peso extra para negativos duros.")
+    parser.add_argument("--mixstyle-prob", type=float, default=0.0, help="Probabilidad MixStyle para robustez de dominio.")
+    parser.add_argument("--mixstyle-alpha", type=float, default=0.3, help="Alpha de beta en MixStyle.")
+    parser.add_argument("--ssl-warmup-epochs", type=int, default=0, help="Épocas iniciales solo consistencia (sin CE).")
+    parser.add_argument("--ssl-consistency-weight", type=float, default=0.0, help="Peso de consistencia SSL en train.")
+    parser.add_argument("--ssl-noise-std", type=float, default=0.01, help="Ruido en vista SSL.")
+    parser.add_argument("--ssl-drop-prob", type=float, default=0.05, help="Drop de features en vista SSL.")
+    parser.add_argument(
+        "--train-ratio",
+        type=float,
+        default=None,
+        help=(
+            "Fracción train. Si omites --train-ratio y --val-ratio, se usa suggest_split_ratios(N) "
+            f"(misma heurística que preflight). Referencia en model_config: {SPLIT_RATIO_TRAIN:.3f}."
+        ),
+    )
+    parser.add_argument(
+        "--val-ratio",
+        type=float,
+        default=None,
+        help=(
+            "Fracción val (test = 1 - train - val). Omitir junto con --train-ratio para heurística automática."
+        ),
+    )
+    parser.add_argument(
+        "--max-deterministic-variants",
+        type=int,
+        default=MAX_DETERMINISTIC_VARIANTS,
+        help=f"Tope de variantes deterministas (rejilla validate_npy) por perfil (default {MAX_DETERMINISTIC_VARIANTS}).",
+    )
+    parser.add_argument(
+        "--train-deterministic-prob",
+        type=float,
+        default=TRAIN_DETERMINISTIC_PROB,
+        help=(
+            "En train, prob. de aplicar una variante determinista antes del augment aleatorio "
+            f"(default {TRAIN_DETERMINISTIC_PROB})."
+        ),
+    )
+    parser.add_argument(
+        "--no-train-deterministic",
+        action="store_true",
+        help="En train, no aplicar variantes deterministas (solo identidad + augment aleatorio si está activo).",
+    )
+    parser.add_argument(
+        "--manifest-cache-dir",
+        type=str,
+        default=None,
+        help=(
+            "Directorio con un JSON por UID (md5 de la ruta absoluta del .npy) generado por validate_npy. "
+            "Por defecto no se usa; entrenamiento usa solo rejilla global. "
+            f"Valor típico: {MANIFEST_CACHE_DIR}"
+        ),
+    )
+    parser.add_argument(
+        "--manifest-variant-set",
+        type=str,
+        choices=["min", "industrial", "full"],
+        default=MANIFEST_VARIANT_SET_DEFAULT,
+        help=f"Qué lista del manifest validate_npy usar por UID (selected_n_*). Default {MANIFEST_VARIANT_SET_DEFAULT}.",
     )
     return parser.parse_args()
 
@@ -1835,6 +2784,29 @@ def main():
             f"prob={args.augment_prob}, max_ops={args.augment_max_ops}, "
             f"maintain_class_ratio={args.maintain_class_ratio}, target_neg_pos_ratio={args.target_neg_pos_ratio}"
         )
+        print(
+            "Avanzado => "
+            f"loss={args.loss_type}, hard_neg={args.hard_negative_mining}, "
+            f"mixstyle_p={args.mixstyle_prob}, ssl_warmup={args.ssl_warmup_epochs}, ssl_w={args.ssl_consistency_weight}"
+        )
+        split_cli = (
+            f"train_ratio={args.train_ratio}, val_ratio={args.val_ratio}"
+            if args.train_ratio is not None and args.val_ratio is not None
+            else "train/val = heurística suggest_split_ratios(N) (omitidos en CLI)"
+        )
+        print(
+            "Split / augment determinista => "
+            f"{split_cli}, "
+            f"max_det_variants={args.max_deterministic_variants}, "
+            f"train_det_prob={args.train_deterministic_prob}, "
+            f"use_train_det={not args.no_train_deterministic}"
+        )
+        mcache = Path(args.manifest_cache_dir) if args.manifest_cache_dir else None
+        print(
+            "Manifest cache => "
+            f"dir={mcache} | variant_set={args.manifest_variant_set}"
+            + (" (activo)" if mcache else " (desactivado)")
+        )
 
         results = []
         exps_iter = _select_debug_experiments(EXPERIMENTS) if DEBUG_MODE else EXPERIMENTS
@@ -1865,6 +2837,26 @@ def main():
                 maintain_class_ratio=args.maintain_class_ratio,
                 target_neg_pos_ratio=args.target_neg_pos_ratio,
                 split_manifest_out=(SPLITS_DIR / f"split_manifest_exp_{i:02d}.json"),
+                loss_type=args.loss_type,
+                focal_gamma=args.focal_gamma,
+                asym_gamma_neg=args.asym_gamma_neg,
+                asym_gamma_pos=args.asym_gamma_pos,
+                hard_negative_mining=args.hard_negative_mining,
+                hard_negative_topk_frac=args.hard_negative_topk_frac,
+                hard_negative_weight=args.hard_negative_weight,
+                mixstyle_prob=args.mixstyle_prob,
+                mixstyle_alpha=args.mixstyle_alpha,
+                ssl_warmup_epochs=args.ssl_warmup_epochs,
+                ssl_consistency_weight=args.ssl_consistency_weight,
+                ssl_noise_std=args.ssl_noise_std,
+                ssl_drop_prob=args.ssl_drop_prob,
+                train_ratio=args.train_ratio,
+                val_ratio=args.val_ratio,
+                max_deterministic_variants=args.max_deterministic_variants,
+                train_deterministic_prob=args.train_deterministic_prob,
+                use_deterministic_in_train=(not args.no_train_deterministic),
+                manifest_cache_dir=mcache,
+                manifest_variant_set=args.manifest_variant_set,
             )
             results.append(res)
 

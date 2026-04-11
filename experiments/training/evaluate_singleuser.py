@@ -8,13 +8,41 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
-# Soportar ejecución como módulo (-m training.evaluate_singleuser) y como script (python training/evaluate_singleuser.py)
+# Preferir train_model_operations (mismo pipeline que entrenamiento); fallback a train_model.
 try:
-    from .model_config import DATA_RESULT_ROOT  # type: ignore[attr-defined]
-    from .train_model import PoseExample, PoseDataset  # type: ignore[attr-defined]
+    from .model_config import DATA_RESULT_ROOT, suggest_split_ratios  # type: ignore[attr-defined]
+    from .train_model_operations import (  # type: ignore[attr-defined]
+        PoseExample,
+        PoseDataset,
+        collect_examples,
+        split_examples,
+        make_binary_examples,
+        build_pose_dataset_for_eval,
+        build_model,
+        MAX_DETERMINISTIC_VARIANTS,
+        SEED,
+        AUGMENT_CONFIG_PATH,
+        AUGMENT_PROFILE_DEFAULT,
+    )
+    _USE_OPERATIONS = True
 except ImportError:
-    from model_config import DATA_RESULT_ROOT  # type: ignore[attr-defined]
-    from train_model import PoseExample, PoseDataset  # type: ignore[attr-defined]
+    from model_config import DATA_RESULT_ROOT, suggest_split_ratios  # type: ignore[attr-defined]
+    from train_model import (  # type: ignore[attr-defined]
+        PoseExample,
+        PoseDataset,
+        collect_examples,
+        split_examples,
+        make_binary_examples,
+        build_model,
+        SEED,
+    )
+    _USE_OPERATIONS = False
+    AUGMENT_CONFIG_PATH = None  # type: ignore[assignment]
+    AUGMENT_PROFILE_DEFAULT = "industrial"
+    MAX_DETERMINISTIC_VARIANTS = 64
+
+    def suggest_split_ratios(n: int) -> tuple[float, float, float]:  # type: ignore[misc,no-redef]
+        return (0.7, 0.15, 0.15)
 
 def get_data_result_root() -> Path:
     root = DATA_RESULT_ROOT
@@ -95,26 +123,13 @@ def build_examples_singleuser(
     data_split: str,
     split_manifest_path: Optional[Path] = None,
     split_name: str = "test",
+    checkpoint: Optional[Dict[str, Any]] = None,
 ) -> Tuple[List[PoseExample], dict[str, Any]]:
     """
-    Misma recolección y partición que train_model.py:
+    Misma recolección y partición que train_model_operations (single-user):
     collect_examples(..., single_user_only=True) -> [binario] -> split train/val/test con SEED fijo.
+    Si checkpoint trae split_ratios, se usan para replicar el reparto del entrenamiento.
     """
-    try:
-        from .train_model import (  # type: ignore[attr-defined]
-            collect_examples,
-            split_examples,
-            make_binary_examples,
-            SEED,
-        )
-    except ImportError:
-        from train_model import (  # type: ignore[attr-defined]
-            collect_examples,
-            split_examples,
-            make_binary_examples,
-            SEED,
-        )
-
     info: dict[str, Any] = {"split": data_split, "seed": int(SEED)}
     examples = collect_examples(pose_source=pose_source, single_user_only=True)
     info["pool_after_collect"] = len(examples)
@@ -139,14 +154,22 @@ def build_examples_singleuser(
         info["note"] = "Sin split: incluye train+val+test (métricas optimistas si el modelo entrenó con estos datos)."
         return examples, info
 
+    tr, vr, _te = suggest_split_ratios(len(examples))
+    tr = float(tr)
+    vr = float(vr)
+    if checkpoint and isinstance(checkpoint.get("split_ratios"), dict):
+        sr = checkpoint["split_ratios"]
+        tr = float(sr.get("train", tr))
+        vr = float(sr.get("val", vr))
+    info["split_ratios_used"] = {"train": tr, "val": vr, "test": 1.0 - tr - vr}
+
     random.seed(SEED)
-    train_ex, val_ex, test_ex = split_examples(examples)
+    train_ex, val_ex, test_ex = split_examples(examples, seed=SEED, train_ratio=tr, val_ratio=vr)
     info["train_n"] = len(train_ex)
     info["val_n"] = len(val_ex)
     info["test_n"] = len(test_ex)
     info["note"] = (
-        "Split idéntico a train_model: ~70% train, ~15% val (métricas cada época), "
-        "~15% test (no usado en entrenamiento ni en val_loader)."
+        f"Split alineado con entrenamiento: {tr:.3f}/{vr:.3f}/{1.0 - tr - vr:.3f} train/val/test."
     )
 
     if data_split == "train":
@@ -191,11 +214,6 @@ def evaluate_model_on_singleuser(
         if cp_manifest:
             split_manifest_path = Path(cp_manifest)
 
-    try:
-        from .train_model import build_model  # type: ignore[attr-defined]
-    except ImportError:
-        from train_model import build_model  # type: ignore[attr-defined]
-
     cfg = checkpoint.get("config", {})
     arch = cfg.get("arch", "tcn")
     input_dim = checkpoint["input_dim"]
@@ -215,6 +233,7 @@ def evaluate_model_on_singleuser(
         data_split=data_split,
         split_manifest_path=split_manifest_path,
         split_name=split_name,
+        checkpoint=checkpoint,
     )
     print(f"[SPLIT] {split_info.get('note', '')}")
     if "train_n" in split_info:
@@ -281,7 +300,33 @@ def evaluate_model_on_singleuser(
             f"[EVAL] Binario: P(robo) >= {effective_thr:.4f} ({thr_src}) para métricas y listas FN/FP."
         )
 
-    ds = PoseDataset(examples, label_to_idx, seq_len)
+    ds_split = "test"
+    if data_split == "val":
+        ds_split = "val"
+    elif data_split == "train":
+        ds_split = "train"
+    elif data_split == "all":
+        ds_split = "test"
+
+    if _USE_OPERATIONS:
+        aug_profile = checkpoint.get("augment_profile", AUGMENT_PROFILE_DEFAULT)
+        max_v = int(checkpoint.get("deterministic_variants_count") or MAX_DETERMINISTIC_VARIANTS)
+        mdir = checkpoint.get("manifest_cache_dir")
+        mset = str(checkpoint.get("manifest_variant_set", "industrial"))
+        print(
+            f"[EVAL] PoseDataset operations: split={ds_split} | "
+            f"deterministic_variants≈{max_v} | profile={aug_profile} | "
+            f"manifest_cache={mdir or '—'} | variant_set={mset}"
+        )
+        ds = build_pose_dataset_for_eval(
+            examples,
+            label_to_idx,
+            seq_len,
+            dataset_split=ds_split,
+            checkpoint=checkpoint,
+        )
+    else:
+        ds = PoseDataset(examples, label_to_idx, seq_len)
     loader = DataLoader(ds, batch_size=64, shuffle=False, num_workers=4)
 
     total = 0
@@ -541,7 +586,7 @@ def main():
         "--models-dir",
         type=str,
         default=None,
-        help="Carpeta de modelos a evaluar. Por defecto usa training/models-single.",
+        help="Carpeta de modelos a evaluar. Por defecto training/models-operation-single (igual que train --single-user-only).",
     )
     parser.add_argument(
         "--show-fn-best",
@@ -568,7 +613,7 @@ def main():
     )
     args = parser.parse_args()
 
-    default_models_dir = Path(__file__).parent / "models-single"
+    default_models_dir = Path(__file__).parent / "models-operation-single"
     models_dir = Path(args.models_dir).expanduser().resolve() if args.models_dir else default_models_dir
     model_paths = sorted(models_dir.glob("modelo_*.pt"))
     if not model_paths:
