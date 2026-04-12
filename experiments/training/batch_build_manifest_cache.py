@@ -18,11 +18,27 @@ from __future__ import annotations
 import argparse
 import subprocess
 import sys
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
 _TRAINING_DIR = Path(__file__).resolve().parent
 _VALIDATE_NPY = _TRAINING_DIR / "operations_npy" / "validate_npy.py"
 _DEFAULT_VALIDATE_JSON = _TRAINING_DIR / "operations_npy" / "validate_npy.json"
+
+
+def _pool_run_validate(payload: tuple[list[str], bool]) -> tuple[int, str | None]:
+    """Ejecuta validate_npy en subproceso; definido a nivel de módulo para ProcessPoolExecutor."""
+    cmd, quiet = payload
+    if quiet:
+        r = subprocess.run(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        return r.returncode, (r.stderr.strip() if r.stderr else None)
+    r = subprocess.run(cmd)
+    return r.returncode, None
 
 
 def _import_ops():
@@ -125,7 +141,21 @@ def main() -> None:
         help=f"Reenviado a validate_npy (default model_config {def_compose_light}).",
     )
     p.add_argument("--step", type=float, default=None, help="Opcional: step global en validate_npy.")
+    p.add_argument(
+        "--quiet",
+        action="store_true",
+        help="Silencia la salida de validate_npy (menos I/O en terminal; suele ahorrar tiempo).",
+    )
+    p.add_argument(
+        "--jobs",
+        type=int,
+        default=1,
+        help="Procesos en paralelo (cada uno ejecuta validate_npy en subproceso). Default 1.",
+    )
     args = p.parse_args()
+
+    if int(args.jobs) < 1:
+        raise SystemExit("--jobs debe ser >= 1")
 
     cache_dir = Path(args.cache_dir).expanduser().resolve()
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -157,19 +187,9 @@ def main() -> None:
         jobs = jobs[: max(0, int(args.max))]
 
     print(f"UIDs únicos a procesar: {len(jobs)} | cache_dir={cache_dir}")
-    ok = 0
-    skipped = 0
-    failed = 0
-    for uid, abs_npy in jobs:
-        out = manifest_cache_path_for_uid(cache_dir, uid)
-        if args.skip_existing and out.exists():
-            skipped += 1
-            continue
-        if args.dry_run:
-            print(f"[dry-run] uid={uid!r} npy={abs_npy} -> {out.name}")
-            ok += 1
-            continue
-        cmd = [
+
+    def build_cmd(uid: str, abs_npy: str, out: Path) -> list[str]:
+        c = [
             sys.executable,
             str(_VALIDATE_NPY),
             abs_npy,
@@ -185,13 +205,73 @@ def main() -> None:
             str(args.compose_light_ratio),
         ]
         if args.step is not None:
-            cmd.extend(["--step", str(args.step)])
-        try:
-            subprocess.run(cmd, check=True)
+            c.extend(["--step", str(args.step)])
+        return c
+
+    ok = 0
+    skipped = 0
+    failed = 0
+    pending: list[tuple[str, str, list[str]]] = []
+
+    for uid, abs_npy in jobs:
+        out = manifest_cache_path_for_uid(cache_dir, uid)
+        if args.skip_existing and out.exists():
+            skipped += 1
+            continue
+        if args.dry_run:
+            print(f"[dry-run] uid={uid!r} npy={abs_npy} -> {out.name}")
             ok += 1
-        except subprocess.CalledProcessError:
-            failed += 1
-            print(f"[ERROR] validate_npy falló para {abs_npy} (uid={uid!r})", file=sys.stderr)
+            continue
+        pending.append((uid, abs_npy, build_cmd(uid, abs_npy, out)))
+
+    quiet = bool(args.quiet)
+    n_jobs = int(args.jobs)
+
+    def run_cmd(cmd: list[str]) -> tuple[int, str | None]:
+        if quiet:
+            r = subprocess.run(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            return r.returncode, (r.stderr.strip() if r.stderr else None)
+        r = subprocess.run(cmd)
+        return r.returncode, None
+
+    if not pending:
+        pass
+    elif n_jobs <= 1:
+        for uid, abs_npy, cmd in pending:
+            code, err = run_cmd(cmd)
+            if code == 0:
+                ok += 1
+            else:
+                failed += 1
+                print(f"[ERROR] validate_npy falló para {abs_npy} (uid={uid!r})", file=sys.stderr)
+                if err:
+                    print(err, file=sys.stderr)
+    else:
+        with ProcessPoolExecutor(max_workers=n_jobs) as ex:
+            futs = {
+                ex.submit(_pool_run_validate, (cmd, quiet)): (uid, abs_npy)
+                for uid, abs_npy, cmd in pending
+            }
+            for fut in as_completed(futs):
+                uid, abs_npy = futs[fut]
+                try:
+                    code, err = fut.result()
+                except Exception as e:
+                    failed += 1
+                    print(f"[ERROR] excepción en worker para {abs_npy} (uid={uid!r}): {e}", file=sys.stderr)
+                    continue
+                if code == 0:
+                    ok += 1
+                else:
+                    failed += 1
+                    print(f"[ERROR] validate_npy falló para {abs_npy} (uid={uid!r})", file=sys.stderr)
+                    if err:
+                        print(err, file=sys.stderr)
 
     print(f"Listo: generados/ok={ok} | omitidos (skip-existing)={skipped} | fallidos={failed}")
 
