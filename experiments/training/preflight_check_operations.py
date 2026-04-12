@@ -153,7 +153,7 @@ def dataset_info_from_collect_examples(
 ) -> Dict[str, Any]:
     """
     Misma lista que train_model_operations.build_datasets_and_loaders → collect_examples.
-    Incluye passes_filters, poses_full + valid_mask, etc.
+    Umbrales: model_config (MIN_* / MAX_OCCLUSION_*) y poses_full + valid_mask si aplica.
     """
     header("4) Dataset (solo collect_examples — mismas reglas que train_model_operations)")
     try:
@@ -164,8 +164,8 @@ def dataset_info_from_collect_examples(
     root = get_data_result_root()
     print(f"Carpeta de datos: {root}")
     print(
-        f"{BOLD}Filtros:{RESET} idénticos a build_datasets_and_loaders → collect_examples "
-        "(_user_quality_ok: min_clip/min_valid/pct/occlusion, passes_filters, poses_full+valid_mask, etc.)."
+        f"{BOLD}Filtros:{RESET} idénticos a train → collect_examples / _user_quality_ok "
+        "(MIN_CLIP_SECONDS, MIN_VALID_FRAMES, MIN_VALID_PCT, MAX_OCCLUSION_RATIO; poses_full+valid_mask)."
     )
     examples = collect_examples(
         pose_source=pose_source,

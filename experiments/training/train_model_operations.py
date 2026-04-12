@@ -696,10 +696,8 @@ def _user_quality_ok(
     if occlusion_ratio > max_occlusion_ratio:
         return False
 
-    # Si ya existe un filtro de extracción previo y falla, descartamos.
-    passes_filters = user_meta.get("passes_filters")
-    if passes_filters is False:
-        return False
+    # No usamos meta["passes_filters"] del extractor: el entrenamiento se gobierna solo con los
+    # umbrales numéricos (model_config MIN_* / MAX_OCCLUSION_* y CLI), alineados con preflight.
 
     return True
 
@@ -829,7 +827,7 @@ def collect_examples(
          - user_cat=6 se mantiene como robo
          - user_cat!=6 se reetiqueta a su user_cat.
       4) En no-cat6 también prioriza user_cat si existe, para etiqueta por usuario.
-      5) Aplica filtro de calidad por usuario (_user_quality_ok: incl. passes_filters en meta).
+      5) Aplica filtro de calidad por usuario (_user_quality_ok: umbrales model_config / CLI).
       6) pose_source: "filtered" usa poses.npy, "full" usa poses_full.npy (+ valid_mask).
       preflight_check_operations.py usa esta misma función para N y tiempos estimados.
     """
