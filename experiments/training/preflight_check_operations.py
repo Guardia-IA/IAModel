@@ -24,6 +24,7 @@ try:
         MAX_DETERMINISTIC_VARIANTS,
         TRAIN_DETERMINISTIC_PROB,
         VALIDATE_NPY_MIRROR_COMPOSE_RATIO,
+        EXTRA_MANIFEST_VIEWS_PER_CLIP_DEFAULT,
     )
 except ImportError:
     from model_config import (  # type: ignore[attr-defined]
@@ -42,6 +43,7 @@ except ImportError:
         MAX_DETERMINISTIC_VARIANTS,
         TRAIN_DETERMINISTIC_PROB,
         VALIDATE_NPY_MIRROR_COMPOSE_RATIO,
+        EXTRA_MANIFEST_VIEWS_PER_CLIP_DEFAULT,
     )
 
 # Misma ruta que train_model_operations.MANIFEST_CACHE_DIR; evita importar torch/train al ejecutar este script directamente.
@@ -426,6 +428,7 @@ def estimate_times(
     per_cat_counts: Optional[Dict[str, int]] = None,
     train_ratio: float = TRAIN_RATIO,
     val_ratio: float = VAL_RATIO,
+    extra_manifest_views_per_clip: int = 0,
 ) -> None:
     header("6) Estimación aproximada de tiempos por experimento")
     if n_examples == 0:
@@ -451,6 +454,11 @@ def estimate_times(
     }
     cpu_multiplier = 8.0
     frame_factor = avg_frames / 64.0 if avg_frames > 0 else 1.0
+    tr_eff = float(max(0.0, min(1.0, train_ratio)))
+    vr_eff = float(max(0.0, min(1.0, val_ratio)))
+    if tr_eff + vr_eff > 1.0:
+        tr_eff, vr_eff = float(TRAIN_RATIO), float(VAL_RATIO)
+
     if aug_variants_per_clip > 0:
         avg_var_base = max(0.0, float(aug_variants_per_clip))
         avg_var_mirror_extra = avg_var_base * max(0.0, min(1.0, float(mirror_compose_ratio_estimate)))
@@ -469,6 +477,24 @@ def estimate_times(
             f"Promedio por NPY real => base={avg_var_base:.2f}, "
             f"mirror_extra={avg_var_mirror_extra:.2f}, total_variantes={avg_var_total:.2f}"
         )
+    elif int(extra_manifest_views_per_clip) > 0:
+        exv = int(extra_manifest_views_per_clip)
+        n = n_examples
+        n_tr = int(n * tr_eff)
+        n_va = int(n * vr_eff)
+        n_te = max(0, n - n_tr - n_va)
+        effective_examples = n_te + (n_tr + n_va) * (1 + exv)
+        extra_aug = effective_examples - n_examples
+        print(
+            f"Expansión validate_npy (--extra-manifest-views-per-clip={exv}, alineado con train_model_operations): "
+            f"clips únicos={n} | n_tr≈{n_tr} n_val≈{n_va} n_test≈{n_te} | "
+            f"filas train+val ≈ (n_tr+n_val)*(1+{exv}), test sin expandir | "
+            f"filas totales/época ≈ {color(str(effective_examples), CYAN)}"
+        )
+        if augment_on_the_fly:
+            warn(
+                "Con --augment-on-the-fly el coste real puede ser algo mayor; esta línea solo cuenta filas del dataset."
+            )
     else:
         extra_aug = int(round(n_examples * max(0.0, min(1.0, augment_prob)))) if augment_on_the_fly else 0
         effective_examples = n_examples + extra_aug
@@ -483,14 +509,14 @@ def estimate_times(
                 f"p={TRAIN_DETERMINISTIC_PROB} en train) no aumentan len(dataset); diversifican cada muestra en __getitem__."
             )
             print(
-                "Para inflar esta estimación como si hubiera K variantes explícitas por clip, usa p. ej. "
-                f"--aug-variants-per-clip K (y opc. --mirror-compose-ratio-estimate; ref. validate_npy: "
-                f"{VALIDATE_NPY_MIRROR_COMPOSE_RATIO})."
+                "Para expansión explícita por filas como train --extra-manifest-views-per-clip N, "
+                "pasa ese mismo N aquí. Para heurística antigua usa "
+                f"--aug-variants-per-clip K (ref. validate_npy mirror {VALIDATE_NPY_MIRROR_COMPOSE_RATIO})."
             )
         if augment_on_the_fly:
             print(
                 "Heurística on-the-fly: no duplica ítems en el DataLoader; es coste extra aproximado. "
-                "Para expansión explícita usa --aug-variants-per-clip."
+                "Para expansión explícita por manifest usa --extra-manifest-views-per-clip."
             )
     if maintain_class_ratio and per_cat_counts is not None:
         neg = sum(v for k, v in per_cat_counts.items() if str(k) != "6")
@@ -511,6 +537,21 @@ def estimate_times(
                     f"robo={virt_pos} | total={effective_examples}"
                 )
 
+    tr_b = float(max(0.0, min(1.0, train_ratio)))
+    vr_b = float(max(0.0, min(1.0, val_ratio)))
+    if tr_b + vr_b > 1.0:
+        tr_b, vr_b = float(TRAIN_RATIO), float(VAL_RATIO)
+    use_manifest_row_split = int(extra_manifest_views_per_clip) > 0 and aug_variants_per_clip <= 0
+    if use_manifest_row_split:
+        exv_m = int(extra_manifest_views_per_clip)
+        n_tr0 = int(n_examples * tr_b)
+        n_va0 = int(n_examples * vr_b)
+        batch_train_rows = n_tr0 * (1 + exv_m)
+        batch_val_rows = n_va0 * (1 + exv_m)
+    else:
+        batch_train_rows = -1
+        batch_val_rows = -1
+
     sorted_exps = sorted(enumerate(EXPERIMENTS, start=1), key=lambda p: (p[1].get("arch", ""), int(p[1].get("epochs", 0))))
     iter_exps = tqdm(sorted_exps, desc="Estimando tiempos", unit="exp") if tqdm is not None else sorted_exps
     print(f"\n{BOLD}{'ID':>3} | {'Arch':>11} | {'Epochs':>6} | {'Batch':>5} | {'SeqLen':>6} | {'GPU(min)':>9} | {'CPU(min)':>9}{RESET}")
@@ -529,8 +570,12 @@ def estimate_times(
         vr = float(max(0.0, min(1.0, val_ratio)))
         if tr + vr > 1.0:
             tr, vr = TRAIN_RATIO, VAL_RATIO
-        n_train = int(effective_examples * tr)
-        n_val = int(effective_examples * vr)
+        if batch_train_rows >= 0:
+            n_train = batch_train_rows
+            n_val = batch_val_rows
+        else:
+            n_train = int(effective_examples * tr)
+            n_val = int(effective_examples * vr)
         train_batches = max(1, math.ceil(n_train / batch_size))
         val_batches = max(1, math.ceil(n_val / batch_size))
         batches_per_epoch = train_batches + val_batches
@@ -622,6 +667,15 @@ def parse_args() -> argparse.Namespace:
         help="Si se indica, cuenta cuántos ejemplos de collect_examples tienen JSON en esa carpeta (mismo uso que train --manifest-cache-dir). "
         "Si no existe, se crea vacía.",
     )
+    parser.add_argument(
+        "--extra-manifest-views-per-clip",
+        type=int,
+        default=EXTRA_MANIFEST_VIEWS_PER_CLIP_DEFAULT,
+        help=(
+            "Mismo valor que train_model_operations --extra-manifest-views-per-clip: filas train+val "
+            f"≈ (n_tr+n_val)*(1+N), test sin expandir. Default {EXTRA_MANIFEST_VIEWS_PER_CLIP_DEFAULT}."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -700,6 +754,7 @@ def main() -> None:
         per_cat_counts=data_info["per_cat_counts"],
         train_ratio=tr_eff,
         val_ratio=va_eff,
+        extra_manifest_views_per_clip=int(args.extra_manifest_views_per_clip),
     )
     print(f"\nScript de pre-chequeo completado en {time.time() - start:.1f} segundos.")
 

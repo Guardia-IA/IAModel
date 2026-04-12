@@ -36,6 +36,7 @@ try:
         TRAIN_DETERMINISTIC_PROB,
         AUGMENT_PROFILE_DEFAULT,
         MANIFEST_VARIANT_SET_DEFAULT,
+        EXTRA_MANIFEST_VIEWS_PER_CLIP_DEFAULT,
     )
 except ImportError:
     from model_config import (  # type: ignore[attr-defined]
@@ -55,6 +56,7 @@ except ImportError:
         TRAIN_DETERMINISTIC_PROB,
         AUGMENT_PROFILE_DEFAULT,
         MANIFEST_VARIANT_SET_DEFAULT,
+        EXTRA_MANIFEST_VIEWS_PER_CLIP_DEFAULT,
     )
 
 
@@ -299,6 +301,79 @@ def build_per_uid_variant_map(
     return per_uid
 
 
+def expand_examples_with_manifest_extra_views(
+    examples: List[PoseExample],
+    mdir: Path,
+    variant_set: str,
+    extra_views_per_clip: int,
+) -> List[PoseExample]:
+    """
+    Por cada clip con manifest validate_npy en caché, genera 1 + hasta `extra_views_per_clip`
+    entradas de dataset (misma etiqueta, mismo .npy): identidad (ops []) + las primeras variantes
+    del manifest. No escribe ficheros; solo fija forced_ops para __getitem__.
+    Clips sin manifest se dejan en un solo ejemplo (comportamiento anterior).
+    """
+    if extra_views_per_clip <= 0:
+        return examples
+    mdir = Path(mdir)
+    if not mdir.is_dir():
+        print("[EXPAND-VIEWS] manifest_cache_dir no es una carpeta válida; no se expande.")
+        return examples
+    out: List[PoseExample] = []
+    skipped = 0
+    for ex in examples:
+        p = manifest_cache_path_for_uid(mdir, _example_uid(ex))
+        if not p.exists():
+            out.append(ex)
+            skipped += 1
+            continue
+        try:
+            with open(p, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            out.append(ex)
+            skipped += 1
+            continue
+        specs = specs_from_validate_manifest_payload(data, variant_set=variant_set)
+        if not specs:
+            out.append(ex)
+            skipped += 1
+            continue
+        out.append(
+            PoseExample(
+                pose_path=ex.pose_path,
+                label=ex.label,
+                track_id=ex.track_id,
+                clip_name=ex.clip_name,
+                category_str=ex.category_str,
+                valid_mask_path=ex.valid_mask_path,
+                users_in_clip=ex.users_in_clip,
+                forced_ops=[],
+            )
+        )
+        n_extra = min(extra_views_per_clip, max(0, len(specs) - 1))
+        for j in range(n_extra):
+            spec = specs[1 + j]
+            ops = list(spec.get("ops", []) or [])
+            out.append(
+                PoseExample(
+                    pose_path=ex.pose_path,
+                    label=ex.label,
+                    track_id=ex.track_id,
+                    clip_name=ex.clip_name,
+                    category_str=ex.category_str,
+                    valid_mask_path=ex.valid_mask_path,
+                    users_in_clip=ex.users_in_clip,
+                    forced_ops=ops,
+                )
+            )
+    print(
+        f"[EXPAND-VIEWS] extra_manifest_views={extra_views_per_clip} variant_set={variant_set} | "
+        f"clips sin manifest (1 fila): {skipped} | filas totales: {len(out)} (antes {len(examples)})"
+    )
+    return out
+
+
 def build_pose_dataset_for_eval(
     examples: List[PoseExample],
     label_to_idx: Dict[int, int],
@@ -373,6 +448,8 @@ class PoseExample:
     category_str: str   # por si quieres inspeccionar
     valid_mask_path: Optional[Path] = None  # si usa poses_full.npy: máscara de frames válidos (sin NaN)
     users_in_clip: int = 1  # número de usuarios en meta["users"] para este clip
+    # Si no es None: aplicar solo estas ops deterministas (manifest validate_npy); train puede añadir on-the-fly después.
+    forced_ops: Optional[List[Dict[str, Any]]] = None
 
 
 def _example_uid(ex: PoseExample) -> str:
@@ -801,6 +878,35 @@ class PoseDataset(Dataset):
             poses = np.nan_to_num(poses, nan=0.0, posinf=0.0, neginf=0.0)
 
         uid = _example_uid(ex)
+        forced = getattr(ex, "forced_ops", None)
+        if forced is not None:
+            det_seed = (
+                _stable_uid_hash(uid) * 1009 + _stable_str_hash(repr(forced)) + int(idx) * 131
+            ) & 0xFFFFFFFF
+            rng_det = np.random.default_rng(int(det_seed))
+            poses = _apply_deterministic_ops(poses, forced, rng=rng_det)
+            if self.dataset_split == "train" and self.augment_on_the_fly:
+                worker = get_worker_info()
+                base_seed = worker.seed if worker is not None else self.augment_seed
+                sample_seed = (int(base_seed) + int(idx) * 1000003) & 0xFFFFFFFF
+                rng = np.random.default_rng(sample_seed)
+                poses = _augment_poses_on_the_fly(
+                    poses=poses,
+                    rng=rng,
+                    augment_prob=self.augment_prob,
+                    max_ops=self.augment_max_ops,
+                    op_probs=self.augment_op_probs,
+                    ranges=self.augment_ranges,
+                )
+            poses = normalize_sequence(poses)
+            poses = add_velocity(poses)
+            poses = temporal_resize(poses, self.seq_len)
+            t, j, d = poses.shape
+            poses = poses.reshape(t, j * d)
+            x = torch.from_numpy(poses.astype(np.float32))
+            y = self.label_to_idx[ex.label]
+            return x, y
+
         variants = self._variants_for_uid(uid)
         n_var = len(variants)
         worker = get_worker_info()
@@ -1633,6 +1739,7 @@ def make_binary_examples(
                 category_str=ex.category_str,
                 valid_mask_path=getattr(ex, "valid_mask_path", None),
                 users_in_clip=getattr(ex, "users_in_clip", 1),
+                forced_ops=getattr(ex, "forced_ops", None),
             )
         )
     return binary_examples
@@ -1924,6 +2031,7 @@ def build_datasets_and_loaders(
     use_deterministic_in_train: bool = True,
     manifest_cache_dir: Optional[Path] = None,
     manifest_variant_set: str = MANIFEST_VARIANT_SET_DEFAULT,
+    extra_manifest_views_per_clip: int = 0,
 ) -> Tuple[Dict[str, DataLoader], int, Dict[int, int], Dict[str, Any]]:
     print(f"Recolectando ejemplos desde data_result... (pose_source='{pose_source}')")
     examples = collect_examples(
@@ -1944,6 +2052,7 @@ def build_datasets_and_loaders(
     # En modo binario reetiquetamos a 0/1 manteniendo el resto del flujo igual
     if task == "binary":
         print(f"[BINARIO] Usando clase positiva original: {positive_class}")
+        examples = make_binary_examples(examples, positive_class=positive_class)
 
     n_ex = len(examples)
     if (train_ratio is None) ^ (val_ratio is None):
@@ -1971,6 +2080,28 @@ def build_datasets_and_loaders(
     print(
         f"Split aplicado => Train: {len(train_ex)} | Val: {len(val_ex)} | Test: {len(test_ex)}"
     )
+
+    if extra_manifest_views_per_clip > 0:
+        if manifest_cache_dir is None:
+            raise ValueError(
+                "extra_manifest_views_per_clip>0 requiere --manifest-cache-dir con JSON validate_npy por UID."
+            )
+        train_ex = expand_examples_with_manifest_extra_views(
+            train_ex,
+            Path(manifest_cache_dir),
+            manifest_variant_set,
+            extra_manifest_views_per_clip,
+        )
+        val_ex = expand_examples_with_manifest_extra_views(
+            val_ex,
+            Path(manifest_cache_dir),
+            manifest_variant_set,
+            extra_manifest_views_per_clip,
+        )
+        print(
+            f"Tras expansión manifest => Train filas: {len(train_ex)} | Val filas: {len(val_ex)} | "
+            f"Test (sin expandir): {len(test_ex)}"
+        )
 
     label_to_idx = build_label_mapping(examples)
     num_classes = len(label_to_idx)
@@ -2126,6 +2257,7 @@ def build_datasets_and_loaders(
         "manifest_cache_dir": str(manifest_cache_dir) if manifest_cache_dir else None,
         "manifest_variant_set": manifest_variant_set,
         "manifest_uids_with_cache": manifest_hits,
+        "extra_manifest_views_per_clip": int(extra_manifest_views_per_clip),
         "augment_policy": {
             "train": "deterministic_grid (opcional) + random on-the-fly (opcional)",
             "val": "solo determinista (rejilla por UID estable)",
@@ -2321,6 +2453,7 @@ def run_experiment(
     use_deterministic_in_train: bool = True,
     manifest_cache_dir: Optional[Path] = None,
     manifest_variant_set: str = MANIFEST_VARIANT_SET_DEFAULT,
+    extra_manifest_views_per_clip: int = 0,
 ) -> Dict[str, Any]:
     print("\n" + "=" * 80)
     print(f"Experimento {exp_id:02d} | config={cfg}")
@@ -2359,6 +2492,7 @@ def run_experiment(
         use_deterministic_in_train=use_deterministic_in_train,
         manifest_cache_dir=manifest_cache_dir,
         manifest_variant_set=manifest_variant_set,
+        extra_manifest_views_per_clip=extra_manifest_views_per_clip,
     )
     num_classes = len(label_to_idx)
 
@@ -2486,6 +2620,7 @@ def run_experiment(
         "manifest_cache_dir": split_manifest.get("manifest_cache_dir"),
         "manifest_variant_set": split_manifest.get("manifest_variant_set"),
         "manifest_uids_with_cache": split_manifest.get("manifest_uids_with_cache"),
+        "extra_manifest_views_per_clip": split_manifest.get("extra_manifest_views_per_clip"),
         "advanced_training": {
             "loss_type": loss_type,
             "focal_gamma": float(focal_gamma),
@@ -2528,6 +2663,7 @@ def run_experiment(
             "augment_profile": split_manifest.get("augment_profile"),
             "deterministic_variants_count": split_manifest.get("deterministic_variants_count"),
             "augment_policy": split_manifest.get("augment_policy"),
+            "extra_manifest_views_per_clip": split_manifest.get("extra_manifest_views_per_clip"),
         }
         with open(split_manifest_out, "w", encoding="utf-8") as f:
             json.dump(split_payload, f, indent=2, ensure_ascii=False)
@@ -2729,6 +2865,16 @@ def parse_args() -> argparse.Namespace:
         default=MANIFEST_VARIANT_SET_DEFAULT,
         help=f"Qué lista del manifest validate_npy usar por UID (selected_n_*). Default {MANIFEST_VARIANT_SET_DEFAULT}.",
     )
+    parser.add_argument(
+        "--extra-manifest-views-per-clip",
+        type=int,
+        default=EXTRA_MANIFEST_VIEWS_PER_CLIP_DEFAULT,
+        help=(
+            "Expande train/val: por clip con manifest, 1 fila identidad + hasta N variantes validate_npy "
+            "(sin escribir .npy). Test sin expandir. Requiere --manifest-cache-dir. "
+            f"Default {EXTRA_MANIFEST_VIEWS_PER_CLIP_DEFAULT}."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -2809,6 +2955,10 @@ def main():
             f"dir={mcache} | variant_set={args.manifest_variant_set}"
             + (" (activo)" if mcache else " (desactivado)")
         )
+        print(
+            f"Extra manifest views / clip (train+val) => {args.extra_manifest_views_per_clip} "
+            "(0 = sin expansión explícita por filas)"
+        )
 
         results = []
         exps_iter = _select_debug_experiments(EXPERIMENTS) if DEBUG_MODE else EXPERIMENTS
@@ -2859,6 +3009,7 @@ def main():
                 use_deterministic_in_train=(not args.no_train_deterministic),
                 manifest_cache_dir=mcache,
                 manifest_variant_set=args.manifest_variant_set,
+                extra_manifest_views_per_clip=int(args.extra_manifest_views_per_clip),
             )
             results.append(res)
 

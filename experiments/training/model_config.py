@@ -59,6 +59,9 @@ MANIFEST_VARIANT_SET_DEFAULT = "industrial"
 VALIDATE_NPY_MIRROR_COMPOSE_RATIO = 0.5
 VALIDATE_NPY_COMPOSE_LIGHT_RATIO = 0.35
 
+# Vistas extra por clip (train/val) desde manifests validate_npy: 0 = un ítem por .npy (comportamiento anterior).
+EXTRA_MANIFEST_VIEWS_PER_CLIP_DEFAULT = 0
+
 # Preflight: solo estimación de tiempos (--aug-variants-per-clip / --mirror-compose-ratio-estimate).
 # - variantes por clip: típicamente |selected_n_objetivo_industrial| en el manifest (validate fija N en ~20–80
 #   según candidatas y cobertura); 0 = no asumir expansión hasta que pases el flag.
