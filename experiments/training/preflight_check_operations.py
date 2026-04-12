@@ -362,11 +362,22 @@ def estimate_times(
         n_tr = int(n * tr_eff)
         n_va = int(n * vr_eff)
         n_te = max(0, n - n_tr - n_va)
-        # Cota superior: todos los clips train/val tienen manifest con >= exv variantes extra en JSON.
+        # Plan de entrenamiento: 1 fila identidad + hasta exv variantes por clip en train/val (como train tras batch_build).
         upper_rows = n_te + (n_tr + n_va) * (1 + exv)
+        effective_examples = upper_rows
+        extra_aug = effective_examples - n_examples
         print(
             f"Expansión validate_npy (--extra-manifest-views-per-clip={exv}): "
             f"clips únicos={n} | n_tr≈{n_tr} n_val≈{n_va} n_test≈{n_te} (mismo int(n*ratio) que split_examples en train)."
+        )
+        print(
+            f"{BOLD}Filas por época para estimación de tiempo (plan completo):{RESET} "
+            f"{color(str(upper_rows), CYAN)} = n_test + (n_train+n_val)×(1+{exv}) "
+            f"= {n_te} + {n_tr + n_va}×{1 + exv}"
+        )
+        print(
+            "Interpretación: cada clip train/val cuenta como (1+N) filas dataset "
+            f"(identidad + {exv} ops del manifest) cuando la caché tiene JSON con suficientes variantes."
         )
         if (
             manifest_unique_uids is not None
@@ -374,28 +385,24 @@ def estimate_times(
             and manifest_hits is not None
         ):
             h = manifest_hits / float(manifest_unique_uids)
-            # Clips train/val con manifest (proporción h repartida en train y val).
             n_tr_hit = min(n_tr, int(round(n_tr * h)))
             n_va_hit = min(n_va, int(round(n_va * h)))
-            # Por clip con manifest: 1 identidad + hasta exv filas extra ⇒ +exv filas respecto a 1.
             realistic_rows = n_te + (n_tr + n_va) + (n_tr_hit + n_va_hit) * exv
-            effective_examples = realistic_rows
             print(
-                f"Filas dataset/época (estimación realista): {color(str(realistic_rows), CYAN)} "
-                f"(≈{100.0 * h:.1f}% UIDs con JSON en caché; train/val sin JSON ⇒ 1 fila; con JSON ⇒ 1+{exv} si el manifest tiene suficientes variantes)."
+                f"Estado actual de --manifest-cache-dir: {manifest_hits}/{manifest_unique_uids} UIDs con JSON "
+                f"(≈{100.0 * h:.1f}%) → filas reales hoy ≈ {realistic_rows} "
+                "(sin JSON solo 1 fila/clip en train/val)."
             )
-            if h < 1.0:
+            if h < 0.99:
                 warn(
-                    "La cota 'todos con manifest' sería "
-                    f"{upper_rows} filas; solo aplica si batch_build rellenó JSON para casi todos los UIDs."
+                    "Tras batch_build_manifest_cache.py con manifests completos, el train se acercará a "
+                    f"{upper_rows} filas/época si cada JSON tiene ≥{exv} variantes extra."
                 )
         else:
-            effective_examples = upper_rows
             warn(
-                "Sin conteo de manifests (pasa --manifest-cache-dir y sección 5): "
-                f"se usa cota superior {upper_rows} filas; puede sobrestimar mucho si faltan JSON."
+                "Pasa --manifest-cache-dir para ver cobertura de caché en la línea anterior. "
+                f"La estimación de tiempo asume ya el plan {upper_rows} filas."
             )
-        extra_aug = effective_examples - n_examples
         if augment_on_the_fly:
             warn(
                 "Con --augment-on-the-fly el coste real puede ser algo mayor; esta línea solo cuenta filas del dataset."
@@ -451,19 +458,9 @@ def estimate_times(
         exv_m = int(extra_manifest_views_per_clip)
         n_tr0 = int(n_examples * tr_b)
         n_va0 = int(n_examples * vr_b)
-        if (
-            manifest_unique_uids is not None
-            and manifest_unique_uids > 0
-            and manifest_hits is not None
-        ):
-            h_b = manifest_hits / float(manifest_unique_uids)
-            ntr_h = min(n_tr0, int(round(n_tr0 * h_b)))
-            nva_h = min(n_va0, int(round(n_va0 * h_b)))
-            batch_train_rows = n_tr0 + ntr_h * exv_m
-            batch_val_rows = n_va0 + nva_h * exv_m
-        else:
-            batch_train_rows = n_tr0 * (1 + exv_m)
-            batch_val_rows = n_va0 * (1 + exv_m)
+        # Misma hipótesis que effective_examples: expansión completa (1+N) por clip train/val.
+        batch_train_rows = n_tr0 * (1 + exv_m)
+        batch_val_rows = n_va0 * (1 + exv_m)
     else:
         batch_train_rows = -1
         batch_val_rows = -1
