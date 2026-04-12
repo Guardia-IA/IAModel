@@ -223,7 +223,7 @@ def check_manifest_cache_section(
     min_valid_pct: float,
     max_occlusion_ratio: float,
     legacy_selection: bool = False,
-) -> None:
+) -> Tuple[Optional[int], Optional[int]]:
     """Alineación entre collect_examples (mismos filtros que train) y JSON en manifest_cache."""
     header("5) Caché de manifests validate_npy (opcional)")
     print(
@@ -235,18 +235,18 @@ def check_manifest_cache_section(
         warn("Activaste --legacy-selection (no afecta a collect_examples; ver aviso en main).")
     if not manifest_cache_dir:
         warn("No pasaste --manifest-cache-dir: el entrenamiento usará solo la rejilla global (sin manifests por fichero).")
-        return
+        return None, None
     mdir = Path(manifest_cache_dir).expanduser().resolve()
     if mdir.exists() and not mdir.is_dir():
         fail(f"No es una carpeta (es un fichero): {mdir}")
-        return
+        return None, None
     if not mdir.exists():
         try:
             mdir.mkdir(parents=True, exist_ok=True)
             ok(f"Carpeta de caché creada (vacía; rellénala con validate_npy / batch_build): {mdir}")
         except OSError as exc:
             fail(f"No se pudo crear la carpeta de caché: {mdir} ({exc})")
-            return
+            return None, None
     json_n = len(list(mdir.glob("*.json")))
     ok(f"Carpeta de caché: {mdir} | ficheros *.json = {json_n}")
     try:
@@ -290,6 +290,7 @@ def check_manifest_cache_section(
             f"Faltan manifests para {uids - hits} UIDs. Genera caché con "
             "batch_build_manifest_cache.py (o validate_npy.py por fichero)."
         )
+    return hits, uids
 
 
 def estimate_times(
@@ -305,6 +306,8 @@ def estimate_times(
     train_ratio: float = TRAIN_RATIO,
     val_ratio: float = VAL_RATIO,
     extra_manifest_views_per_clip: int = 0,
+    manifest_hits: Optional[int] = None,
+    manifest_unique_uids: Optional[int] = None,
 ) -> None:
     header("6) Estimación aproximada de tiempos por experimento")
     if n_examples == 0:
@@ -359,14 +362,40 @@ def estimate_times(
         n_tr = int(n * tr_eff)
         n_va = int(n * vr_eff)
         n_te = max(0, n - n_tr - n_va)
-        effective_examples = n_te + (n_tr + n_va) * (1 + exv)
-        extra_aug = effective_examples - n_examples
+        # Cota superior: todos los clips train/val tienen manifest con >= exv variantes extra en JSON.
+        upper_rows = n_te + (n_tr + n_va) * (1 + exv)
         print(
-            f"Expansión validate_npy (--extra-manifest-views-per-clip={exv}, alineado con train_model_operations): "
-            f"clips únicos={n} | n_tr≈{n_tr} n_val≈{n_va} n_test≈{n_te} | "
-            f"filas train+val ≈ (n_tr+n_val)*(1+{exv}), test sin expandir | "
-            f"filas totales/época ≈ {color(str(effective_examples), CYAN)}"
+            f"Expansión validate_npy (--extra-manifest-views-per-clip={exv}): "
+            f"clips únicos={n} | n_tr≈{n_tr} n_val≈{n_va} n_test≈{n_te} (mismo int(n*ratio) que split_examples en train)."
         )
+        if (
+            manifest_unique_uids is not None
+            and manifest_unique_uids > 0
+            and manifest_hits is not None
+        ):
+            h = manifest_hits / float(manifest_unique_uids)
+            # Clips train/val con manifest (proporción h repartida en train y val).
+            n_tr_hit = min(n_tr, int(round(n_tr * h)))
+            n_va_hit = min(n_va, int(round(n_va * h)))
+            # Por clip con manifest: 1 identidad + hasta exv filas extra ⇒ +exv filas respecto a 1.
+            realistic_rows = n_te + (n_tr + n_va) + (n_tr_hit + n_va_hit) * exv
+            effective_examples = realistic_rows
+            print(
+                f"Filas dataset/época (estimación realista): {color(str(realistic_rows), CYAN)} "
+                f"(≈{100.0 * h:.1f}% UIDs con JSON en caché; train/val sin JSON ⇒ 1 fila; con JSON ⇒ 1+{exv} si el manifest tiene suficientes variantes)."
+            )
+            if h < 1.0:
+                warn(
+                    "La cota 'todos con manifest' sería "
+                    f"{upper_rows} filas; solo aplica si batch_build rellenó JSON para casi todos los UIDs."
+                )
+        else:
+            effective_examples = upper_rows
+            warn(
+                "Sin conteo de manifests (pasa --manifest-cache-dir y sección 5): "
+                f"se usa cota superior {upper_rows} filas; puede sobrestimar mucho si faltan JSON."
+            )
+        extra_aug = effective_examples - n_examples
         if augment_on_the_fly:
             warn(
                 "Con --augment-on-the-fly el coste real puede ser algo mayor; esta línea solo cuenta filas del dataset."
@@ -422,8 +451,19 @@ def estimate_times(
         exv_m = int(extra_manifest_views_per_clip)
         n_tr0 = int(n_examples * tr_b)
         n_va0 = int(n_examples * vr_b)
-        batch_train_rows = n_tr0 * (1 + exv_m)
-        batch_val_rows = n_va0 * (1 + exv_m)
+        if (
+            manifest_unique_uids is not None
+            and manifest_unique_uids > 0
+            and manifest_hits is not None
+        ):
+            h_b = manifest_hits / float(manifest_unique_uids)
+            ntr_h = min(n_tr0, int(round(n_tr0 * h_b)))
+            nva_h = min(n_va0, int(round(n_va0 * h_b)))
+            batch_train_rows = n_tr0 + ntr_h * exv_m
+            batch_val_rows = n_va0 + nva_h * exv_m
+        else:
+            batch_train_rows = n_tr0 * (1 + exv_m)
+            batch_val_rows = n_va0 * (1 + exv_m)
     else:
         batch_train_rows = -1
         batch_val_rows = -1
@@ -616,7 +656,7 @@ def main() -> None:
                 f"{BOLD}Reparto en uso (args explícitos): "
                 f"{float(args.train_ratio):.3f} / {float(args.val_ratio):.3f} / {te_cur:.3f}{RESET}"
             )
-    check_manifest_cache_section(
+    mh, mu = check_manifest_cache_section(
         manifest_cache_dir=args.manifest_cache_dir,
         pose_source=args.pose_source,
         single_user_only=args.single_user_only,
@@ -639,6 +679,8 @@ def main() -> None:
         train_ratio=tr_eff,
         val_ratio=va_eff,
         extra_manifest_views_per_clip=int(args.extra_manifest_views_per_clip),
+        manifest_hits=mh,
+        manifest_unique_uids=mu,
     )
     print(f"\nScript de pre-chequeo completado en {time.time() - start:.1f} segundos.")
 
