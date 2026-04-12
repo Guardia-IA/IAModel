@@ -155,7 +155,7 @@ def dataset_info_from_collect_examples(
     Misma lista que train_model_operations.build_datasets_and_loaders → collect_examples.
     Incluye passes_filters, poses_full + valid_mask, etc.
     """
-    header("4) Dataset (collect_examples — misma base que train_model_operations)")
+    header("4) Dataset (solo collect_examples — mismas reglas que train_model_operations)")
     try:
         from .train_model_operations import collect_examples
     except ImportError:
@@ -163,6 +163,10 @@ def dataset_info_from_collect_examples(
 
     root = get_data_result_root()
     print(f"Carpeta de datos: {root}")
+    print(
+        f"{BOLD}Filtros:{RESET} idénticos a build_datasets_and_loaders → collect_examples "
+        "(_user_quality_ok: min_clip/min_valid/pct/occlusion, passes_filters, poses_full+valid_mask, etc.)."
+    )
     examples = collect_examples(
         pose_source=pose_source,
         single_user_only=single_user_only,
@@ -200,7 +204,7 @@ def dataset_info_from_collect_examples(
         pct = 100.0 * cnt / n if n > 0 else 0.0
         avg_f = per_cat_avg_frames.get(cat, 0.0)
         print(f"{cat:>6} | {cnt:8d} | {pct:6.2f} | {avg_f:14.2f}")
-    print(f"\nTotal ejemplos (pool train, igual que verás en train): {color(str(n), CYAN)}")
+    print(f"\nTotal ejemplos (N para estimación de tiempos y mismo pool que train): {color(str(n), CYAN)}")
     print(f"Frames medios por embedding: {color(f'{avg_frames:.2f}', CYAN)}")
     return {
         "total": n,
@@ -228,7 +232,7 @@ def check_manifest_cache_section(
     )
     print(f"Directorio por defecto en el proyecto: {_MANIFEST_CACHE_DIR}")
     if legacy_selection:
-        warn("Activaste --legacy-selection (ignorado para collect_examples; ver aviso en sección 4).")
+        warn("Activaste --legacy-selection (no afecta a collect_examples; ver aviso en main).")
     if not manifest_cache_dir:
         warn("No pasaste --manifest-cache-dir: el entrenamiento usará solo la rejilla global (sin manifests por fichero).")
         return
@@ -266,7 +270,7 @@ def check_manifest_cache_section(
         max_occlusion_ratio=float(max_occlusion_ratio),
     )
     print(
-        f"collect_examples => {len(ex)} ejemplos (debe coincidir con el total de la sección 4 con los mismos flags)."
+        f"collect_examples => {len(ex)} ejemplos (mismo N que la sección 4 si los flags coinciden)."
     )
     hits = 0
     seen: set[str] = set()
@@ -572,8 +576,8 @@ def main() -> None:
     np = np_mod  # type: ignore[assignment]
     if args.legacy_selection:
         warn(
-            "--legacy-selection no afecta al conteo: train_model_operations.collect_examples "
-            "no implementa ese modo antiguo. El total N y los tiempos usan la misma regla que train."
+            "--legacy-selection no está implementado en collect_examples/train; "
+            "se ignora. Quita el flag o implementa la lógica en train_model_operations si la necesitas."
         )
     data_info = dataset_info_from_collect_examples(
         pose_source=args.pose_source,

@@ -331,26 +331,39 @@ def expand_examples_with_manifest_extra_views(
     if not mdir.is_dir():
         print("[EXPAND-VIEWS] manifest_cache_dir no es una carpeta válida; no se expande.")
         return examples
+    n_req = int(extra_views_per_clip)
     out: List[PoseExample] = []
-    skipped = 0
+    skipped_no_json = 0
+    n_with_json = 0
+    n_ge_n = 0  # len(specs)-1 >= n_req (pueden generarse N variantes extra)
+    n_partial = 0  # 0 < disponibles < n_req
+    n_only_identity = 0  # specs solo identidad o una fila
     for ex in examples:
         p = resolve_manifest_json_for_example(mdir, ex)
         if p is None:
             out.append(ex)
-            skipped += 1
+            skipped_no_json += 1
             continue
         try:
             with open(p, "r", encoding="utf-8") as f:
                 data = json.load(f)
         except Exception:
             out.append(ex)
-            skipped += 1
+            skipped_no_json += 1
             continue
         specs = specs_from_validate_manifest_payload(data, variant_set=variant_set)
         if not specs:
             out.append(ex)
-            skipped += 1
+            skipped_no_json += 1
             continue
+        n_with_json += 1
+        avail = max(0, len(specs) - 1)
+        if avail >= n_req:
+            n_ge_n += 1
+        elif avail > 0:
+            n_partial += 1
+        else:
+            n_only_identity += 1
         out.append(
             PoseExample(
                 pose_path=ex.pose_path,
@@ -363,7 +376,7 @@ def expand_examples_with_manifest_extra_views(
                 forced_ops=[],
             )
         )
-        n_extra = min(extra_views_per_clip, max(0, len(specs) - 1))
+        n_extra = min(n_req, avail)
         for j in range(n_extra):
             spec = specs[1 + j]
             ops = list(spec.get("ops", []) or [])
@@ -380,8 +393,24 @@ def expand_examples_with_manifest_extra_views(
                 )
             )
     print(
-        f"[EXPAND-VIEWS] extra_manifest_views={extra_views_per_clip} variant_set={variant_set} | "
-        f"clips sin manifest (1 fila): {skipped} | filas totales: {len(out)} (antes {len(examples)})"
+        f"[EXPAND-VIEWS] Solicitadas {n_req} variantes extra por clip (además de identidad) | "
+        f"variant_set={variant_set}"
+    )
+    print(
+        f"[EXPAND-VIEWS] Cobertura: con JSON válido={n_with_json} | "
+        f"con>={n_req} variantes extra en manifest={n_ge_n} | "
+        f"parcial (algunas pero <{n_req})={n_partial} | "
+        f"solo identidad en specs={n_only_identity} | sin JSON={skipped_no_json}"
+    )
+    if n_req > 0 and n_with_json > 0 and n_ge_n < n_with_json:
+        print(
+            f"[EXPAND-VIEWS] Aviso: solo {n_ge_n}/{n_with_json} clips tienen al menos {n_req} variantes extra "
+            "en el JSON; el resto usa menos filas. Regenera caché con batch_build_manifest_cache.py "
+            "o baja --extra-manifest-views-per-clip."
+        )
+    print(
+        f"[EXPAND-VIEWS] Filas dataset: {len(out)} (antes {len(examples)}) "
+        f"| identidad + hasta {n_req} ops forzadas por clip con manifest suficiente"
     )
     return out
 
@@ -800,8 +829,9 @@ def collect_examples(
          - user_cat=6 se mantiene como robo
          - user_cat!=6 se reetiqueta a su user_cat.
       4) En no-cat6 también prioriza user_cat si existe, para etiqueta por usuario.
-      5) Aplica filtro de calidad por usuario para descartar secuencias pobres.
+      5) Aplica filtro de calidad por usuario (_user_quality_ok: incl. passes_filters en meta).
       6) pose_source: "filtered" usa poses.npy, "full" usa poses_full.npy (+ valid_mask).
+      preflight_check_operations.py usa esta misma función para N y tiempos estimados.
     """
     root = get_data_result_root()
     examples: List[PoseExample] = []
