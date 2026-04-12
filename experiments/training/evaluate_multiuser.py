@@ -15,6 +15,7 @@ try:
         PoseExample,
         PoseDataset,
         collect_examples,
+        example_in_split_set,
         make_binary_examples,
         build_model,
         build_pose_dataset_for_eval,
@@ -32,6 +33,10 @@ except ImportError:
         make_binary_examples,
         build_model,
     )
+
+    def example_in_split_set(ex: PoseExample, split_uids: set[str]) -> bool:
+        return str(ex.pose_path.resolve()) in split_uids
+
     _USE_OPERATIONS = False
     AUGMENT_CONFIG_PATH = None  # type: ignore[assignment]
     AUGMENT_PROFILE_DEFAULT = "industrial"
@@ -237,7 +242,7 @@ def evaluate_model_on_multiuser(
     if split_manifest_path is not None:
         split_uids = _load_split_uids(split_manifest_path, split_name)
         before = len(examples)
-        examples = [ex for ex in examples if str(ex.pose_path.resolve()) in split_uids]
+        examples = [ex for ex in examples if example_in_split_set(ex, split_uids)]
         print(
             f"[SPLIT-MANIFEST] split={split_name} | antes={before} -> después={len(examples)} "
             f"usando {split_manifest_path}"

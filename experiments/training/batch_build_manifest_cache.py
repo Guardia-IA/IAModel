@@ -2,8 +2,9 @@
 """
 Genera manifests validate_npy (un JSON por UID) en manifest_cache/.
 
-El nombre de fichero es md5(UTF-8 de la ruta absoluta del .npy), igual que
-train_model_operations.manifest_cache_path_for_uid.
+El nombre de fichero es md5(UTF-8 del UID estable del .npy), igual que
+train_model_operations.manifest_cache_path_for_uid (ruta relativa a data_result
+si aplica, o absoluta como legado).
 
 Uso (desde esta carpeta):
   python batch_build_manifest_cache.py --pose-source filtered
@@ -38,6 +39,7 @@ def _import_ops():
         from train_model_operations import (  # type: ignore[attr-defined]
             collect_examples,
             manifest_cache_path_for_uid,
+            _example_uid,
             MANIFEST_CACHE_DIR,
         )
     except ImportError:
@@ -54,11 +56,13 @@ def _import_ops():
         from train_model_operations import (  # type: ignore[attr-defined]
             collect_examples,
             manifest_cache_path_for_uid,
+            _example_uid,
             MANIFEST_CACHE_DIR,
         )
     return (
         collect_examples,
         manifest_cache_path_for_uid,
+        _example_uid,
         MANIFEST_CACHE_DIR,
         MIN_CLIP_SECONDS,
         MIN_VALID_FRAMES,
@@ -74,6 +78,7 @@ def main() -> None:
     (
         collect_examples,
         manifest_cache_path_for_uid,
+        _example_uid,
         default_cache,
         def_min_clip,
         def_min_vf,
@@ -139,34 +144,35 @@ def main() -> None:
         max_occlusion_ratio=float(args.max_occlusion_ratio),
     )
     seen: set[str] = set()
-    uids: list[str] = []
+    # (uid estable para nombre md5, ruta absoluta para np.load en validate_npy)
+    jobs: list[tuple[str, str]] = []
     for ex in examples:
-        uid = str(ex.pose_path.resolve())
+        uid = _example_uid(ex)
         if uid in seen:
             continue
         seen.add(uid)
-        uids.append(uid)
+        jobs.append((uid, str(ex.pose_path.resolve())))
 
     if args.max is not None:
-        uids = uids[: max(0, int(args.max))]
+        jobs = jobs[: max(0, int(args.max))]
 
-    print(f"UIDs únicos a procesar: {len(uids)} | cache_dir={cache_dir}")
+    print(f"UIDs únicos a procesar: {len(jobs)} | cache_dir={cache_dir}")
     ok = 0
     skipped = 0
     failed = 0
-    for uid in uids:
+    for uid, abs_npy in jobs:
         out = manifest_cache_path_for_uid(cache_dir, uid)
         if args.skip_existing and out.exists():
             skipped += 1
             continue
         if args.dry_run:
-            print(f"[dry-run] {uid} -> {out.name}")
+            print(f"[dry-run] uid={uid!r} npy={abs_npy} -> {out.name}")
             ok += 1
             continue
         cmd = [
             sys.executable,
             str(_VALIDATE_NPY),
-            uid,
+            abs_npy,
             "--config",
             str(cfg_path),
             "--profile",
@@ -185,7 +191,7 @@ def main() -> None:
             ok += 1
         except subprocess.CalledProcessError:
             failed += 1
-            print(f"[ERROR] validate_npy falló para {uid}", file=sys.stderr)
+            print(f"[ERROR] validate_npy falló para {abs_npy} (uid={uid!r})", file=sys.stderr)
 
     print(f"Listo: generados/ok={ok} | omitidos (skip-existing)={skipped} | fallidos={failed}")
 

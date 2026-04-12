@@ -63,7 +63,6 @@ BOLD = "\033[1m"
 
 TRAIN_RATIO = float(SPLIT_RATIO_TRAIN)
 VAL_RATIO = float(SPLIT_RATIO_VAL)
-MIN_SEQ_LEN = 4
 # MIN_* / MAX_OCCLUSION_* por defecto desde model_config (alineado con train_model_operations).
 
 
@@ -144,193 +143,70 @@ def get_data_result_root() -> Path:
     return root
 
 
-def _to_float(v: Any, default: float = 0.0) -> float:
-    try:
-        return float(v)
-    except Exception:
-        return default
-
-
-def _to_int(v: Any, default: int = 0) -> int:
-    try:
-        return int(v)
-    except Exception:
-        return default
-
-
-def _user_quality_reason(user_meta: Dict[str, Any], meta: Dict[str, Any], pose_len: int) -> Tuple[bool, str]:
-    valid_frames = _to_int(user_meta.get("valid_frames"), default=pose_len)
-    total_frames = _to_int(user_meta.get("total_frames"), default=pose_len)
-    valid_pct = _to_float(user_meta.get("valid_pct"), default=100.0 if total_frames <= 0 else 0.0)
-    occlusion_ratio = _to_float(user_meta.get("occlusion_ratio"), default=0.0)
-    if valid_pct <= 0 and total_frames > 0 and valid_frames > 0:
-        valid_pct = 100.0 * (valid_frames / total_frames)
-    clip_duration = _to_float(meta.get("clip_duration"), default=0.0)
-    if clip_duration > 0 and clip_duration < MIN_CLIP_SECONDS:
-        return False, "clip_duration"
-    if pose_len < MIN_SEQ_LEN:
-        return False, "min_seq_len"
-    if valid_frames < MIN_VALID_FRAMES:
-        return False, "valid_frames"
-    if valid_pct < MIN_VALID_PCT:
-        return False, "valid_pct"
-    if occlusion_ratio > MAX_OCCLUSION_RATIO:
-        return False, "occlusion_ratio"
-    return True, "ok"
-
-
-def scan_embeddings(
-    pose_source: str = "filtered",
-    single_user_only: bool = False,
-    legacy_selection: bool = False,
+def dataset_info_from_collect_examples(
+    pose_source: str,
+    single_user_only: bool,
+    min_clip_seconds: float,
+    min_valid_frames: int,
+    min_valid_pct: float,
+    max_occlusion_ratio: float,
 ) -> Dict[str, Any]:
-    header("4) Escaneo de embeddings en data_result")
+    """
+    Misma lista que train_model_operations.build_datasets_and_loaders → collect_examples.
+    Incluye passes_filters, poses_full + valid_mask, etc.
+    """
+    header("4) Dataset (collect_examples — misma base que train_model_operations)")
+    try:
+        from .train_model_operations import collect_examples
+    except ImportError:
+        from train_model_operations import collect_examples
+
     root = get_data_result_root()
     print(f"Carpeta de datos: {root}")
-    total_examples = 0
-    total_examples_raw = 0
+    examples = collect_examples(
+        pose_source=pose_source,
+        single_user_only=single_user_only,
+        min_clip_seconds=float(min_clip_seconds),
+        min_valid_frames=int(min_valid_frames),
+        min_valid_pct=float(min_valid_pct),
+        max_occlusion_ratio=float(max_occlusion_ratio),
+    )
+    n = len(examples)
     per_cat_counts: Dict[str, int] = {}
     per_cat_frames: Dict[str, List[int]] = {}
-    drop_reasons: Dict[str, int] = {
-        "missing_meta": 0,
-        "json_error": 0,
-        "no_users": 0,
-        "single_user_only_skip": 0,
-        "missing_track_id": 0,
-        "missing_pose_file": 0,
-        "pose_load_error": 0,
-        "bad_shape": 0,
-        "clip_duration": 0,
-        "min_seq_len": 0,
-        "valid_frames": 0,
-        "valid_pct": 0,
-        "occlusion_ratio": 0,
-        "passes_filters_false": 0,
-    }
-    cat_dirs = sorted([d for d in root.iterdir() if d.is_dir()])
-    iterable = tqdm(cat_dirs, desc="Recorriendo categorías", unit="cat") if tqdm is not None else cat_dirs
-    for cat_dir in iterable:
-        cat_str = cat_dir.name
-        per_cat_counts.setdefault(cat_str, 0)
-        per_cat_frames.setdefault(cat_str, [])
-        for clip_dir in sorted(cat_dir.iterdir()):
-            if not clip_dir.is_dir():
-                continue
-            meta_path = clip_dir / "meta.json"
-            if not meta_path.exists():
-                drop_reasons["missing_meta"] += 1
-                continue
-            try:
-                with open(meta_path, "r", encoding="utf-8") as f:
-                    meta = json.load(f)
-            except Exception:
-                drop_reasons["json_error"] += 1
-                continue
-            users = meta.get("users", [])
-            if not users:
-                drop_reasons["no_users"] += 1
-                continue
-            if single_user_only and len(users) != 1:
-                drop_reasons["single_user_only_skip"] += len(users)
-                continue
-
-            # Regla por defecto (alineada con train_model_operations.py):
-            # - cat != 6: usar todos los usuarios válidos.
-            # - cat == 6: usar todos los usuarios válidos y etiquetar por user_cat.
-            # Modo legacy opcional: comportamiento antiguo preflight_check.py.
-            users_to_iter = users
-            if legacy_selection:
-                chosen_user = None
-                if cat_str != "6":
-                    if len(users) != 1:
-                        drop_reasons["single_user_only_skip"] += len(users)
-                        continue
-                    chosen_user = users[0]
-                else:
-                    chosen_user = max(users, key=lambda u: u.get("total_frames", 0))
-                users_to_iter = [chosen_user] if chosen_user is not None else []
-            else:
-                clip_cat_int = _to_int(meta.get("cat", cat_str), default=_to_int(cat_str, default=0))
-                if clip_cat_int == 6:
-                    users_to_iter = users
-
-            for user in users_to_iter:
-                total_examples_raw += 1
-                track_id = user.get("track_id")
-                if track_id is None:
-                    drop_reasons["missing_track_id"] += 1
-                    continue
-                user_dir = clip_dir / f"user_{track_id}"
-                pose_file = "poses.npy" if pose_source == "filtered" else "poses_full.npy"
-                pose_path = user_dir / pose_file
-                if not pose_path.exists():
-                    drop_reasons["missing_pose_file"] += 1
-                    continue
-                try:
-                    poses = np.load(pose_path)
-                except Exception:
-                    drop_reasons["pose_load_error"] += 1
-                    continue
-                if poses.ndim != 3 or poses.shape[-1] != 2:
-                    drop_reasons["bad_shape"] += 1
-                    continue
-                ok_user, reason = _user_quality_reason(user, meta, poses.shape[0])
-                if not ok_user:
-                    drop_reasons[reason] = drop_reasons.get(reason, 0) + 1
-                    continue
-                user_cat = user.get("user_cat")
-                if user_cat is not None:
-                    label_cat = str(_to_int(user_cat, default=_to_int(meta.get("cat", cat_str), default=0)))
-                else:
-                    label_cat = str(_to_int(meta.get("cat", cat_str), default=0))
-                per_cat_counts.setdefault(label_cat, 0)
-                per_cat_frames.setdefault(label_cat, [])
-                per_cat_counts[label_cat] += 1
-                per_cat_frames[label_cat].append(poses.shape[0])
-                total_examples += 1
-    if total_examples == 0:
-        fail("No se encontraron embeddings válidos para entrenamiento.")
-        return {"total": 0, "per_cat_counts": {}, "per_cat_avg_frames": {}, "avg_frames": 0.0}
-    per_cat_avg_frames: Dict[str, float] = {}
     all_frames: List[int] = []
+    iterable = tqdm(examples, desc="Midiendo frames .npy", unit="emb") if tqdm is not None else examples
+    for ex in iterable:
+        lk = str(ex.label)
+        per_cat_counts[lk] = per_cat_counts.get(lk, 0) + 1
+        try:
+            arr = np.load(ex.pose_path)
+            t = int(arr.shape[0])
+        except Exception:
+            t = 64
+        per_cat_frames.setdefault(lk, []).append(t)
+        all_frames.append(t)
+
+    per_cat_avg_frames: Dict[str, float] = {}
     for cat, frames_list in per_cat_frames.items():
-        if frames_list:
-            avg_f = sum(frames_list) / len(frames_list)
-            per_cat_avg_frames[cat] = avg_f
-            all_frames.extend(frames_list)
-        else:
-            per_cat_avg_frames[cat] = 0.0
+        per_cat_avg_frames[cat] = (sum(frames_list) / len(frames_list)) if frames_list else 0.0
     avg_frames = sum(all_frames) / len(all_frames) if all_frames else 0.0
-    mode_msg = (
-        "modo legacy (como preflight_check.py)"
-        if legacy_selection
-        else "cat!=6: todos los usuarios válidos; cat=6: todos los usuarios (etiqueta por user_cat)"
-    )
-    print(f"\nResumen de embeddings ({mode_msg}):")
-    print(f"{BOLD}{'Cat':>4} | {'#clips':>8} | {'%':>6} | {'frames_medios':>14}{RESET}")
-    print("-" * 40)
-    for cat in sorted(per_cat_counts.keys(), key=lambda x: int(x) if x.isdigit() else x):
+
+    print(f"\n{BOLD}Resumen por etiqueta (tras collect_examples):{RESET}")
+    print(f"{BOLD}{'label':>6} | {'#':>8} | {'%':>6} | {'frames_medios':>14}{RESET}")
+    print("-" * 44)
+    for cat in sorted(per_cat_counts.keys(), key=lambda x: int(x) if str(x).isdigit() else str(x)):
         cnt = per_cat_counts[cat]
-        pct = 100.0 * cnt / total_examples if total_examples > 0 else 0.0
+        pct = 100.0 * cnt / n if n > 0 else 0.0
         avg_f = per_cat_avg_frames.get(cat, 0.0)
-        print(f"{cat:>4} | {cnt:8d} | {pct:6.2f} | {avg_f:14.2f}")
-    print(f"\nTotal embeddings válidos (originales): {color(str(total_examples), CYAN)}")
-    print(f"Total candidatos brutos (users en meta): {color(str(total_examples_raw), CYAN)}")
+        print(f"{cat:>6} | {cnt:8d} | {pct:6.2f} | {avg_f:14.2f}")
+    print(f"\nTotal ejemplos (pool train, igual que verás en train): {color(str(n), CYAN)}")
     print(f"Frames medios por embedding: {color(f'{avg_frames:.2f}', CYAN)}")
-    dropped_total = max(0, total_examples_raw - total_examples)
-    print(f"Total descartados por filtros/errores: {color(str(dropped_total), YELLOW)}")
-    print("\nDesglose de descarte:")
-    for k in sorted(drop_reasons.keys()):
-        v = int(drop_reasons[k])
-        if v > 0:
-            print(f"  - {k}: {v}")
     return {
-        "total": total_examples,
-        "total_raw": total_examples_raw,
+        "total": n,
         "per_cat_counts": per_cat_counts,
         "per_cat_avg_frames": per_cat_avg_frames,
         "avg_frames": avg_frames,
-        "drop_reasons": drop_reasons,
     }
 
 
@@ -347,15 +223,12 @@ def check_manifest_cache_section(
     """Alineación entre collect_examples (mismos filtros que train) y JSON en manifest_cache."""
     header("5) Caché de manifests validate_npy (opcional)")
     print(
-        "Si entrenas con --manifest-cache-dir, cada UID (ruta absoluta del .npy) puede tener un JSON "
-        "generado por operations_npy/validate_npy.py; el resto usa la rejilla global."
+        "Si entrenas con --manifest-cache-dir, cada UID estable (ruta del .npy relativa a data_result, "
+        "o legado absoluta) puede tener un JSON de validate_npy; el resto usa la rejilla global."
     )
     print(f"Directorio por defecto en el proyecto: {_MANIFEST_CACHE_DIR}")
     if legacy_selection:
-        warn(
-            "Activaste --legacy-selection: la sección 4 (escaneo) usa reglas antiguas; "
-            "train y esta sección usan collect_examples (reglas actuales). El total N puede no coincidir."
-        )
+        warn("Activaste --legacy-selection (ignorado para collect_examples; ver aviso en sección 4).")
     if not manifest_cache_dir:
         warn("No pasaste --manifest-cache-dir: el entrenamiento usará solo la rejilla global (sin manifests por fichero).")
         return
@@ -393,8 +266,7 @@ def check_manifest_cache_section(
         max_occlusion_ratio=float(max_occlusion_ratio),
     )
     print(
-        f"collect_examples => {len(ex)} ejemplos (misma base que train; "
-        "compara con el total de la sección 4 si usaste los mismos filtros y sin --legacy-selection)."
+        f"collect_examples => {len(ex)} ejemplos (debe coincidir con el total de la sección 4 con los mismos flags)."
     )
     hits = 0
     seen: set[str] = set()
@@ -698,10 +570,18 @@ def main() -> None:
         fail("numpy es obligatorio para continuar.")
         return
     np = np_mod  # type: ignore[assignment]
-    data_info = scan_embeddings(
+    if args.legacy_selection:
+        warn(
+            "--legacy-selection no afecta al conteo: train_model_operations.collect_examples "
+            "no implementa ese modo antiguo. El total N y los tiempos usan la misma regla que train."
+        )
+    data_info = dataset_info_from_collect_examples(
         pose_source=args.pose_source,
         single_user_only=args.single_user_only,
-        legacy_selection=args.legacy_selection,
+        min_clip_seconds=float(args.min_clip_seconds),
+        min_valid_frames=int(args.min_valid_frames),
+        min_valid_pct=float(args.min_valid_pct),
+        max_occlusion_ratio=float(args.max_occlusion_ratio),
     )
     n_tot = int(data_info["total"])
     if (args.train_ratio is None) ^ (args.val_ratio is None):

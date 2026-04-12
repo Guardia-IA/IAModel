@@ -15,6 +15,7 @@ try:
         PoseExample,
         PoseDataset,
         collect_examples,
+        example_in_split_set,
         split_examples,
         make_binary_examples,
         build_pose_dataset_for_eval,
@@ -36,6 +37,10 @@ except ImportError:
         build_model,
         SEED,
     )
+
+    def example_in_split_set(ex: PoseExample, split_uids: set[str]) -> bool:
+        return str(ex.pose_path.resolve()) in split_uids
+
     _USE_OPERATIONS = False
     AUGMENT_CONFIG_PATH = None  # type: ignore[assignment]
     AUGMENT_PROFILE_DEFAULT = "industrial"
@@ -141,7 +146,7 @@ def build_examples_singleuser(
     if split_manifest_path is not None:
         split_uids = _load_split_uids(split_manifest_path, split_name)
         before = len(examples)
-        examples = [ex for ex in examples if str(ex.pose_path.resolve()) in split_uids]
+        examples = [ex for ex in examples if example_in_split_set(ex, split_uids)]
         info["split_manifest_path"] = str(split_manifest_path)
         info["split_manifest_name"] = split_name
         info["pool_after_manifest_filter"] = len(examples)

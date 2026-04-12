@@ -14,6 +14,7 @@ try:
         add_velocity,
         build_model,
         collect_examples,
+        example_in_split_set,
         make_binary_examples,
         normalize_sequence,
         temporal_resize,
@@ -25,6 +26,7 @@ except ImportError:
         add_velocity,
         build_model,
         collect_examples,
+        example_in_split_set,
         make_binary_examples,
         normalize_sequence,
         temporal_resize,
@@ -54,7 +56,7 @@ def _load_examples_filtered(
     split_uids = _load_split_uids(split_manifest_path, split_name)
     if split_uids is None:
         return examples
-    out = [ex for ex in examples if _example_uid(ex) in split_uids]
+    out = [ex for ex in examples if example_in_split_set(ex, split_uids)]
     if not out:
         raise RuntimeError("No quedaron ejemplos tras filtrar por split manifest.")
     return out

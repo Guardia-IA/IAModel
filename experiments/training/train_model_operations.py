@@ -6,6 +6,7 @@ import json
 import math
 import random
 import sys
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -259,6 +260,13 @@ def specs_from_validate_manifest_payload(
     return out
 
 
+def get_data_result_root() -> Path:
+    root = DATA_RESULT_ROOT
+    if not root.exists():
+        raise RuntimeError(f"No se encontró la carpeta data_result en: {root}")
+    return root
+
+
 def manifest_cache_path_for_uid(cache_dir: Path, uid: str) -> Path:
     h = hashlib.md5(uid.encode("utf-8")).hexdigest()
     return cache_dir / f"{h}.json"
@@ -283,16 +291,20 @@ def build_per_uid_variant_map(
         uid = _example_uid(ex)
         if uid in per_uid:
             continue
-        p = manifest_cache_path_for_uid(manifest_cache_dir, uid)
-        if not p.exists():
+        p = resolve_manifest_json_for_example(manifest_cache_dir, ex)
+        if p is None:
             continue
         try:
             with open(p, "r", encoding="utf-8") as f:
                 data = json.load(f)
             if verify_source_path:
                 src = data.get("source_npy")
-                if src and Path(str(src)).resolve() != Path(uid).resolve():
-                    continue
+                if src:
+                    src_p = Path(str(src))
+                    if not src_p.is_absolute():
+                        src_p = get_data_result_root() / src_p
+                    if src_p.resolve() != Path(ex.pose_path).resolve():
+                        continue
             specs = specs_from_validate_manifest_payload(data, variant_set=variant_set)
             if specs:
                 per_uid[uid] = specs
@@ -322,8 +334,8 @@ def expand_examples_with_manifest_extra_views(
     out: List[PoseExample] = []
     skipped = 0
     for ex in examples:
-        p = manifest_cache_path_for_uid(mdir, _example_uid(ex))
-        if not p.exists():
+        p = resolve_manifest_json_for_example(mdir, ex)
+        if p is None:
             out.append(ex)
             skipped += 1
             continue
@@ -433,6 +445,103 @@ SPLITS_DIR.mkdir(parents=True, exist_ok=True)
 # Augment on-the-fly (sin crear ficheros .npy en disco); AUGMENT_PROFILE_DEFAULT en model_config
 AUGMENT_CONFIG_PATH = BASE_DIR / "operations_npy" / "validate_npy.json"
 
+# Un solo bloque de resumen de pool al primer build_datasets_and_loaders de la sesión
+_POOL_SUMMARY_PRINTED = False
+
+
+def reset_training_pool_summary_flag() -> None:
+    global _POOL_SUMMARY_PRINTED
+    _POOL_SUMMARY_PRINTED = False
+
+
+def _summarize_forced_rows(examples: List[PoseExample]) -> Tuple[int, int, int]:
+    """Devuelve (solo_rejilla, manifest_identidad, manifest_con_ops)."""
+    grid_only = 0
+    man_id = 0
+    man_ops = 0
+    for ex in examples:
+        fo = getattr(ex, "forced_ops", None)
+        if fo is None:
+            grid_only += 1
+        elif len(fo) == 0:
+            man_id += 1
+        else:
+            man_ops += 1
+    return grid_only, man_id, man_ops
+
+
+def _print_training_pool_summary_once(
+    *,
+    train_unique_npy: int,
+    train_rows: int,
+    train_rows_before_expand: int,
+    extra_manifest_views_per_clip: int,
+    val_unique_npy: int,
+    val_rows: int,
+    test_unique_npy: int,
+    test_rows: int,
+    n_det_grid_specs: int,
+    manifest_hits: int,
+    train_grid_only: int,
+    train_manifest_identity: int,
+    train_manifest_ops: int,
+    augment_on_the_fly: bool,
+    augment_prob: float,
+    use_deterministic_in_train: bool,
+    train_deterministic_prob: float,
+) -> None:
+    global _POOL_SUMMARY_PRINTED
+    if _POOL_SUMMARY_PRINTED:
+        return
+    _POOL_SUMMARY_PRINTED = True
+    tr_g, tr_mi, tr_mo = train_grid_only, train_manifest_identity, train_manifest_ops
+    det_rows = tr_mi + tr_mo
+    print("\n" + "=" * 80)
+    print("[RESUMEN POOL DE ENTRENAMIENTO] (primer experimento de esta sesión)")
+    print("=" * 80)
+    print(
+        f"  · NPY únicos en split train (ficheros .npy distintos): {train_unique_npy}\n"
+        f"  · Filas dataset TRAIN: {train_rows} "
+        f"(antes de expansión manifest: {train_rows_before_expand}"
+        + (
+            f"; +{train_rows - train_rows_before_expand} filas por --extra-manifest-views-per-clip={extra_manifest_views_per_clip})"
+            if extra_manifest_views_per_clip > 0
+            else ")"
+        )
+    )
+    print(
+        f"  · Desglose filas TRAIN: rejilla global (__getitem__, sin forced_ops)={tr_g} | "
+        f"manifest explícito identidad={tr_mi} | manifest explícito con ops={tr_mo} "
+        f"(deterministas de dataset por fila: {det_rows})"
+    )
+    print(
+        f"  · Val: NPY únicos={val_unique_npy} | filas loader={val_rows} | "
+        f"Test: NPY únicos={test_unique_npy} | filas loader={test_rows}"
+    )
+    print(
+        f"  · Rejilla determinista validate_npy (variantes en perfil): {n_det_grid_specs} | "
+        f"UIDs con JSON en manifest_cache: {manifest_hits}"
+    )
+    print(
+        "  · En cada época TRAIN: "
+        + (
+            f"augment ALEATORIO on-the-fly activo (prob≈{augment_prob} por pasada según config)"
+            if augment_on_the_fly
+            else "augment aleatorio on-the-fly DESACTIVADO"
+        )
+        + " | "
+        + (
+            f"variantes deterministas de rejilla en train con prob {train_deterministic_prob}"
+            if use_deterministic_in_train and n_det_grid_specs > 0
+            else ("sin variantes deterministas en train" if not use_deterministic_in_train else "sin rejilla")
+        )
+    )
+    print(
+        "  · Nota: las filas 'manifest explícito' aplican ops fijas por fila; "
+        "la rejilla elige una variante determinista por muestra; el aleatorio es adicional si on-the-fly."
+    )
+    print("=" * 80 + "\n")
+
 
 random.seed(SEED)
 np.random.seed(SEED)
@@ -452,16 +561,55 @@ class PoseExample:
     forced_ops: Optional[List[Dict[str, Any]]] = None
 
 
+def _manifest_lookup_uids(ex: PoseExample) -> List[str]:
+    """
+    Candidatos de UID para manifest_cache (md5 por string UTF-8).
+    1) Ruta relativa posix bajo DATA_RESULT_ROOT (portable entre máquinas).
+    2) Ruta absoluta resuelta (compatibilidad con cachés y splits antiguos).
+    """
+    root = get_data_result_root().resolve()
+    pp = Path(ex.pose_path).resolve()
+    out: List[str] = []
+    try:
+        out.append(pp.relative_to(root).as_posix())
+    except ValueError:
+        pass
+    abs_s = str(pp)
+    if not out or out[-1] != abs_s:
+        out.append(abs_s)
+    seen: set[str] = set()
+    uniq: List[str] = []
+    for u in out:
+        if u not in seen:
+            seen.add(u)
+            uniq.append(u)
+    return uniq
+
+
 def _example_uid(ex: PoseExample) -> str:
-    # UID estable para compartir split entre train/eval.
-    return str(ex.pose_path.resolve())
+    # UID estable para split/eval: relativo a data_result si aplica; si no, absoluto.
+    uids = _manifest_lookup_uids(ex)
+    return uids[0]
 
 
-def get_data_result_root() -> Path:
-    root = DATA_RESULT_ROOT
-    if not root.exists():
-        raise RuntimeError(f"No se encontró la carpeta data_result en: {root}")
-    return root
+def example_in_split_set(ex: PoseExample, split_uids: set[str]) -> bool:
+    """True si el ejemplo coincide con un UID del split (relativo nuevo o absoluto legado)."""
+    for u in _manifest_lookup_uids(ex):
+        if u in split_uids:
+            return True
+    return False
+
+
+def resolve_manifest_json_for_example(cache_dir: Path, ex: PoseExample) -> Optional[Path]:
+    """Primer manifest JSON encontrado para este .npy (relativo o legado)."""
+    mdir = Path(cache_dir)
+    if not mdir.is_dir():
+        return None
+    for uid in _manifest_lookup_uids(ex):
+        p = manifest_cache_path_for_uid(mdir, uid)
+        if p.is_file():
+            return p
+    return None
 
 
 def _to_float(value: Any, default: float = 0.0) -> float:
@@ -2081,6 +2229,11 @@ def build_datasets_and_loaders(
         f"Split aplicado => Train: {len(train_ex)} | Val: {len(val_ex)} | Test: {len(test_ex)}"
     )
 
+    train_unique_npy = len({ex.pose_path.resolve() for ex in train_ex})
+    val_unique_npy = len({ex.pose_path.resolve() for ex in val_ex})
+    test_unique_npy = len({ex.pose_path.resolve() for ex in test_ex})
+    train_rows_before_expand = len(train_ex)
+
     if extra_manifest_views_per_clip > 0:
         if manifest_cache_dir is None:
             raise ValueError(
@@ -2138,6 +2291,26 @@ def build_datasets_and_loaders(
             f"[MANIFEST-CACHE] dir={mdir} | UIDs con manifest propio: {manifest_hits} | "
             f"variant_set={manifest_variant_set} | resto usa rejilla global"
         )
+    tr_g, tr_mi, tr_mo = _summarize_forced_rows(train_ex)
+    _print_training_pool_summary_once(
+        train_unique_npy=train_unique_npy,
+        train_rows=len(train_ex),
+        train_rows_before_expand=train_rows_before_expand,
+        extra_manifest_views_per_clip=int(extra_manifest_views_per_clip),
+        val_unique_npy=val_unique_npy,
+        val_rows=len(val_ex),
+        test_unique_npy=test_unique_npy,
+        test_rows=len(test_ex),
+        n_det_grid_specs=len(det_specs),
+        manifest_hits=int(manifest_hits),
+        train_grid_only=tr_g,
+        train_manifest_identity=tr_mi,
+        train_manifest_ops=tr_mo,
+        augment_on_the_fly=bool(augment_on_the_fly),
+        augment_prob=float(augment_prob),
+        use_deterministic_in_train=bool(use_deterministic_in_train),
+        train_deterministic_prob=float(train_deterministic_prob),
+    )
     aug_ranges = {
         "rotate_degrees": (float(rotate_cfg.get("min", -15.0)), float(rotate_cfg.get("max", 15.0))),
         "scale_percentage": (95.0, 111.0),
@@ -2258,6 +2431,20 @@ def build_datasets_and_loaders(
         "manifest_variant_set": manifest_variant_set,
         "manifest_uids_with_cache": manifest_hits,
         "extra_manifest_views_per_clip": int(extra_manifest_views_per_clip),
+        "training_pool_stats": {
+            "train_unique_npy": int(train_unique_npy),
+            "train_rows": int(len(train_ex)),
+            "train_rows_before_expand": int(train_rows_before_expand),
+            "train_rows_grid_only": int(tr_g),
+            "train_rows_manifest_identity": int(tr_mi),
+            "train_rows_manifest_ops": int(tr_mo),
+            "val_unique_npy": int(val_unique_npy),
+            "val_rows": int(len(val_ex)),
+            "test_unique_npy": int(test_unique_npy),
+            "test_rows": int(len(test_ex)),
+            "deterministic_grid_variant_specs": int(len(det_specs)),
+            "manifest_uids_loaded": int(manifest_hits),
+        },
         "augment_policy": {
             "train": "deterministic_grid (opcional) + random on-the-fly (opcional)",
             "val": "solo determinista (rejilla por UID estable)",
@@ -2455,6 +2642,7 @@ def run_experiment(
     manifest_variant_set: str = MANIFEST_VARIANT_SET_DEFAULT,
     extra_manifest_views_per_clip: int = 0,
 ) -> Dict[str, Any]:
+    t_exp0 = time.perf_counter()
     print("\n" + "=" * 80)
     print(f"Experimento {exp_id:02d} | config={cfg}")
     print("=" * 80)
@@ -2669,9 +2857,16 @@ def run_experiment(
             json.dump(split_payload, f, indent=2, ensure_ascii=False)
         print(f"[Exp {exp_id:02d}] Split manifest guardado en: {split_manifest_out}")
 
+    wall_s = float(time.perf_counter() - t_exp0)
+    print(
+        f"[Exp {exp_id:02d}] Tiempo total del experimento: {wall_s:.1f} s "
+        f"({wall_s / 60.0:.2f} min)"
+    )
+
     return {
         "exp_id": exp_id,
         "config": cfg,
+        "wall_time_s": wall_s,
         "best_val_acc": float(best_val_acc),
         "test_loss": float(test_loss),
         "test_acc": float(test_acc),
@@ -2735,7 +2930,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--single-user-only",
         action="store_true",
-        help="Usa solo clips con exactamente un usuario para train/val/test (incluye categoría 6).",
+        help=(
+            "Si se indica: solo clips con exactamente un usuario. "
+            "Por defecto (sin flag): modo multiusuario — todos los usuarios válidos por clip."
+        ),
     )
     parser.add_argument(
         "--min-clip-seconds",
@@ -2909,9 +3107,16 @@ def main():
     sys.stdout = Tee(original_stdout, log_file)
 
     try:
+        reset_training_pool_summary_flag()
         args = parse_args()
 
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        print("\n" + "=" * 80)
+        if args.single_user_only:
+            print("MODO DE DATOS: single-user (solo clips con exactamente un usuario)")
+        else:
+            print("MODO DE DATOS: MULTIUSUARIO por defecto (todos los usuarios válidos por clip)")
+        print("=" * 80 + "\n")
         print(f"Usando device: {device}")
         models_dir = MODELS_SINGLE_DIR if args.single_user_only else MODELS_DIR
         models_dir.mkdir(parents=True, exist_ok=True)
@@ -2961,6 +3166,7 @@ def main():
         )
 
         results = []
+        wall_total_s = 0.0
         exps_iter = _select_debug_experiments(EXPERIMENTS) if DEBUG_MODE else EXPERIMENTS
         for i, cfg in enumerate(exps_iter, start=1):
             if (not DEBUG_MODE) and cfg.get("done", False):
@@ -3012,6 +3218,14 @@ def main():
                 extra_manifest_views_per_clip=int(args.extra_manifest_views_per_clip),
             )
             results.append(res)
+            wall_total_s += float(res.get("wall_time_s", 0.0))
+
+        print("\n" + "=" * 80)
+        print(
+            f"Tiempo total acumulado (experimentos ejecutados en esta sesión): "
+            f"{wall_total_s:.1f} s ({wall_total_s / 60.0:.2f} min)"
+        )
+        print("=" * 80 + "\n")
 
         # Guardar resumen de todos los experimentos (junto al script de training)
         summary_path = BASE_DIR / "experiments_summary.json"
