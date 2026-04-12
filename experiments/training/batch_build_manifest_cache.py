@@ -9,6 +9,7 @@ si aplica, o absoluta como legado).
 Uso (desde esta carpeta):
   python batch_build_manifest_cache.py --pose-source filtered
   python batch_build_manifest_cache.py --single-user-only --skip-existing
+  python batch_build_manifest_cache.py --log-file ./manifest_batch.log --quiet --jobs 8
 
 Requiere las mismas rutas de datos que train (model_config.DATA_RESULT_ROOT).
 """
@@ -16,14 +17,57 @@ Requiere las mismas rutas de datos que train (model_config.DATA_RESULT_ROOT).
 from __future__ import annotations
 
 import argparse
+import datetime
+import os
 import subprocess
 import sys
+import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
+from typing import Any, TextIO
+
+try:
+    from tqdm import tqdm
+except ImportError:  # pragma: no cover - entorno sin tqdm
+    tqdm = None  # type: ignore[misc, assignment]
 
 _TRAINING_DIR = Path(__file__).resolve().parent
 _VALIDATE_NPY = _TRAINING_DIR / "operations_npy" / "validate_npy.py"
 _DEFAULT_VALIDATE_JSON = _TRAINING_DIR / "operations_npy" / "validate_npy.json"
+
+
+class _RunLog:
+    """Traza con marca temporal, flush inmediato y tee opcional a consola (para `cat` del fichero en background)."""
+
+    def __init__(self, path: Path | None, *, tee_stdout: bool = True) -> None:
+        self._path = path
+        self._tee = tee_stdout
+        self._fp: TextIO | None = None
+        if path is not None:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            self._fp = open(path, "a", encoding="utf-8", buffering=1)
+
+    def close(self) -> None:
+        if self._fp:
+            self._fp.close()
+            self._fp = None
+
+    def line(self, msg: str, *, also_print: bool | None = None) -> None:
+        ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        text = f"[{ts}] {msg}"
+        if self._fp:
+            self._fp.write(text + "\n")
+            self._fp.flush()
+        if also_print is None:
+            also_print = self._tee if self._fp else True
+        if also_print:
+            print(text, flush=True)
+
+    def __enter__(self) -> _RunLog:
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        self.close()
 
 
 def _pool_run_validate(payload: tuple[list[str], bool]) -> tuple[int, str | None]:
@@ -152,6 +196,17 @@ def main() -> None:
         default=1,
         help="Procesos en paralelo (cada uno ejecuta validate_npy en subproceso). Default 1.",
     )
+    p.add_argument(
+        "--log-file",
+        type=str,
+        default=None,
+        help="Fichero de traza (una línea por evento, flush inmediato). Ideal para nohup y `tail -f` / `cat`.",
+    )
+    p.add_argument(
+        "--no-console",
+        action="store_true",
+        help="Con --log-file, no duplicar las líneas en stdout (solo fichero).",
+    )
     args = p.parse_args()
 
     if int(args.jobs) < 1:
@@ -165,115 +220,191 @@ def main() -> None:
     if not cfg_path.is_file():
         raise SystemExit(f"No se encuentra config: {cfg_path}")
 
-    examples = collect_examples(
-        pose_source=args.pose_source,
-        single_user_only=args.single_user_only,
-        min_clip_seconds=float(args.min_clip_seconds),
-        min_valid_frames=int(args.min_valid_frames),
-        min_valid_pct=float(args.min_valid_pct),
-        max_occlusion_ratio=float(args.max_occlusion_ratio),
-    )
-    seen: set[str] = set()
-    # (uid estable para nombre md5, ruta absoluta para np.load en validate_npy)
-    jobs: list[tuple[str, str]] = []
-    for ex in examples:
-        uid = _example_uid(ex)
-        if uid in seen:
-            continue
-        seen.add(uid)
-        jobs.append((uid, str(ex.pose_path.resolve())))
+    log_path = Path(args.log_file).expanduser().resolve() if args.log_file else None
+    log = _RunLog(log_path, tee_stdout=not args.no_console)
+    t_wall0 = time.perf_counter()
 
-    if args.max is not None:
-        jobs = jobs[: max(0, int(args.max))]
+    try:
+        log.line(
+            f"inicio | pid={os.getpid()} | cache_dir={cache_dir} | profile={args.profile} | "
+            f"jobs={int(args.jobs)} | quiet={bool(args.quiet)} | dry_run={bool(args.dry_run)}"
+        )
+        log.line("fase: collect_examples (puede tardar)…")
 
-    print(f"UIDs únicos a procesar: {len(jobs)} | cache_dir={cache_dir}")
+        examples = collect_examples(
+            pose_source=args.pose_source,
+            single_user_only=args.single_user_only,
+            min_clip_seconds=float(args.min_clip_seconds),
+            min_valid_frames=int(args.min_valid_frames),
+            min_valid_pct=float(args.min_valid_pct),
+            max_occlusion_ratio=float(args.max_occlusion_ratio),
+        )
+        seen: set[str] = set()
+        # (uid estable para nombre md5, ruta absoluta para np.load en validate_npy)
+        jobs: list[tuple[str, str]] = []
+        for ex in examples:
+            uid = _example_uid(ex)
+            if uid in seen:
+                continue
+            seen.add(uid)
+            jobs.append((uid, str(ex.pose_path.resolve())))
 
-    def build_cmd(uid: str, abs_npy: str, out: Path) -> list[str]:
-        c = [
-            sys.executable,
-            str(_VALIDATE_NPY),
-            abs_npy,
-            "--config",
-            str(cfg_path),
-            "--profile",
-            args.profile,
-            "--manifest",
-            str(out),
-            "--mirror-compose-ratio",
-            str(args.mirror_compose_ratio),
-            "--compose-light-ratio",
-            str(args.compose_light_ratio),
-        ]
-        if args.step is not None:
-            c.extend(["--step", str(args.step)])
-        return c
+        if args.max is not None:
+            jobs = jobs[: max(0, int(args.max))]
 
-    ok = 0
-    skipped = 0
-    failed = 0
-    pending: list[tuple[str, str, list[str]]] = []
+        log.line(f"UIDs únicos en dataset (tras dedup): {len(jobs)}")
 
-    for uid, abs_npy in jobs:
-        out = manifest_cache_path_for_uid(cache_dir, uid)
-        if args.skip_existing and out.exists():
-            skipped += 1
-            continue
-        if args.dry_run:
-            print(f"[dry-run] uid={uid!r} npy={abs_npy} -> {out.name}")
-            ok += 1
-            continue
-        pending.append((uid, abs_npy, build_cmd(uid, abs_npy, out)))
+        def build_cmd(uid: str, abs_npy: str, out: Path) -> list[str]:
+            c = [
+                sys.executable,
+                str(_VALIDATE_NPY),
+                abs_npy,
+                "--config",
+                str(cfg_path),
+                "--profile",
+                args.profile,
+                "--manifest",
+                str(out),
+                "--mirror-compose-ratio",
+                str(args.mirror_compose_ratio),
+                "--compose-light-ratio",
+                str(args.compose_light_ratio),
+            ]
+            if args.step is not None:
+                c.extend(["--step", str(args.step)])
+            return c
 
-    quiet = bool(args.quiet)
-    n_jobs = int(args.jobs)
+        ok = 0
+        skipped = 0
+        failed = 0
+        pending: list[tuple[str, str, list[str]]] = []
 
-    def run_cmd(cmd: list[str]) -> tuple[int, str | None]:
-        if quiet:
-            r = subprocess.run(
-                cmd,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE,
-                text=True,
-            )
-            return r.returncode, (r.stderr.strip() if r.stderr else None)
-        r = subprocess.run(cmd)
-        return r.returncode, None
-
-    if not pending:
-        pass
-    elif n_jobs <= 1:
-        for uid, abs_npy, cmd in pending:
-            code, err = run_cmd(cmd)
-            if code == 0:
+        for uid, abs_npy in jobs:
+            out = manifest_cache_path_for_uid(cache_dir, uid)
+            if args.skip_existing and out.exists():
+                skipped += 1
+                continue
+            if args.dry_run:
+                log.line(f"[dry-run] uid={uid!r} npy={abs_npy} -> {out.name}")
                 ok += 1
-            else:
-                failed += 1
-                print(f"[ERROR] validate_npy falló para {abs_npy} (uid={uid!r})", file=sys.stderr)
-                if err:
-                    print(err, file=sys.stderr)
-    else:
-        with ProcessPoolExecutor(max_workers=n_jobs) as ex:
-            futs = {
-                ex.submit(_pool_run_validate, (cmd, quiet)): (uid, abs_npy)
-                for uid, abs_npy, cmd in pending
-            }
-            for fut in as_completed(futs):
-                uid, abs_npy = futs[fut]
-                try:
-                    code, err = fut.result()
-                except Exception as e:
-                    failed += 1
-                    print(f"[ERROR] excepción en worker para {abs_npy} (uid={uid!r}): {e}", file=sys.stderr)
-                    continue
-                if code == 0:
-                    ok += 1
-                else:
-                    failed += 1
-                    print(f"[ERROR] validate_npy falló para {abs_npy} (uid={uid!r})", file=sys.stderr)
-                    if err:
-                        print(err, file=sys.stderr)
+                continue
+            pending.append((uid, abs_npy, build_cmd(uid, abs_npy, out)))
 
-    print(f"Listo: generados/ok={ok} | omitidos (skip-existing)={skipped} | fallidos={failed}")
+        quiet = bool(args.quiet)
+        n_jobs = int(args.jobs)
+        total_pending = len(pending)
+
+        log.line(
+            f"resumen | a_generar_validate_npy={total_pending} | omitidos_skip_existing={skipped}"
+            + (f" | dry_run_lineas={ok}" if args.dry_run else "")
+        )
+
+        if args.dry_run:
+            dur = time.perf_counter() - t_wall0
+            log.line(
+                f"FIN | modo=dry-run | lineas_registradas={ok} | omitidos_skip_existing={skipped} | "
+                f"duracion_total_s={dur:.1f}"
+            )
+        elif not pending:
+            log.line("nada que ejecutar (0 pendientes tras filtros / skip-existing).")
+            dur = time.perf_counter() - t_wall0
+            log.line(
+                f"FIN | generados_ok=0 | omitidos_skip_existing={skipped} | fallidos=0 | duracion_total_s={dur:.1f}"
+            )
+        else:
+
+            def run_cmd(cmd: list[str]) -> tuple[int, str | None]:
+                if quiet:
+                    r = subprocess.run(
+                        cmd,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                    )
+                    return r.returncode, (r.stderr.strip() if r.stderr else None)
+                r = subprocess.run(cmd)
+                return r.returncode, None
+
+            def _log_progress(done: int, uid: str, abs_npy: str) -> None:
+                elapsed = time.perf_counter() - t_batch0
+                pct = 100.0 * done / total_pending if total_pending else 100.0
+                eta = (elapsed / done) * (total_pending - done) if done > 0 and total_pending > done else 0.0
+                log.line(
+                    f"progreso {done}/{total_pending} ({pct:.1f}%) | ok={ok} fail={failed} | "
+                    f"t={elapsed:.1f}s eta≈{eta:.1f}s | uid={uid[:24]} | {Path(abs_npy).name}"
+                )
+
+            t_batch0 = time.perf_counter()
+
+            if n_jobs <= 1:
+                seq: Any = pending
+                use_pbar = tqdm is not None and sys.stderr.isatty()
+                if use_pbar:
+                    seq = tqdm(
+                        pending,
+                        total=total_pending,
+                        desc="validate_npy",
+                        unit="clip",
+                        file=sys.stderr,
+                        mininterval=0.5,
+                    )
+                done = 0
+                for uid, abs_npy, cmd in seq:
+                    code, err = run_cmd(cmd)
+                    if code == 0:
+                        ok += 1
+                    else:
+                        failed += 1
+                        log.line(f"ERROR validate_npy falló | uid={uid!r} | {abs_npy}")
+                        if err:
+                            log.line(f"ERROR stderr: {err[:2000]}")
+                    done += 1
+                    _log_progress(done, uid, abs_npy)
+            else:
+                with ProcessPoolExecutor(max_workers=n_jobs) as ex:
+                    futs = {
+                        ex.submit(_pool_run_validate, (cmd, quiet)): (uid, abs_npy)
+                        for uid, abs_npy, cmd in pending
+                    }
+                    iterator: Any = as_completed(futs)
+                    use_pbar = tqdm is not None and sys.stderr.isatty()
+                    if use_pbar:
+                        iterator = tqdm(
+                            iterator,
+                            total=total_pending,
+                            desc="validate_npy",
+                            unit="clip",
+                            file=sys.stderr,
+                            mininterval=0.5,
+                        )
+                    done = 0
+                    for fut in iterator:
+                        uid, abs_npy = futs[fut]
+                        try:
+                            code, err = fut.result()
+                        except Exception as e:
+                            failed += 1
+                            log.line(f"ERROR excepción en worker | uid={uid!r} | {abs_npy} | {e}")
+                            done += 1
+                            _log_progress(done, uid, abs_npy)
+                            continue
+                        if code == 0:
+                            ok += 1
+                        else:
+                            failed += 1
+                            log.line(f"ERROR validate_npy falló | uid={uid!r} | {abs_npy}")
+                            if err:
+                                log.line(f"ERROR stderr: {err[:2000]}")
+                        done += 1
+                        _log_progress(done, uid, abs_npy)
+
+            dur = time.perf_counter() - t_wall0
+            log.line(
+                f"FIN | generados_ok={ok} | omitidos_skip_existing={skipped} | fallidos={failed} | "
+                f"duracion_total_s={dur:.1f}"
+            )
+    finally:
+        log.close()
 
 
 if __name__ == "__main__":
