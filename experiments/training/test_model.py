@@ -1,5 +1,6 @@
 import argparse
 import json
+import time
 from collections import deque
 from pathlib import Path
 from typing import Dict, Deque, Tuple
@@ -10,9 +11,26 @@ import torch
 from ultralytics import YOLO
 
 try:
-    from .train_model import build_model, normalize_sequence, add_velocity, temporal_resize  # type: ignore[attr-defined]
+    # Prioriza pipeline "operations": soporta arquitecturas nuevas (p.ej. ms_tcn)
+    from .train_model_operations import (  # type: ignore[attr-defined]
+        build_model,
+        normalize_sequence,
+        add_velocity,
+        temporal_resize,
+    )
 except ImportError:
-    from train_model import build_model, normalize_sequence, add_velocity, temporal_resize  # type: ignore[attr-defined]
+    try:
+        from train_model_operations import (  # type: ignore[attr-defined]
+            build_model,
+            normalize_sequence,
+            add_velocity,
+            temporal_resize,
+        )
+    except ImportError:
+        try:
+            from .train_model import build_model, normalize_sequence, add_velocity, temporal_resize  # type: ignore[attr-defined]
+        except ImportError:
+            from train_model import build_model, normalize_sequence, add_velocity, temporal_resize  # type: ignore[attr-defined]
 
 
 # Keypoints usados en entrenamiento (torso + brazos + cadera)
@@ -381,6 +399,9 @@ def main() -> None:
     last_seen: Dict[int, int] = {}
     robbed_track: int | None = None
     fixed_detect_prob_by_track: Dict[int, float] = {}
+    peak_prob_by_track: Dict[int, float] = {}
+    infer_times_ms: list[float] = []
+    last_infer_ms_by_track: Dict[int, float] = {}
 
     frame_idx = 0
     while True:
@@ -482,13 +503,18 @@ def main() -> None:
                 seq = np.array(buffers[tid], dtype=np.float32)  # [T,8,2]
                 with torch.no_grad():
                     x = make_feature_tensor(seq, seq_len, device)
+                    t0 = time.perf_counter()
                     logits = clf_model(x)[0]
                     p = float(torch.softmax(logits, dim=0)[pos_idx].item())
+                    infer_ms = (time.perf_counter() - t0) * 1000.0
+                    infer_times_ms.append(infer_ms)
+                    last_infer_ms_by_track[tid] = infer_ms
                 probs_raw[tid] = p
                 motion_by_track[tid] = motion_score(seq)
                 prev_s = probs_smooth.get(tid, p)
                 p_s = (1.0 - ema_alpha) * prev_s + ema_alpha * p
                 probs_smooth[tid] = p_s
+                peak_prob_by_track[tid] = max(peak_prob_by_track.get(tid, 0.0), p_s)
 
                 hit_windows[tid].append(1 if p_s >= threshold else 0)
                 window_hits = int(sum(hit_windows[tid]))
@@ -558,6 +584,8 @@ def main() -> None:
             cv2.rectangle(frame, (x1, y1), (x2, y2), color, thick, cv2.LINE_AA)
 
             tag = f"ID {tid} | Robo {p*100:.1f}%"
+            if tid in last_infer_ms_by_track:
+                tag += f" | {last_infer_ms_by_track[tid]:.1f} ms"
             cv2.putText(frame, tag, (x1, max(20, y1 - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.65, color, 2, cv2.LINE_AA)
 
             if is_robber and robbed_track is None:
@@ -631,9 +659,13 @@ def main() -> None:
                 break
 
         if robbed_track is not None and args.stop_on_robbery:
+            prob_alert = fixed_detect_prob_by_track.get(
+                robbed_track,
+                peak_prob_by_track.get(robbed_track, probs_smooth.get(robbed_track, 0.0)),
+            )
             print(
                 f"[ALERTA] Robo detectado en track {robbed_track} "
-                f"(P(robo)={probs_smooth.get(robbed_track, 0.0)*100:.1f}%) -> deteniendo."
+                f"(P(robo)={prob_alert*100:.1f}%) -> deteniendo."
             )
             break
 
@@ -646,7 +678,25 @@ def main() -> None:
     if robbed_track is None:
         print("[FIN] No se detecto robo por encima del umbral.")
     else:
-        print(f"[FIN] Robo detectado: track_id={robbed_track}")
+        prob_final = fixed_detect_prob_by_track.get(
+            robbed_track,
+            peak_prob_by_track.get(robbed_track, probs_smooth.get(robbed_track, 0.0)),
+        )
+        print(
+            f"[FIN] Robo detectado: track_id={robbed_track} | "
+            f"P(robo)={prob_final*100:.1f}%"
+        )
+
+    if infer_times_ms:
+        infer_arr = np.array(infer_times_ms, dtype=np.float64)
+        print(
+            "[PERF] Inference clf_model (por ventana): "
+            f"n={infer_arr.size} | mean={infer_arr.mean():.2f} ms | "
+            f"p95={np.percentile(infer_arr, 95):.2f} ms | "
+            f"min={infer_arr.min():.2f} ms | max={infer_arr.max():.2f} ms"
+        )
+    else:
+        print("[PERF] No hubo inferencias de clasificación para reportar tiempos.")
 
 
 if __name__ == "__main__":
