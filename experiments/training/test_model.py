@@ -402,6 +402,13 @@ def main() -> None:
     peak_prob_by_track: Dict[int, float] = {}
     infer_times_ms: list[float] = []
     last_infer_ms_by_track: Dict[int, float] = {}
+    infer_total_times_ms: list[float] = []
+    last_infer_total_ms_by_track: Dict[int, float] = {}
+    first_model_use_logged = False
+    first_model_use_frame: int | None = None
+    first_model_use_track: int | None = None
+    first_model_use_t0: float | None = None
+    first_prob_logged_by_track: Dict[int, bool] = {}
 
     frame_idx = 0
     while True:
@@ -500,15 +507,34 @@ def main() -> None:
             track_frames[tid] = track_frames.get(tid, 0) + 1
 
             if infer_enabled.get(tid, False) and len(buffers[tid]) >= max(4, min(seq_len, len(buffers[tid]))):
+                if not first_model_use_logged:
+                    first_model_use_logged = True
+                    first_model_use_frame = frame_idx
+                    first_model_use_track = tid
+                    first_model_use_t0 = time.perf_counter()
+                    print(
+                        f"[TRACE] Inicio uso modelo clf_model: frame={frame_idx}, "
+                        f"track={tid}, buffer_len={len(buffers[tid])}"
+                    )
                 seq = np.array(buffers[tid], dtype=np.float32)  # [T,8,2]
                 with torch.no_grad():
+                    t_total0 = time.perf_counter()
                     x = make_feature_tensor(seq, seq_len, device)
                     t0 = time.perf_counter()
                     logits = clf_model(x)[0]
                     p = float(torch.softmax(logits, dim=0)[pos_idx].item())
                     infer_ms = (time.perf_counter() - t0) * 1000.0
+                    infer_total_ms = (time.perf_counter() - t_total0) * 1000.0
                     infer_times_ms.append(infer_ms)
                     last_infer_ms_by_track[tid] = infer_ms
+                    infer_total_times_ms.append(infer_total_ms)
+                    last_infer_total_ms_by_track[tid] = infer_total_ms
+                if not first_prob_logged_by_track.get(tid, False):
+                    first_prob_logged_by_track[tid] = True
+                    print(
+                        f"[TRACE] Primer resultado clf_model: frame={frame_idx}, track={tid}, "
+                        f"P(robo)={p*100:.2f}% | clf={infer_ms:.2f} ms | total={infer_total_ms:.2f} ms"
+                    )
                 probs_raw[tid] = p
                 motion_by_track[tid] = motion_score(seq)
                 prev_s = probs_smooth.get(tid, p)
@@ -585,7 +611,9 @@ def main() -> None:
 
             tag = f"ID {tid} | Robo {p*100:.1f}%"
             if tid in last_infer_ms_by_track:
-                tag += f" | {last_infer_ms_by_track[tid]:.1f} ms"
+                tag += f" | clf {last_infer_ms_by_track[tid]:.1f} ms"
+            if tid in last_infer_total_ms_by_track:
+                tag += f" | total {last_infer_total_ms_by_track[tid]:.1f} ms"
             cv2.putText(frame, tag, (x1, max(20, y1 - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.65, color, 2, cv2.LINE_AA)
 
             if is_robber and robbed_track is None:
@@ -686,6 +714,12 @@ def main() -> None:
             f"[FIN] Robo detectado: track_id={robbed_track} | "
             f"P(robo)={prob_final*100:.1f}%"
         )
+        if first_model_use_t0 is not None:
+            elapsed_from_first_use_ms = (time.perf_counter() - first_model_use_t0) * 1000.0
+            print(
+                "[TRACE] Tiempo desde primer uso del modelo hasta FIN: "
+                f"{elapsed_from_first_use_ms:.2f} ms"
+            )
 
     if infer_times_ms:
         infer_arr = np.array(infer_times_ms, dtype=np.float64)
@@ -697,6 +731,25 @@ def main() -> None:
         )
     else:
         print("[PERF] No hubo inferencias de clasificación para reportar tiempos.")
+
+    if infer_total_times_ms:
+        infer_total_arr = np.array(infer_total_times_ms, dtype=np.float64)
+        print(
+            "[PERF] Total seq->prob (preprocess + clf + softmax, por ventana): "
+            f"n={infer_total_arr.size} | mean={infer_total_arr.mean():.2f} ms | "
+            f"p95={np.percentile(infer_total_arr, 95):.2f} ms | "
+            f"min={infer_total_arr.min():.2f} ms | max={infer_total_arr.max():.2f} ms"
+        )
+    else:
+        print("[PERF] No hubo mediciones de tiempo total seq->prob.")
+
+    if first_model_use_logged:
+        print(
+            f"[TRACE] Primer uso global del modelo en frame={first_model_use_frame}, "
+            f"track={first_model_use_track}."
+        )
+    else:
+        print("[TRACE] El modelo de clasificación no llegó a ejecutarse.")
 
 
 if __name__ == "__main__":
