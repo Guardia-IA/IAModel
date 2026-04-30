@@ -67,6 +67,8 @@ def _load_category_limits() -> dict[str, int]:
 DEBUG_MODE = False      # True: Solo procesa N vídeos
 N_DEBUG = 5            # Número de vídeos en modo debug
 MODEL_PATH = YOLO_POSE_MODEL     # Definido en config.py
+# Tracker junto a este script (cwd puede ser training/ u otro → ruta relativa falla).
+_CUSTOM_TRACKER_YAML = Path(__file__).resolve().parent / "custom_tracker.yaml"
 DELETE_TEMP_VIDEOS = True       # Si True, borra los vídeos temporales al terminar
 # Si True, guarda una copia del clip procesado en data_result/{cat}/{clip_name}/clip.mp4
 # para poder visualizar poses con el vídeo exacto (mismo nº de frames que poses_full.npy)
@@ -156,6 +158,13 @@ def _setup_logging(log_dir: str | Path | None = None):
     original_stdout = sys.stdout
     sys.stdout = Tee(original_stdout, log_file)
     return log_file, original_stdout, log_path
+
+
+def _tracker_yaml_path() -> str:
+    """Ruta absoluta al YAML de tracking, o bytetrack por defecto de Ultralytics."""
+    if _CUSTOM_TRACKER_YAML.exists():
+        return str(_CUSTOM_TRACKER_YAML)
+    return "bytetrack.yaml"
 
 
 def _resolve_model_path(base: str) -> str:
@@ -328,10 +337,13 @@ def scale_video(video_in: str, video_out: str, height: int | None = None) -> boo
     return r.returncode == 0
 
 
-def run_debug_extract(video_path: str) -> Path | None:
+def run_debug_extract(video_path: str, yolo_pose_model: str | None = None) -> Path | None:
     """
     Modo debug/test: extrae poses de un único vídeo y guarda en carpeta temporal.
     Genera poses_full.npy y poses.npy (normalizados 0-1) por usuario, igual que el flujo normal.
+
+    yolo_pose_model: si se indica (p. ej. \"yolo11n-pose.pt\"), usa ese modelo YOLO pose para
+    esta extracción en lugar del global cargado desde config (p. ej. yolo11x-pose.pt).
     """
     video_path = Path(video_path).resolve()
     if not video_path.exists():
@@ -353,9 +365,19 @@ def run_debug_extract(video_path: str) -> Path | None:
     fps = cap.get(cv2.CAP_PROP_FPS) or DEFAULT_FPS
     cap.release()
 
-    results = model.track(
+    override = (yolo_pose_model or "").strip()
+    if override:
+        yolo_path = _resolve_model_path(override)
+        print(f"[DEBUG] YOLO pose (override): {yolo_path}")
+        track_model = YOLO(yolo_path)
+        yolo_meta_path = yolo_path
+    else:
+        track_model = model
+        yolo_meta_path = str(_MODEL_RESOLVED)
+
+    results = track_model.track(
         source=str(temp_clip),
-        tracker="custom_tracker.yaml",
+        tracker=_tracker_yaml_path(),
         persist=True,
         verbose=False,
         stream=True,
@@ -454,8 +476,8 @@ def run_debug_extract(video_path: str) -> Path | None:
         "debug_mode": True,
         "fps": fps,
         "frame_count": frame_count,
-        "yolo_model": str(_MODEL_RESOLVED),
-        "yolo_backend": "engine" if str(_MODEL_RESOLVED).endswith(".engine") else "pt",
+        "yolo_model": str(yolo_meta_path),
+        "yolo_backend": "engine" if str(yolo_meta_path).endswith(".engine") else "pt",
         "users": users_meta,
     }
     with open(out_dir / "meta.json", "w", encoding="utf-8") as f:
@@ -557,7 +579,7 @@ def process_single_csv(
             # Cada clip usa su propio temp_person_data (estado fresco); no se reutiliza nada del clip anterior.
             results = model.track(
                 source=clip_path,
-                tracker="custom_tracker.yaml",
+                tracker=_tracker_yaml_path(),
                 persist=True,
                 verbose=False,
                 stream=True,
