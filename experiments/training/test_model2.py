@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import shutil
 import sys
 import tempfile
@@ -85,8 +86,8 @@ def parse_args() -> argparse.Namespace:
         "--input",
         default="",
         help=(
-            "Vídeo (p. ej. .mp4) o fichero poses filtradas .npy con shape [T, J, 2]. "
-            "Si es .npy, no se ejecuta extracción YOLO. Tiene prioridad sobre --video."
+            "Vídeo, .npy [T,J,2], o carpeta con subcarpetas chunk_001, chunk_002, ... "
+            "(cada una con poses.npy + meta.json; se concatenan en orden los que tengan frames válidos > 0)."
         ),
     )
     p.add_argument(
@@ -121,7 +122,8 @@ def parse_args() -> argparse.Namespace:
         default="yolo11n-pose.pt",
         help=(
             "Modelo YOLO pose para run_debug_extract (extracción). Por defecto yolo11n-pose.pt "
-            "(más rápido); en config suele usarse yolo11x-pose.pt. Ignorado con --skip-extract o entrada .npy."
+            "(más rápido); en config suele usarse yolo11x-pose.pt. "
+            "Ignorado con --skip-extract, .npy, o carpeta chunk_*."
         ),
     )
     return p.parse_args()
@@ -129,7 +131,7 @@ def parse_args() -> argparse.Namespace:
 
 def _resolve_media_path(args: argparse.Namespace) -> Tuple[Optional[Path], str]:
     """
-    Devuelve (ruta, kind) con kind en {\"skip\", \"npy\", \"video\"}.
+    Devuelve (ruta, kind) con kind en {\"skip\", \"npy\", \"video\", \"chunk_dir\"}.
     skip = --skip-extract (no hay vídeo/npy de entrada única).
     """
     if args.skip_extract:
@@ -142,8 +144,10 @@ def _resolve_media_path(args: argparse.Namespace) -> Tuple[Optional[Path], str]:
     if not raw:
         raise SystemExit("Indica --input (vídeo o .npy), --video, o bien --skip-extract con --extract-dir.")
     p = Path(raw).expanduser().resolve()
+    if p.is_dir():
+        return p, "chunk_dir"
     if not p.is_file():
-        raise FileNotFoundError(f"No es un fichero: {p}")
+        raise FileNotFoundError(f"No existe o no es fichero/carpeta usable: {p}")
     if p.suffix.lower() == ".npy":
         return p, "npy"
     return p, "video"
@@ -174,6 +178,124 @@ def _clip_dir_from_input_npy(npy_path: Path, pose_source: str) -> Path:
     with open(root / "meta.json", "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2, ensure_ascii=False)
     return root
+
+
+def _chunk_subdir_sort_key(path: Path) -> Tuple[int, str]:
+    m = re.match(r"^chunk_(\d+)$", path.name, flags=re.IGNORECASE)
+    if m:
+        return (int(m.group(1)), path.name.lower())
+    return (10**9, path.name.lower())
+
+
+def _read_valid_frames_from_meta(meta: Dict[str, Any]) -> Optional[int]:
+    """
+    Número de frames válidos declarado en meta.json.
+    None = no hay campo reconocido (se usará len(poses.npy) como respaldo).
+    """
+    for k in ("frames_validos", "valid_frames", "valid_frame_count", "filtered_frames"):
+        if k in meta and meta[k] is not None:
+            return int(meta[k])
+    users = meta.get("users")
+    if isinstance(users, list) and users:
+        u0 = users[0]
+        if isinstance(u0, dict):
+            for k in ("valid_frames", "poses_filtered_count"):
+                if k in u0 and u0[k] is not None:
+                    return int(u0[k])
+    return None
+
+
+def _concatenate_chunk_poses(root: Path) -> Tuple[np.ndarray, List[str], List[str]]:
+    """
+    Recorre root/chunk_* en orden, concatena poses.npy donde frames válidos > 0.
+    Devuelve (array [T,J,2], nombres de chunks usados, mensajes de chunks omitidos).
+    """
+    subdirs = [p for p in root.iterdir() if p.is_dir() and re.match(r"^chunk_\d+$", p.name, re.I)]
+    subdirs.sort(key=_chunk_subdir_sort_key)
+    if not subdirs:
+        raise SystemExit(
+            f"No hay subcarpetas chunk_NNN en {root} (esperado p. ej. chunk_001, chunk_002)."
+        )
+    parts: List[np.ndarray] = []
+    used: List[str] = []
+    skipped: List[str] = []
+    j_ref: Optional[int] = None
+
+    for ch in subdirs:
+        name = ch.name
+        poses_p = ch / "poses.npy"
+        meta_p = ch / "meta.json"
+        if not poses_p.exists():
+            skipped.append(f"{name} (sin poses.npy)")
+            continue
+        if not meta_p.exists():
+            skipped.append(f"{name} (sin meta.json)")
+            continue
+        try:
+            with open(meta_p, "r", encoding="utf-8") as f:
+                meta = json.load(f)
+        except Exception as e:
+            skipped.append(f"{name} (meta.json ilegible: {e})")
+            continue
+        vf = _read_valid_frames_from_meta(meta)
+        try:
+            arr = np.load(str(poses_p), allow_pickle=False)
+        except Exception as e:
+            skipped.append(f"{name} (poses.npy: {e})")
+            continue
+        if vf is None:
+            vf = int(arr.shape[0])
+        if vf == 0:
+            skipped.append(f"{name} (frames válidos = 0)")
+            continue
+        if arr.size == 0 or arr.shape[0] == 0:
+            skipped.append(f"{name} (poses.npy vacío)")
+            continue
+        if arr.ndim != 3 or int(arr.shape[2]) != 2:
+            skipped.append(f"{name} (shape {arr.shape}, se esperaba [T,J,2])")
+            continue
+        if j_ref is None:
+            j_ref = int(arr.shape[1])
+        elif int(arr.shape[1]) != j_ref:
+            raise SystemExit(
+                f"Incompatibilidad de J entre chunks: {name} tiene J={arr.shape[1]}, "
+                f"antes J={j_ref}."
+            )
+        parts.append(arr.astype(np.float32, copy=False))
+        used.append(name)
+
+    if not parts:
+        raise SystemExit(
+            "Ningún chunk aportó poses válidos (todos omitidos o vacíos). "
+            f"Omitidos: {skipped}"
+        )
+    stacked = np.concatenate(parts, axis=0)
+    return stacked, used, skipped
+
+
+def _clip_dir_from_concatenated_array(
+    arr: np.ndarray,
+    folder_name: str,
+    chunks_used: List[str],
+    chunks_skipped: List[str],
+) -> Path:
+    """Escribe user_0/poses.npy + meta.json para secuencia ya concatenada."""
+    if arr.ndim != 3 or int(arr.shape[2]) != 2:
+        raise SystemExit(f"Tras concatenar, shape inválida: {arr.shape}")
+    out = Path(tempfile.mkdtemp(prefix="test_model2_chunks_"))
+    ud = out / "user_0"
+    ud.mkdir(parents=True, exist_ok=False)
+    np.save(str(ud / "poses.npy"), arr)
+    meta: Dict[str, Any] = {
+        "clip_name": folder_name,
+        "source": "chunk_concat",
+        "chunks_concat_order": chunks_used,
+        "chunks_skipped": chunks_skipped,
+        "users": [{"track_id": 0, "total_frames": int(arr.shape[0])}],
+    }
+    with open(out / "meta.json", "w", encoding="utf-8") as f:
+        json.dump(meta, f, indent=2, ensure_ascii=False)
+    return out
 
 
 def _find_user_dirs(clip_dir: Path) -> List[Path]:
@@ -400,6 +522,24 @@ def main() -> None:
             print(f"[INFO] Entrada poses (.npy): {media_path}")
             print("[INFO] Extracción YOLO omitida (se usa el .npy tal cual).")
             clip_dir = _clip_dir_from_input_npy(media_path, args.pose_source)
+            extracted_here = True
+        elif media_kind == "chunk_dir":
+            assert media_path is not None
+            if args.pose_source != "filtered":
+                raise SystemExit("Entrada carpeta chunk_*: usa --pose-source filtered.")
+            print(f"[INFO] Carpeta con chunks: {media_path}")
+            print("[INFO] Extracción YOLO omitida (solo lectura/concat de poses).")
+            stacked, used, skipped = _concatenate_chunk_poses(media_path)
+            print(f"[INFO] Chunks usados ({len(used)}): {', '.join(used)}")
+            if skipped:
+                print(f"[INFO] Chunks omitidos ({len(skipped)}): {' | '.join(skipped)}")
+            print(
+                f"[INFO] Secuencia concatenada: T={stacked.shape[0]} frames, "
+                f"J={stacked.shape[1]} joints"
+            )
+            clip_dir = _clip_dir_from_concatenated_array(
+                stacked, media_path.name, used, skipped
+            )
             extracted_here = True
         else:
             assert media_path is not None
