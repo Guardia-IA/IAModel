@@ -35,6 +35,16 @@ def parse_args() -> argparse.Namespace:
         help="Ruta del fichero de salida (.npy). Si no termina en .npy, numpy añade la extensión.",
     )
     p.add_argument(
+        "--pose-source",
+        choices=["filtered", "full"],
+        default=None,
+        help=(
+            "Atajo para elegir el fichero por chunk: "
+            "'filtered' -> poses.npy, 'full' -> poses_full.npy. "
+            "Si se indica junto a --npy-name, prevalece --npy-name."
+        ),
+    )
+    p.add_argument(
         "--npy-name",
         default="poses.npy",
         help="Nombre del fichero .npy dentro de cada chunk (por defecto poses.npy, como test_model2).",
@@ -170,9 +180,18 @@ def main() -> None:
     out = args.output.expanduser().resolve()
     out.parent.mkdir(parents=True, exist_ok=True)
 
+    npy_name = args.npy_name
+    if args.pose_source and args.npy_name == "poses.npy":
+        npy_name = "poses_full.npy" if args.pose_source == "full" else "poses.npy"
+    elif args.pose_source and args.npy_name != "poses.npy":
+        print(
+            "[WARN] Se indicó --pose-source junto con --npy-name; "
+            "se usará --npy-name."
+        )
+
     stacked, used, skipped = concatenate_chunks(
         root,
-        npy_name=args.npy_name,
+        npy_name=npy_name,
         require_meta=not args.no_meta,
     )
 

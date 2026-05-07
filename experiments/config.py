@@ -44,7 +44,7 @@ VAAPI_DEVICE = None   # None = sin VAAPI
 # --- MODELO YOLO POSE ---
 # Usado por pose_extractor_clean y pose_extractor_preflight.
 # Opciones: yolo11n-pose.pt (rápido), yolo11m-pose.pt, yolo11l-pose.pt, yolo11x-pose.pt (más preciso).
-YOLO_POSE_MODEL = "yolo11x-pose.pt"
+YOLO_POSE_MODEL = "yolo11n-pose.pt"
 
 
 def _find_csv_files(root: str):
