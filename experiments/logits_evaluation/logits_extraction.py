@@ -120,6 +120,9 @@ def load_config(path: Path) -> Dict[str, Any]:
     cfg.setdefault("preflight", True)
     cfg.setdefault("preflight_sample", 8)
     cfg.setdefault("assume_yes", False)
+    cfg.setdefault("min_frames", 3)
+    cfg.setdefault("min_seconds", 0.0)
+    cfg.setdefault("fps", 25.0)
     return cfg
 
 
@@ -238,6 +241,34 @@ def _tensor_simple_pipeline(poses: np.ndarray, seq_len: int) -> torch.Tensor:
     poses = temporal_resize(poses, seq_len)
     t, j, d = poses.shape
     return torch.from_numpy(poses.reshape(t, j * d).astype(np.float32)).unsqueeze(0)
+
+
+def poses_valid_frames(user_dir: Path, pose_source: str) -> Tuple[int, str]:
+    """
+    Cuenta frames válidos de un usuario SIN cargar todo el array (usa mmap).
+    Devuelve (n_frames, info). n_frames = -1 si el .npy es inválido (vacío, 1D,
+    no [T,J,2], ilegible o ausente); info describe el shape o el motivo.
+    """
+    pose_path = (user_dir / "poses.npy") if pose_source == "filtered" else (user_dir / "poses_full.npy")
+    if not pose_path.exists():
+        return -1, f"sin {pose_path.name}"
+    try:
+        arr = np.load(pose_path, mmap_mode="r")
+    except Exception as e:  # noqa: BLE001
+        return -1, f"npy ilegible: {e}"
+    shape = tuple(int(s) for s in getattr(arr, "shape", ()))
+    if len(shape) != 3 or shape[2] != 2 or shape[0] == 0:
+        return -1, f"shape {shape} (se esperaba [T,J,2] con T>0)"
+    if pose_source == "filtered":
+        return int(shape[0]), f"shape {shape}"
+    vm_path = user_dir / "valid_mask.npy"
+    if vm_path.exists():
+        try:
+            vm = np.load(vm_path, mmap_mode="r")
+            return int(np.count_nonzero(np.asarray(vm))), f"shape {shape}, valid_mask"
+        except Exception:  # noqa: BLE001
+            return int(shape[0]), f"shape {shape}"
+    return int(shape[0]), f"shape {shape}"
 
 
 def _load_poses_array(user_dir: Path, pose_source: str) -> np.ndarray:
@@ -451,6 +482,7 @@ def preflight(
     sample_size: int,
     debug: bool,
     debug_max_clips: int,
+    required_frames: int,
 ) -> None:
     """Resumen del trabajo + estimación de tiempo cronometrando unas inferencias."""
     total_clips = len(clips)
@@ -477,16 +509,20 @@ def preflight(
 
     # --- Muestra cronometrada (build_input_tensor + forward) por usuario ---
     sample: List[Tuple[Dict[str, Any], Path, int]] = []
+    target = max(1, int(sample_size)) + 1  # +1 para warmup
     for c in clips:
         for ud in c["user_dirs"]:
+            n_valid, _info = poses_valid_frames(ud, pose_source)
+            if n_valid < required_frames:
+                continue
             try:
                 tid = int(ud.name.split("_")[1])
             except (IndexError, ValueError):
                 tid = -1
             sample.append((c, ud, tid))
-            if len(sample) >= max(1, int(sample_size)) + 1:  # +1 para warmup
+            if len(sample) >= target:
                 break
-        if len(sample) >= max(1, int(sample_size)) + 1:
+        if len(sample) >= target:
             break
 
     if not sample:
@@ -569,6 +605,11 @@ def main() -> None:
     pose_source = str(cfg["pose_source"])
     simple_preprocess = bool(cfg["simple_preprocess"])
     use_engine = bool(cfg["use_engine_if_available"])
+    min_frames = int(cfg["min_frames"])
+    min_seconds = float(cfg["min_seconds"])
+    fps = float(cfg["fps"])
+    required_frames = max(int(min_frames), int(np.ceil(min_seconds * fps)) if min_seconds > 0 else 0)
+    required_frames = max(1, required_frames)
 
     if not input_dir.is_dir():
         raise SystemExit(f"input_dir no es una carpeta: {input_dir}")
@@ -589,6 +630,10 @@ def main() -> None:
     print(f"[INFO] checkpoint={ckpt_path}")
     print(f"[INFO] device={device} | pose_source={pose_source} | simple_preprocess={simple_preprocess}")
     print(f"[INFO] categoria_robo={robo_category} | umbral_robo={thr:.0%} | eval_operations={_HAS_OPERATIONS}")
+    _req_msg = f"min_frames={min_frames}"
+    if min_seconds > 0:
+        _req_msg += f", min_seconds={min_seconds} @ {fps}fps"
+    print(f"[INFO] Filtro de datos mínimos: {_req_msg} -> se exigen >= {required_frames} frames válidos")
 
     checkpoint = torch.load(ckpt_path, map_location="cpu")
     seq_len = int(checkpoint.get("seq_len", 64))
@@ -623,6 +668,7 @@ def main() -> None:
             sample_size=int(cfg["preflight_sample"]),
             debug=debug,
             debug_max_clips=debug_max_clips,
+            required_frames=required_frames,
         )
         if not bool(cfg["assume_yes"]):
             if sys.stdin is not None and sys.stdin.isatty():
@@ -645,6 +691,7 @@ def main() -> None:
     n_rows = 0
     n_clips = 0
     n_errors = 0
+    n_skipped = 0
     t0 = time.perf_counter()
 
     with open(output_csv, mode, newline="", encoding="utf-8") as fcsv:
@@ -664,6 +711,14 @@ def main() -> None:
                     tid = int(ud.name.split("_")[1])
                 except (IndexError, ValueError):
                     tid = -1
+
+                n_valid, info = poses_valid_frames(ud, pose_source)
+                if n_valid < required_frames:
+                    n_skipped += 1
+                    reason = info if n_valid < 0 else f"{n_valid} frames < {required_frames}"
+                    print(f"[SKIP] {ud.name} en {clip_dir.name}: datos insuficientes ({reason})")
+                    continue
+
                 try:
                     x = build_input_tensor(
                         user_dir=ud,
@@ -706,7 +761,8 @@ def main() -> None:
 
     dt = time.perf_counter() - t0
     print(
-        f"[FIN] {n_rows} filas escritas | {n_clips} clips | {n_errors} errores | "
+        f"[FIN] {n_rows} filas escritas | {n_clips} clips | "
+        f"{n_skipped} descartados (datos insuficientes) | {n_errors} errores | "
         f"{dt:.1f}s -> {output_csv}"
     )
 
