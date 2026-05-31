@@ -312,6 +312,55 @@ def _label_to_class_index(label_to_idx: Dict[Any, Any], label: int) -> Optional[
     return None
 
 
+def _format_prob_robo(prob: float) -> str:
+    """
+    Formatea P(robo) para comparar con inferencia .engine (probabilidad cruda)
+    y, en paralelo, el porcentaje con decimales extra si es muy bajo.
+    """
+    pct = prob * 100.0
+    if pct == 0.0:
+        pct_fmt = "0.00%"
+    elif abs(pct) < 1e-6:
+        pct_fmt = f"{pct:.6e}%"
+    elif abs(pct) < 0.0001:
+        pct_fmt = f"{pct:.8f}%"
+    elif abs(pct) < 0.05:
+        pct_fmt = f"{pct:.6f}%"
+    else:
+        pct_fmt = f"{pct:.2f}%"
+    return f"{prob} ({pct_fmt})"
+
+
+def _format_logits_detail(logits_1d: torch.Tensor, checkpoint: Dict[str, Any]) -> str:
+    """
+    Detalle por clase: logit crudo, softmax (multiclase) y sigmoide (one-vs-rest)
+    de cada salida. Útil para distinguir si un 99% viene de un logit realmente
+    alto o de que softmax reparte casi todo a una clase aunque los logits estén
+    muy juntos (clases poco separadas).
+    """
+    label_to_idx: Dict[Any, Any] = checkpoint["label_to_idx"]
+    idx_to_label: Dict[int, Any] = {}
+    for lbl, idx in label_to_idx.items():
+        try:
+            idx_to_label[int(idx)] = lbl
+        except (TypeError, ValueError):
+            continue
+
+    logits = logits_1d.detach().float().cpu().numpy()
+    softmax = torch.softmax(logits_1d, dim=0).detach().float().cpu().numpy()
+    sigmoid = torch.sigmoid(logits_1d).detach().float().cpu().numpy()
+
+    parts: List[str] = []
+    for i in range(int(logits.shape[0])):
+        lbl = idx_to_label.get(i, "?")
+        parts.append(
+            f"clase[{i}]={lbl}: logit={logits[i]:+.4f}, "
+            f"softmax={softmax[i] * 100.0:.2f}%, sigmoide={sigmoid[i] * 100.0:.2f}%"
+        )
+    logit_gap = float(np.max(logits) - np.partition(logits, -2)[-2]) if logits.shape[0] >= 2 else 0.0
+    return " || ".join(parts) + f" || gap(top1-top2)={logit_gap:+.4f}"
+
+
 def _prob_from_logits(logits_1d: torch.Tensor, checkpoint: Dict[str, Any]) -> float:
     task = checkpoint.get("task", "multiclass")
     label_to_idx: Dict[Any, Any] = checkpoint["label_to_idx"]
@@ -404,9 +453,9 @@ def infer_user_track(
     simple_preprocess: bool,
     use_temp_npy: bool,
     tmp_dir: Path,
-) -> Tuple[int, float, float, float, List[Path]]:
+) -> Tuple[int, float, torch.Tensor, float, float, List[Path]]:
     """
-    Devuelve (track_id, prob_robo, clf_ms, total_ms, cleanup_paths).
+    Devuelve (track_id, prob_robo, logits_1d, clf_ms, total_ms, cleanup_paths).
     total_ms = desde lectura/prepare (o ds[0]) hasta softmax; clf_ms = solo forward+softmax.
     """
     tid = int(user_dir.name.split("_")[1])
@@ -483,7 +532,7 @@ def infer_user_track(
 
         clf_ms = (t_end - t_clf0) * 1000.0
         total_ms = (t_end - t_total0) * 1000.0
-        return tid, prob, clf_ms, total_ms, cleanup
+        return tid, prob, logits.detach().cpu(), clf_ms, total_ms, cleanup
     except Exception:
         _safe_unlink(cleanup)
         raise
@@ -606,7 +655,7 @@ def main() -> None:
                     f"track={tid_preview}, buffer_len={arr_t.shape[0]}"
                 )
 
-            tid, prob, clf_ms, total_ms, cleanup = infer_user_track(
+            tid, prob, logits, clf_ms, total_ms, cleanup = infer_user_track(
                 checkpoint=checkpoint,
                 model=model,
                 user_dir=ud,
@@ -622,8 +671,8 @@ def main() -> None:
             infer_total_times_ms.append(total_ms)
             res_tag = "Primer resultado clf_model" if first_result_line else "Resultado clf_model"
             first_result_line = False
-            prob_pct = prob * 100.0
-            prob_fmt = f"{prob_pct:.4f}%" if prob_pct < 0.05 and prob > 0 else f"{prob_pct:.2f}%"
+            prob_fmt = _format_prob_robo(prob)
+            logits_detail = _format_logits_detail(logits, checkpoint)
             print(
                 f"[TRACE] {res_tag}: frame={eval_pass}, track={tid}, "
                 f"P(robo)={prob_fmt} | clf={clf_ms:.2f} ms | total={total_ms:.2f} ms"
@@ -633,6 +682,7 @@ def main() -> None:
                 f"[RESULT] user_{tid} | P(robo)={prob_fmt} | decision={pred} "
                 f"(umbral={thr*100:.0f}%) | clf {clf_ms:.2f} ms | total {total_ms:.2f} ms"
             )
+            print(f"[LOGITS] user_{tid} | {logits_detail}")
             results.append((tid, prob, pred))
             _safe_unlink(cleanup)
     finally:
@@ -649,7 +699,7 @@ def main() -> None:
     if not robbed_any:
         print("[FIN] No se detecto robo por encima del umbral.")
     else:
-        print(f"[FIN] Robo detectado: track_id={best_tid} | P(robo)={best_p*100:.1f}%")
+        print(f"[FIN] Robo detectado: track_id={best_tid} | P(robo)={_format_prob_robo(best_p)}")
         if first_model_use_t0 is not None:
             elapsed_from_first_use_ms = (time.perf_counter() - first_model_use_t0) * 1000.0
             print(
