@@ -144,37 +144,112 @@ def _stats_line(name: str, x: np.ndarray) -> str:
     return f"  {name:<16} n={x.size:<6} mean={x.mean():+.3f} std={x.std():.3f} | {pct_str}"
 
 
-def _minmaxmean(x: np.ndarray) -> str:
+def _p(x: np.ndarray, q: float) -> float:
     x = x[~np.isnan(x)]
-    if x.size == 0:
-        return "(sin datos)"
-    return f"min={x.min():+.3f}  max={x.max():+.3f}  media={x.mean():+.3f}  (n={x.size})"
+    return float(np.percentile(x, q)) if x.size else float("nan")
+
+
+def _mean(x: np.ndarray) -> float:
+    x = x[~np.isnan(x)]
+    return float(x.mean()) if x.size else float("nan")
+
+
+def _ascii_range_bar(lo: float, hi: float, p5: float, med: float, p95: float, width: int = 52) -> str:
+    """Barra ASCII del rango [p5..p95] con la mediana marcada como '|'."""
+    span = (hi - lo) if hi > lo else 1.0
+    cells = [" "] * width
+
+    def pos(v: float) -> int:
+        return int(round((v - lo) / span * (width - 1)))
+
+    a, b = pos(p5), pos(p95)
+    a, b = max(0, min(a, b)), min(width - 1, max(a, b))
+    for i in range(a, b + 1):
+        cells[i] = "="
+    mp = max(0, min(width - 1, pos(med)))
+    cells[mp] = "|"
+    return "".join(cells)
 
 
 def print_quick_summary(data: Dict[str, np.ndarray], score: str) -> None:
-    """Resumen compacto (min/max/media) por categoría y agrupado robo(6) vs resto."""
+    """Resumen claro: percentiles por categoría, separación robo/no-robo y gráfico."""
     vals = data[score]
     cats = data.get("categoria")
+    is_robo = data.get("is_robo")
     n_rows = vals.size
     n_clips = len(set(map(str, data["clip_path"].tolist()))) if "clip_path" in data else "?"
 
-    print("\n========= RESUMEN RÁPIDO (logits = columna '" + score + "') =========")
+    print("\n========= RESUMEN (logits = columna '" + score + "') =========")
     print(f"- Clips analizados: {n_clips}")
     print(f"- Usuarios/filas analizados: {n_rows}")
-    if cats is None:
-        print("- (sin columna 'categoria')")
-        print("=" * 60)
+    if cats is None or is_robo is None:
+        print("- (faltan columnas 'categoria'/'is_robo' para el resumen completo)")
+        print("=" * 64)
         return
 
     present = sorted(set(int(c) for c in cats.tolist()))
+    print("\nPor categoría  [ p5 · mediana · p95 ]  (media)  n   {min..max}:")
     for cat in present:
         m = cats == cat
-        print(f"- Categoría {cat}: {_minmaxmean(vals[m])}")
+        x = vals[m]
+        tag = "ROBO" if (m.any() and is_robo[m][0] == 1) else "no_robo"
+        xv = x[~np.isnan(x)]
+        rng = f"{{{xv.min():+.1f}..{xv.max():+.1f}}}" if xv.size else "{-}"
+        print(
+            f"- Cat {cat} ({tag:<7}): [{_p(x,5):+7.2f} · {_p(x,50):+7.2f} · {_p(x,95):+7.2f}]  "
+            f"(media={_mean(x):+7.2f})  n={x.size:<5} {rng}"
+        )
 
-    robo_mask = cats == 6
-    print(f"- NO ROBO (todas menos 6): {_minmaxmean(vals[~robo_mask])}")
-    print(f"- ROBO (6):                {_minmaxmean(vals[robo_mask])}")
-    print("=" * 60)
+    nr = vals[is_robo == 0]
+    ro = vals[is_robo == 1]
+
+    print("\n>>> SEPARACIÓN  ROBO(6)  vs  NO_ROBO <<<")
+    print(
+        f"- NO_ROBO:  mediana={_p(nr,50):+.2f}   p90={_p(nr,90):+.2f}   "
+        f"p95={_p(nr,95):+.2f}   p99={_p(nr,99):+.2f}"
+    )
+    print(
+        f"- ROBO   :  mediana={_p(ro,50):+.2f}   p10={_p(ro,10):+.2f}   "
+        f"p5={_p(ro,5):+.2f}   p1={_p(ro,1):+.2f}"
+    )
+
+    margin = _p(ro, 5) - _p(nr, 95)
+    estado = "SEPARADAS (apenas se solapan)" if margin > 0 else "se solapan en las colas"
+    print(f"- Distancia entre medianas: {_p(ro,50) - _p(nr,50):+.2f} logits")
+    print(f"- Margen robusto (ROBO p5 - NO_ROBO p95) = {margin:+.2f}  ->  {estado}")
+
+    nr_v = nr[~np.isnan(nr)]
+    ro_v = ro[~np.isnan(ro)]
+    thr_ro_p5 = _p(ro, 5)
+    thr_nr_p95 = _p(nr, 95)
+    if nr_v.size and ro_v.size:
+        fp_rate = 100.0 * float(np.mean(nr_v >= thr_ro_p5))
+        fn_rate = 100.0 * float(np.mean(ro_v < thr_nr_p95))
+        print(f"- NO_ROBO por encima de ROBO_p5({thr_ro_p5:+.2f}): {fp_rate:5.1f}%  (falsos positivos potenciales)")
+        print(f"- ROBO por debajo de NO_ROBO_p95({thr_nr_p95:+.2f}): {fn_rate:5.1f}%  (robos que se perderían)")
+
+    # --- Gráfico ASCII de rangos (mismo eje para ambos) ---
+    if nr_v.size and ro_v.size:
+        lo = min(_p(nr, 1), _p(ro, 1))
+        hi = max(_p(nr, 99), _p(ro, 99))
+        print(f"\n  Eje logit: {lo:+.1f} {'-' * 40} {hi:+.1f}   ('='=p5..p95, '|'=mediana)")
+        print(f"  NO_ROBO  {_ascii_range_bar(lo, hi, _p(nr,5), _p(nr,50), _p(nr,95))}")
+        print(f"  ROBO(6)  {_ascii_range_bar(lo, hi, _p(ro,5), _p(ro,50), _p(ro,95))}")
+
+    # --- Mini-tabla precisión/recall (nivel fila) en umbrales candidatos ---
+    if nr_v.size and ro_v.size:
+        cands = sorted({round(thr_nr_p95, 1), round((thr_nr_p95 + thr_ro_p5) / 2.0, 1), 0.0, round(thr_ro_p5, 1)})
+        labels = is_robo == 1
+        print("\n  Mini-tabla (nivel fila):  umbral -> precisión / recall / FP / FN")
+        for t in cands:
+            pred = vals >= t
+            tp = int(np.sum(pred & labels))
+            fp = int(np.sum(pred & ~labels))
+            fn = int(np.sum(~pred & labels))
+            prec = tp / (tp + fp) if (tp + fp) else float("nan")
+            rec = tp / (tp + fn) if (tp + fn) else float("nan")
+            print(f"    thr={t:+5.1f}:  prec={prec:6.3f}  recall={rec:6.3f}  FP={fp:<5} FN={fn}")
+    print("=" * 64)
 
 
 def print_distributions(data: Dict[str, np.ndarray], score: str, extra: List[str]) -> None:
