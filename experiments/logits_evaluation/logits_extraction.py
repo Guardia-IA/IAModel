@@ -414,6 +414,8 @@ def gather_clips(input_dir: Path) -> Tuple[List[Tuple[int, Path]], List[Dict[str
 
 def _fmt_duration(seconds: float) -> str:
     seconds = max(0.0, float(seconds))
+    if seconds < 1.0:
+        return f"{seconds * 1000.0:.0f} ms"
     if seconds < 90:
         return f"{seconds:.1f} s"
     minutes = seconds / 60.0
@@ -522,22 +524,27 @@ def preflight(
         return
 
     per_user = float(np.mean(times))
-    units = debug_max_clips if debug else total_clips
-    units_users = total_users
-    if debug:
-        units_users = sum(len(c["user_dirs"]) for c in clips[: max(0, int(debug_max_clips))])
-    est_total = per_user * units_users
     print(
         f"[PRE] Tiempo medio por usuario (n={len(times)}): "
         f"{per_user * 1000.0:.1f} ms (incluye preprocesado + forward)"
     )
+
+    # Estimación del dataset COMPLETO (siempre).
+    est_full = per_user * total_users
+    print(
+        f"[PRE] Estimación dataset COMPLETO: ~{_fmt_duration(est_full)} "
+        f"({total_clips} clips, {total_users} usuarios)."
+    )
+
+    # En debug, además la del subconjunto que realmente se procesará.
     if debug:
+        n_debug_clips = min(max(0, int(debug_max_clips)), total_clips)
+        debug_users = sum(len(c["user_dirs"]) for c in clips[:n_debug_clips])
+        est_debug = per_user * debug_users
         print(
-            f"[PRE] MODO DEBUG: se procesarán {min(units, total_clips)} clips "
-            f"(~{units_users} usuarios)."
+            f"[PRE] MODO DEBUG: se procesarán solo {n_debug_clips} clips "
+            f"(~{debug_users} usuarios) -> ~{_fmt_duration(est_debug)}."
         )
-    print(f"[PRE] Estimación de tiempo total: ~{_fmt_duration(est_total)} "
-          f"para {units_users} usuarios.")
     print("================================\n")
 
 
