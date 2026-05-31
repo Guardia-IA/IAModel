@@ -36,7 +36,7 @@ def _load_category_limits() -> dict[str, int]:
       - null/None  -> sin límite (se procesan todos)
       - 0          -> no se procesa ninguno
       - >0         -> máximo N clips para esa categoría
-    """
+    """ 
     limits: dict[str, int] = {}
     cfg_path = Path(POSE_EXTRACTION_CONFIG)
     if not cfg_path.exists():
