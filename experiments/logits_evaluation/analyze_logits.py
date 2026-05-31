@@ -144,6 +144,39 @@ def _stats_line(name: str, x: np.ndarray) -> str:
     return f"  {name:<16} n={x.size:<6} mean={x.mean():+.3f} std={x.std():.3f} | {pct_str}"
 
 
+def _minmaxmean(x: np.ndarray) -> str:
+    x = x[~np.isnan(x)]
+    if x.size == 0:
+        return "(sin datos)"
+    return f"min={x.min():+.3f}  max={x.max():+.3f}  media={x.mean():+.3f}  (n={x.size})"
+
+
+def print_quick_summary(data: Dict[str, np.ndarray], score: str) -> None:
+    """Resumen compacto (min/max/media) por categoría y agrupado robo(6) vs resto."""
+    vals = data[score]
+    cats = data.get("categoria")
+    n_rows = vals.size
+    n_clips = len(set(map(str, data["clip_path"].tolist()))) if "clip_path" in data else "?"
+
+    print("\n========= RESUMEN RÁPIDO (logits = columna '" + score + "') =========")
+    print(f"- Clips analizados: {n_clips}")
+    print(f"- Usuarios/filas analizados: {n_rows}")
+    if cats is None:
+        print("- (sin columna 'categoria')")
+        print("=" * 60)
+        return
+
+    present = sorted(set(int(c) for c in cats.tolist()))
+    for cat in present:
+        m = cats == cat
+        print(f"- Categoría {cat}: {_minmaxmean(vals[m])}")
+
+    robo_mask = cats == 6
+    print(f"- NO ROBO (todas menos 6): {_minmaxmean(vals[~robo_mask])}")
+    print(f"- ROBO (6):                {_minmaxmean(vals[robo_mask])}")
+    print("=" * 60)
+
+
 def print_distributions(data: Dict[str, np.ndarray], score: str, extra: List[str]) -> None:
     metrics = [m for m in dict.fromkeys([score] + list(extra)) if m in data]
     is_robo = data.get("is_robo")
@@ -332,6 +365,8 @@ def main() -> None:
         raise SystemExit(f"La columna --score '{args.score}' no está en el CSV. Disponibles: {list(data.keys())}")
     if "is_robo" not in data:
         raise SystemExit("El CSV no tiene columna is_robo; no puedo evaluar precisión/recall.")
+
+    print_quick_summary(data, args.score)
 
     extra = [c for c in args.extra_scores if c in data]
     print_distributions(data, args.score, extra)
