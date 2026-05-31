@@ -247,8 +247,11 @@ def build_engine_from_onnx(onnx_path: Path, engine_path: Path, fp16: bool, works
 def verify_engine(engine_path: Path, model: torch.nn.Module, seq_len: int, input_dim: int) -> None:
     import numpy as np
     import tensorrt as trt  # type: ignore[import-not-found]
-    import pycuda.driver as cuda  # type: ignore[import-not-found]
-    import pycuda.autoinit  # type: ignore[import-not-found]  # noqa: F401
+
+    if not torch.cuda.is_available():
+        print("[VERIFY] No hay GPU CUDA disponible; me salto la verificacion del engine.")
+        return
+    device = torch.device("cuda")
 
     x = torch.randn(1, seq_len, input_dim, dtype=torch.float32)
     with torch.no_grad():
@@ -267,22 +270,18 @@ def verify_engine(engine_path: Path, model: torch.nn.Module, seq_len: int, input
         else:
             out_name = name
 
-    arr = np.ascontiguousarray(x.numpy().astype(np.float32))
-    context.set_input_shape(in_name, tuple(arr.shape))
-    out = np.empty(tuple(context.get_tensor_shape(out_name)), dtype=np.float32)
-    d_in = cuda.mem_alloc(arr.nbytes)
-    d_out = cuda.mem_alloc(out.nbytes)
-    cuda.memcpy_htod(d_in, arr)
-    context.set_tensor_address(in_name, int(d_in))
-    context.set_tensor_address(out_name, int(d_out))
-    stream = cuda.Stream()
-    context.execute_async_v3(stream_handle=stream.handle)
+    # Buffers CUDA con PyTorch (sin pycuda).
+    x_cuda = x.to(device, dtype=torch.float32).contiguous()
+    context.set_input_shape(in_name, tuple(x_cuda.shape))
+    out_shape = tuple(context.get_tensor_shape(out_name))
+    out_cuda = torch.empty(out_shape, dtype=torch.float32, device=device)
+    context.set_tensor_address(in_name, int(x_cuda.data_ptr()))
+    context.set_tensor_address(out_name, int(out_cuda.data_ptr()))
+    stream = torch.cuda.current_stream(device)
+    context.execute_async_v3(stream_handle=stream.cuda_stream)
     stream.synchronize()
-    cuda.memcpy_dtoh(out, d_out)
-    d_in.free()
-    d_out.free()
 
-    eng = out.reshape(-1)
+    eng = out_cuda.detach().cpu().numpy().reshape(-1)
     max_abs = float(np.max(np.abs(eng - ref)))
     print(f"[VERIFY] logits .pt    : {np.round(ref, 4)}")
     print(f"[VERIFY] logits engine : {np.round(eng, 4)}")

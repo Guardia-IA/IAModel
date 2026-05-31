@@ -147,22 +147,29 @@ class TorchClassifier:
 
 class TensorRTClassifier:
     """
-    Forward con un .engine TensorRT (solo si tensorrt + pycuda están disponibles).
-    Asume entrada [1, seq_len, input_dim] float32 y salida [1, num_classes].
-    Si algo falla en la construcción, el llamador debe capturar la excepción y
-    caer al backend Torch.
+    Forward con un .engine TensorRT usando tensores CUDA de PyTorch como buffers
+    (sin pycuda). Asume entrada [1, seq_len, input_dim] float32 y salida [1, C].
+    Si algo falla en la construcción, el llamador captura la excepción y cae a Torch.
     """
 
-    def __init__(self, engine_path: Path, input_dim: int, seq_len: int, num_classes: int) -> None:
+    def __init__(
+        self,
+        engine_path: Path,
+        input_dim: int,
+        seq_len: int,
+        num_classes: int,
+        device: torch.device,
+    ) -> None:
         import tensorrt as trt  # type: ignore[import-not-found]
-        import pycuda.driver as cuda  # type: ignore[import-not-found]
-        import pycuda.autoinit  # type: ignore[import-not-found]  # noqa: F401
+
+        if device.type != "cuda" or not torch.cuda.is_available():
+            raise RuntimeError("El backend TensorRT requiere una GPU CUDA disponible.")
 
         self._trt = trt
-        self._cuda = cuda
         self.input_dim = input_dim
         self.seq_len = seq_len
         self.num_classes = num_classes
+        self.device = device
 
         logger = trt.Logger(trt.Logger.WARNING)
         with open(engine_path, "rb") as f, trt.Runtime(logger) as runtime:
@@ -184,28 +191,17 @@ class TensorRTClassifier:
             raise RuntimeError("No se identificaron tensores de entrada/salida del engine.")
 
     def logits(self, x: torch.Tensor) -> np.ndarray:
-        trt = self._trt
-        cuda = self._cuda
-        arr = np.ascontiguousarray(x.detach().cpu().numpy().astype(np.float32))
-
-        self.context.set_input_shape(self._input_name, tuple(arr.shape))
+        x = x.to(self.device, dtype=torch.float32).contiguous()
+        self.context.set_input_shape(self._input_name, tuple(x.shape))
         out_shape = tuple(self.context.get_tensor_shape(self._output_name))
-        out = np.empty(out_shape, dtype=np.float32)
+        out = torch.empty(out_shape, dtype=torch.float32, device=self.device)
 
-        d_in = cuda.mem_alloc(arr.nbytes)
-        d_out = cuda.mem_alloc(out.nbytes)
-        try:
-            cuda.memcpy_htod(d_in, arr)
-            self.context.set_tensor_address(self._input_name, int(d_in))
-            self.context.set_tensor_address(self._output_name, int(d_out))
-            stream = cuda.Stream()
-            self.context.execute_async_v3(stream_handle=stream.handle)
-            stream.synchronize()
-            cuda.memcpy_dtoh(out, d_out)
-        finally:
-            d_in.free()
-            d_out.free()
-        return out.reshape(-1)
+        self.context.set_tensor_address(self._input_name, int(x.data_ptr()))
+        self.context.set_tensor_address(self._output_name, int(out.data_ptr()))
+        stream = torch.cuda.current_stream(self.device)
+        self.context.execute_async_v3(stream_handle=stream.cuda_stream)
+        stream.synchronize()
+        return out.detach().cpu().numpy().reshape(-1)
 
 
 def build_backend(
@@ -224,7 +220,7 @@ def build_backend(
             input_dim = int(checkpoint["input_dim"])
             seq_len = int(checkpoint.get("seq_len", 64))
             num_classes = int(checkpoint.get("num_classes", len(checkpoint["label_to_idx"])))
-            backend = TensorRTClassifier(engine_path, input_dim, seq_len, num_classes)
+            backend = TensorRTClassifier(engine_path, input_dim, seq_len, num_classes, device)
             return backend, f"engine ({engine_path.name})"
         except Exception as e:  # noqa: BLE001 - fallback intencionado a Torch
             print(f"[WARN] No se pudo usar el engine ({engine_path.name}): {e}. Se usa el .pt.")
