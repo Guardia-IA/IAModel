@@ -35,10 +35,12 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import os
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Tuple
 
 import numpy as np
 import torch
@@ -94,6 +96,14 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="No preguntar tras el preflight; lanzar directamente.",
     )
+    p.add_argument(
+        "--parallel",
+        action="store_true",
+        help=(
+            "Procesa en paralelo (preprocesado en hilos + forward en el hilo principal) "
+            "y, en el preflight, estima el tiempo con varios tamaños de lote."
+        ),
+    )
     return p.parse_args()
 
 
@@ -123,6 +133,10 @@ def load_config(path: Path) -> Dict[str, Any]:
     cfg.setdefault("min_frames", 3)
     cfg.setdefault("min_seconds", 0.0)
     cfg.setdefault("fps", 25.0)
+    cfg.setdefault("parallel", False)
+    cfg.setdefault("parallel_workers", 0)  # 0 = auto (nº de CPUs, máx 32)
+    cfg.setdefault("preflight_parallel_batches", [20, 100])
+    cfg.setdefault("preflight_parallel_bench", 200)
     return cfg
 
 
@@ -329,6 +343,95 @@ def build_input_tensor(
     return _tensor_simple_pipeline(poses, seq_len)
 
 
+def make_csv_row(
+    clip: Dict[str, Any],
+    user_name: str,
+    logits: np.ndarray,
+    *,
+    robo_idx: int,
+    num_classes: int,
+    robo_category: int,
+    thr: float,
+    backend_name: str,
+) -> Dict[str, Any]:
+    metrics = logits_metrics(logits, robo_idx)
+    prob_robo = metrics["prob_robo"]
+    categoria = clip["categoria"]
+    row: Dict[str, Any] = {
+        "clip_path": str(clip["clip_dir"]),
+        "clip_name": clip["clip_name"],
+        "categoria": categoria,
+        "is_robo": int(categoria == robo_category),
+        "num_usuarios": len(clip["user_dirs"]),
+        "usuario": user_name,
+        "gap": round(metrics["gap"], 6),
+        "prob_robo": round(prob_robo, 8),
+        "decision": "ROBO" if prob_robo >= thr else "NO_ROBO",
+        "backend": backend_name,
+    }
+    for i in range(num_classes):
+        row[f"clase{i}_logit"] = round(metrics[f"clase{i}_logit"], 6)
+        row[f"clase{i}_softmax"] = round(metrics[f"clase{i}_softmax"], 8)
+        row[f"clase{i}_sigmoide"] = round(metrics[f"clase{i}_sigmoide"], 8)
+    return row
+
+
+def process_chunk_parallel(
+    tasks: List[Tuple[Dict[str, Any], Path, int]],
+    backend: Any,
+    *,
+    pose_source: str,
+    checkpoint: Dict[str, Any],
+    seq_len: int,
+    simple_preprocess: bool,
+    device: torch.device,
+    workers: int,
+) -> List[Tuple[Tuple[Dict[str, Any], Path, int], Optional[np.ndarray], Optional[Exception]]]:
+    """
+    Preprocesa los tasks en paralelo con hilos (IO + numpy liberan el GIL) y hace
+    el forward en el hilo principal (el contexto TensorRT no es thread-safe).
+    Devuelve [(task, logits|None, error|None)] en el mismo orden.
+    """
+    n = len(tasks)
+    pre: List[Optional[torch.Tensor]] = [None] * n
+    errs: List[Optional[Exception]] = [None] * n
+
+    def work(i: int) -> Tuple[int, Optional[torch.Tensor], Optional[Exception]]:
+        clip, ud, tid = tasks[i]
+        try:
+            x = build_input_tensor(
+                user_dir=ud,
+                pose_source=pose_source,
+                clip_name=clip["clip_name"],
+                checkpoint=checkpoint,
+                seq_len=seq_len,
+                simple_preprocess=simple_preprocess,
+                track_id=tid,
+            )
+            return i, x, None
+        except Exception as e:  # noqa: BLE001
+            return i, None, e
+
+    with ThreadPoolExecutor(max_workers=max(1, int(workers))) as ex:
+        for i, x, err in ex.map(work, range(n)):
+            pre[i] = x
+            errs[i] = err
+
+    out: List[Tuple[Tuple[Dict[str, Any], Path, int], Optional[np.ndarray], Optional[Exception]]] = []
+    for i in range(n):
+        if errs[i] is not None or pre[i] is None:
+            out.append((tasks[i], None, errs[i]))
+            continue
+        try:
+            logits = backend.logits(pre[i])
+            out.append((tasks[i], logits, None))
+        except Exception as e:  # noqa: BLE001
+            out.append((tasks[i], None, e))
+    if device.type == "cuda":
+        torch.cuda.synchronize()
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Cálculo de métricas a partir de logits
 # ---------------------------------------------------------------------------
@@ -483,6 +586,9 @@ def preflight(
     debug: bool,
     debug_max_clips: int,
     required_frames: int,
+    parallel: bool = False,
+    parallel_batches: Optional[List[int]] = None,
+    parallel_bench: int = 200,
 ) -> None:
     """Resumen del trabajo + estimación de tiempo cronometrando unas inferencias."""
     total_clips = len(clips)
@@ -606,6 +712,42 @@ def preflight(
             f"[PRE] MODO DEBUG: se procesarán solo {n_debug_clips} clips "
             f"(~{debug_users} usuarios válidos) -> ~{_fmt_duration(est_debug)}."
         )
+
+    # --- Benchmark en PARALELO con varios tamaños de lote ---
+    if parallel and len(valid_tasks) >= 2:
+        batches = sorted({int(b) for b in (parallel_batches or [20, 100]) if int(b) > 1})
+        bench_n = min(len(valid_tasks), max(int(parallel_bench), (max(batches) if batches else 1)))
+        bench = valid_tasks[:bench_n]
+        print(f"\n[PRE] Benchmark PARALELO (preprocesado en hilos) sobre {len(bench)} usuarios válidos:")
+        base_per: Optional[float] = None
+        for w in [1] + batches:
+            try:
+                # warmup ligero
+                process_chunk_parallel(
+                    bench[: min(len(bench), w)], backend,
+                    pose_source=pose_source, checkpoint=checkpoint, seq_len=seq_len,
+                    simple_preprocess=simple_preprocess, device=device, workers=w,
+                )
+                tb0 = time.perf_counter()
+                process_chunk_parallel(
+                    bench, backend,
+                    pose_source=pose_source, checkpoint=checkpoint, seq_len=seq_len,
+                    simple_preprocess=simple_preprocess, device=device, workers=w,
+                )
+                per_w = (time.perf_counter() - tb0) / len(bench)
+            except Exception as e:  # noqa: BLE001
+                print(f"[PRE]   workers={w}: benchmark falló ({e})")
+                continue
+            if base_per is None:
+                base_per = per_w
+            speed = (base_per / per_w) if per_w > 0 else 1.0
+            est_w = per_w * tot_ok
+            tag = "(baseline secuencial)" if w == 1 else f"(x{speed:.1f} vs secuencial)"
+            print(
+                f"[PRE]   workers={w:<4}: {per_w * 1000.0:.2f} ms/usuario "
+                f"-> ~{_fmt_duration(est_w)} total {tag}"
+            )
+
     print("================================\n")
 
 
@@ -619,8 +761,12 @@ def main() -> None:
         cfg["debug"] = True
     if args.yes:
         cfg["assume_yes"] = True
+    if args.parallel:
+        cfg["parallel"] = True
     debug = bool(cfg["debug"])
     debug_max_clips = int(cfg["debug_max_clips"])
+    parallel = bool(cfg["parallel"])
+    workers = int(cfg["parallel_workers"]) or min(32, (os.cpu_count() or 4))
 
     input_dir = Path(cfg["input_dir"]).expanduser().resolve()
     output_csv = Path(cfg["output_csv"]).expanduser().resolve()
@@ -694,6 +840,9 @@ def main() -> None:
             debug=debug,
             debug_max_clips=debug_max_clips,
             required_frames=required_frames,
+            parallel=parallel,
+            parallel_batches=list(cfg["preflight_parallel_batches"]),
+            parallel_bench=int(cfg["preflight_parallel_bench"]),
         )
         if not bool(cfg["assume_yes"]):
             if sys.stdin is not None and sys.stdin.isatty():
@@ -724,65 +873,89 @@ def main() -> None:
         if write_header:
             writer.writeheader()
 
-        for clip in clips:
-            n_clips += 1
-            categoria = clip["categoria"]
-            clip_dir = clip["clip_dir"]
-            clip_name = clip["clip_name"]
-            user_dirs = clip["user_dirs"]
-            num_users = len(user_dirs)
-            for ud in user_dirs:
-                try:
-                    tid = int(ud.name.split("_")[1])
-                except (IndexError, ValueError):
-                    tid = -1
-
-                n_valid, info = poses_valid_frames(ud, pose_source)
-                if n_valid < required_frames:
-                    n_skipped += 1
-                    reason = info if n_valid < 0 else f"{n_valid} frames < {required_frames}"
-                    print(f"[SKIP] {ud.name} en {clip_dir.name}: datos insuficientes ({reason})")
-                    continue
-
-                try:
-                    x = build_input_tensor(
-                        user_dir=ud,
-                        pose_source=pose_source,
-                        clip_name=clip_name,
-                        checkpoint=checkpoint,
-                        seq_len=seq_len,
-                        simple_preprocess=simple_preprocess,
-                        track_id=tid,
-                    )
-                    logits = backend.logits(x)
-                    metrics = logits_metrics(logits, robo_idx)
-                except Exception as e:  # noqa: BLE001
-                    n_errors += 1
-                    print(f"[WARN] Falló {ud}: {e}")
-                    continue
-
-                prob_robo = metrics["prob_robo"]
-                row: Dict[str, Any] = {
-                    "clip_path": str(clip_dir),
-                    "clip_name": clip_name,
-                    "categoria": categoria,
-                    "is_robo": int(categoria == robo_category),
-                    "num_usuarios": num_users,
-                    "usuario": ud.name,
-                    "gap": round(metrics["gap"], 6),
-                    "prob_robo": round(prob_robo, 8),
-                    "decision": "ROBO" if prob_robo >= thr else "NO_ROBO",
-                    "backend": backend_name,
-                }
-                for i in range(num_classes):
-                    row[f"clase{i}_logit"] = round(metrics[f"clase{i}_logit"], 6)
-                    row[f"clase{i}_softmax"] = round(metrics[f"clase{i}_softmax"], 8)
-                    row[f"clase{i}_sigmoide"] = round(metrics[f"clase{i}_sigmoide"], 8)
-                writer.writerow(row)
-                n_rows += 1
-            if n_clips % 25 == 0:
+        if parallel:
+            # Lista plana de tareas válidas.
+            tasks: List[Tuple[Dict[str, Any], Path, int]] = []
+            for clip in clips:
+                for ud in clip["user_dirs"]:
+                    n_valid, _info = poses_valid_frames(ud, pose_source)
+                    if n_valid < required_frames:
+                        n_skipped += 1
+                        continue
+                    try:
+                        tid = int(ud.name.split("_")[1])
+                    except (IndexError, ValueError):
+                        tid = -1
+                    tasks.append((clip, ud, tid))
+            n_clips = len(clips)
+            chunk = max(1, workers)
+            print(
+                f"[INFO] PARALELO: {len(tasks)} usuarios válidos | workers={workers} | "
+                f"lotes de {chunk} | descartados={n_skipped}"
+            )
+            for start in range(0, len(tasks), chunk):
+                block = tasks[start : start + chunk]
+                results = process_chunk_parallel(
+                    block, backend,
+                    pose_source=pose_source, checkpoint=checkpoint, seq_len=seq_len,
+                    simple_preprocess=simple_preprocess, device=device, workers=workers,
+                )
+                for task, logits, err in results:
+                    clip, ud, _tid = task
+                    if err is not None or logits is None:
+                        n_errors += 1
+                        print(f"[WARN] Falló {ud}: {err}")
+                        continue
+                    writer.writerow(make_csv_row(
+                        clip, ud.name, logits,
+                        robo_idx=robo_idx, num_classes=num_classes,
+                        robo_category=robo_category, thr=thr, backend_name=backend_name,
+                    ))
+                    n_rows += 1
                 fcsv.flush()
-                print(f"[INFO] Progreso: {n_clips}/{len(clips)} clips, {n_rows} filas...")
+                print(f"[INFO] Progreso: {min(start + chunk, len(tasks))}/{len(tasks)} usuarios, {n_rows} filas...")
+        else:
+            for clip in clips:
+                n_clips += 1
+                clip_dir = clip["clip_dir"]
+                for ud in clip["user_dirs"]:
+                    try:
+                        tid = int(ud.name.split("_")[1])
+                    except (IndexError, ValueError):
+                        tid = -1
+
+                    n_valid, info = poses_valid_frames(ud, pose_source)
+                    if n_valid < required_frames:
+                        n_skipped += 1
+                        reason = info if n_valid < 0 else f"{n_valid} frames < {required_frames}"
+                        print(f"[SKIP] {ud.name} en {clip_dir.name}: datos insuficientes ({reason})")
+                        continue
+
+                    try:
+                        x = build_input_tensor(
+                            user_dir=ud,
+                            pose_source=pose_source,
+                            clip_name=clip["clip_name"],
+                            checkpoint=checkpoint,
+                            seq_len=seq_len,
+                            simple_preprocess=simple_preprocess,
+                            track_id=tid,
+                        )
+                        logits = backend.logits(x)
+                    except Exception as e:  # noqa: BLE001
+                        n_errors += 1
+                        print(f"[WARN] Falló {ud}: {e}")
+                        continue
+
+                    writer.writerow(make_csv_row(
+                        clip, ud.name, logits,
+                        robo_idx=robo_idx, num_classes=num_classes,
+                        robo_category=robo_category, thr=thr, backend_name=backend_name,
+                    ))
+                    n_rows += 1
+                if n_clips % 25 == 0:
+                    fcsv.flush()
+                    print(f"[INFO] Progreso: {n_clips}/{len(clips)} clips, {n_rows} filas...")
 
     dt = time.perf_counter() - t0
     print(
