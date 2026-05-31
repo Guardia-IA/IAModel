@@ -139,18 +139,59 @@ def build_torch_model(checkpoint: Dict[str, Any]) -> torch.nn.Module:
 
 
 def export_onnx(model: torch.nn.Module, seq_len: int, input_dim: int, onnx_path: Path, opset: int) -> None:
+    """
+    Exporta a ONNX. Preferimos el exportador *legacy* (TorchScript, dynamo=False):
+    mete los pesos inline en un solo .onnx (sin .onnx.data externo) y respeta el
+    opset, que es lo que TensorRT parsea sin problemas. Si fallara, caemos al
+    exportador dynamo (que puede generar pesos externos; eso se maneja luego con
+    parser.parse_from_file).
+    """
     dummy = torch.randn(1, seq_len, input_dim, dtype=torch.float32)
+
+    # 1) Exportador legacy (recomendado para TensorRT).
+    try:
+        torch.onnx.export(
+            model,
+            dummy,
+            str(onnx_path),
+            input_names=["poses"],
+            output_names=["logits"],
+            opset_version=opset,
+            do_constant_folding=True,
+            dynamic_axes=None,
+            dynamo=False,
+        )
+        print(f"[OK] ONNX exportado (exportador legacy, pesos inline): {onnx_path}")
+        return
+    except TypeError:
+        # torch antiguo sin el parametro 'dynamo': comportamiento legacy por defecto.
+        torch.onnx.export(
+            model,
+            dummy,
+            str(onnx_path),
+            input_names=["poses"],
+            output_names=["logits"],
+            opset_version=opset,
+            do_constant_folding=True,
+            dynamic_axes=None,
+        )
+        print(f"[OK] ONNX exportado: {onnx_path}")
+        return
+    except Exception as e:  # noqa: BLE001 - fallback intencionado al exportador dynamo
+        print(f"[WARN] El exportador legacy fallo ({e}). Pruebo el exportador dynamo...")
+
+    # 2) Exportador dynamo (puede crear <onnx>.data; opset >=18 para evitar la
+    #    conversion fallida a versiones anteriores).
     torch.onnx.export(
         model,
         dummy,
         str(onnx_path),
         input_names=["poses"],
         output_names=["logits"],
-        opset_version=opset,
-        do_constant_folding=True,
-        dynamic_axes=None,
+        opset_version=max(int(opset), 18),
+        dynamo=True,
     )
-    print(f"[OK] ONNX exportado: {onnx_path}")
+    print(f"[OK] ONNX exportado (exportador dynamo): {onnx_path}")
 
 
 def build_engine_from_onnx(onnx_path: Path, engine_path: Path, fp16: bool, workspace_mb: int) -> None:
@@ -162,10 +203,16 @@ def build_engine_from_onnx(onnx_path: Path, engine_path: Path, fp16: bool, works
     network = builder.create_network(flags)
     parser = trt.OnnxParser(network, logger)
 
-    with open(onnx_path, "rb") as f:
-        if not parser.parse(f.read()):
-            msgs = [str(parser.get_error(i)) for i in range(parser.num_errors)]
-            raise SystemExit("Fallo al parsear el ONNX:\n" + "\n".join(msgs))
+    # parse_from_file resuelve pesos externos (.onnx.data) relativos a la ruta del
+    # .onnx; parse(bytes) los buscaria en el cwd y fallaria.
+    if hasattr(parser, "parse_from_file"):
+        ok = parser.parse_from_file(str(onnx_path))
+    else:
+        with open(onnx_path, "rb") as f:
+            ok = parser.parse(f.read())
+    if not ok:
+        msgs = [str(parser.get_error(i)) for i in range(parser.num_errors)]
+        raise SystemExit("Fallo al parsear el ONNX:\n" + "\n".join(msgs))
 
     config = builder.create_builder_config()
     ws_bytes = int(workspace_mb) * 1024 * 1024
@@ -284,11 +331,13 @@ def main() -> None:
         if args.verify:
             verify_engine(engine_path, model, seq_len, input_dim)
     finally:
-        if not args.keep_onnx and onnx_path.exists():
-            try:
-                onnx_path.unlink()
-            except OSError:
-                pass
+        if not args.keep_onnx:
+            for p in (onnx_path, Path(str(onnx_path) + ".data")):
+                try:
+                    if p.exists():
+                        p.unlink()
+                except OSError:
+                    pass
 
     print(f"[FIN] Engine listo: {engine_path}")
 
