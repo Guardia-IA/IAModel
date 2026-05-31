@@ -505,30 +505,55 @@ def preflight(
     for cat in sorted(per_cat):
         nc, nu = per_cat[cat]
         print(f"[PRE]   categoría {cat}: {nc} clips, {nu} usuarios (filas)")
-    print(f"[PRE] TOTAL: {total_clips} clips, {total_users} usuarios (filas a generar)")
+    print(f"[PRE] TOTAL: {total_clips} clips, {total_users} usuarios (filas potenciales)")
 
-    # --- Muestra cronometrada (build_input_tensor + forward) por usuario ---
-    sample: List[Tuple[Dict[str, Any], Path, int]] = []
-    target = max(1, int(sample_size)) + 1  # +1 para warmup
+    # --- Escaneo COMPLETO de validez de cada poses.npy (puede tardar un poco) ---
+    print(f"[PRE] Escaneando validez de {total_users} poses.npy (exige >= {required_frames} frames)...")
+    scan_cat: Dict[int, List[int]] = {}  # categoria -> [validos, pocos_frames, invalidos]
+    valid_tasks: List[Tuple[Dict[str, Any], Path, int]] = []
+    clip_valid_counts: List[int] = []  # nº de usuarios válidos por clip (en orden)
+    t_scan0 = time.perf_counter()
     for c in clips:
+        counts = scan_cat.setdefault(c["categoria"], [0, 0, 0])
+        n_ok_clip = 0
         for ud in c["user_dirs"]:
             n_valid, _info = poses_valid_frames(ud, pose_source)
-            if n_valid < required_frames:
-                continue
-            try:
-                tid = int(ud.name.split("_")[1])
-            except (IndexError, ValueError):
-                tid = -1
-            sample.append((c, ud, tid))
-            if len(sample) >= target:
-                break
-        if len(sample) >= target:
-            break
+            if n_valid < 0:
+                counts[2] += 1
+            elif n_valid < required_frames:
+                counts[1] += 1
+            else:
+                counts[0] += 1
+                n_ok_clip += 1
+                try:
+                    tid = int(ud.name.split("_")[1])
+                except (IndexError, ValueError):
+                    tid = -1
+                valid_tasks.append((c, ud, tid))
+        clip_valid_counts.append(n_ok_clip)
+    t_scan = time.perf_counter() - t_scan0
 
-    if not sample:
-        print("[PRE] No hay usuarios para cronometrar; no se puede estimar el tiempo.")
+    tot_ok = sum(v[0] for v in scan_cat.values())
+    tot_few = sum(v[1] for v in scan_cat.values())
+    tot_bad = sum(v[2] for v in scan_cat.values())
+    print(f"[PRE] Escaneo completado en {_fmt_duration(t_scan)}.")
+    print("[PRE] Validez por categoría (válidos / pocos_frames / inválidos):")
+    for cat in sorted(scan_cat):
+        ok, few, bad = scan_cat[cat]
+        print(f"[PRE]   categoría {cat}: {ok} válidos | {few} pocos frames | {bad} inválidos")
+    print(
+        f"[PRE] A EVALUAR (válidos): {tot_ok} | DESCARTADOS: {tot_few + tot_bad} "
+        f"({tot_few} pocos frames, {tot_bad} inválidos)"
+    )
+
+    if not valid_tasks:
+        print("[PRE] No hay usuarios válidos para evaluar; nada que hacer.")
         print("================================\n")
         return
+
+    # --- Muestra cronometrada (build_input_tensor + forward) sobre usuarios válidos ---
+    target = max(1, int(sample_size)) + 1  # +1 para warmup
+    sample = valid_tasks[:target]
 
     times: List[float] = []
     for k, (c, ud, tid) in enumerate(sample):
@@ -565,21 +590,21 @@ def preflight(
         f"{per_user * 1000.0:.1f} ms (incluye preprocesado + forward)"
     )
 
-    # Estimación del dataset COMPLETO (siempre).
-    est_full = per_user * total_users
+    # Estimación del dataset COMPLETO (solo usuarios válidos).
+    est_full = per_user * tot_ok
     print(
         f"[PRE] Estimación dataset COMPLETO: ~{_fmt_duration(est_full)} "
-        f"({total_clips} clips, {total_users} usuarios)."
+        f"({tot_ok} usuarios válidos a evaluar)."
     )
 
     # En debug, además la del subconjunto que realmente se procesará.
     if debug:
         n_debug_clips = min(max(0, int(debug_max_clips)), total_clips)
-        debug_users = sum(len(c["user_dirs"]) for c in clips[:n_debug_clips])
+        debug_users = sum(clip_valid_counts[:n_debug_clips])
         est_debug = per_user * debug_users
         print(
             f"[PRE] MODO DEBUG: se procesarán solo {n_debug_clips} clips "
-            f"(~{debug_users} usuarios) -> ~{_fmt_duration(est_debug)}."
+            f"(~{debug_users} usuarios válidos) -> ~{_fmt_duration(est_debug)}."
         )
     print("================================\n")
 
