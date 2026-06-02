@@ -1,6 +1,8 @@
 [
-  "/home/debian/Documentos/UGR/modelosaux/modelo_25.pt",
-  "/home/debian/Documentos/UGR/modelosaux/modelo_57.pt",
-  "/home/debian/Documentos/UGR/modelosaux/modelo_54.pt",
-  "/home/debian/Documentos/UGR/modelosaux/modelo_12.pt"
+  "/home/angel/IAModel/experiments/training/models-single/modelo_25.pt",
+  "/home/angel/IAModel/experiments/training/models-single/modelo_26.pt",
+  "/home/angel/IAModel/experiments/training/models-single/modelo_27.pt",
+  "/home/angel/IAModel/experiments/training/models-operation-single/modelo_54.pt",
+  "/home/angel/IAModel/experiments/training/models-operation-single/modelo_57.pt"
+  
 ]
