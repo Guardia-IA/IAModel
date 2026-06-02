@@ -33,12 +33,25 @@ Entradas:
 Salida:
     - Tabla por modelo en consola (aciertos, FP, % acierto, recall...).
     - Modelo con más aciertos y modelo con más falsos positivos.
+    - Umbral óptimo por modelo (maximiza acierto).
     - Opcional --output resumen.csv | resumen.json
+
+Análisis extra para reducir falsos positivos (todos opcionales):
+    --target-fpr X        umbral por modelo con FPR <= X%% (maximiza recall).
+    --target-precision X  umbral por modelo con precisión >= X%% (maximiza recall).
+    --fp-breakdown        FP por CSV (categoría) y modelo: ve qué categoría los causa.
+    --consensus M1 M2 ... consenso AND/OR entre modelos (cada uno con su umbral).
+    --abstain-model M --abstain-low L --abstain-high H
+                          zona de abstención: <L no-robo, >H robo, en medio "incierto"
+                          (candidatos a revisar, p. ej. con un VLM en cascada).
 
 Uso:
     python logits_evaluation.py --config logits_evaluation_config.json
     python logits_evaluation.py --csvs robos.csv compras.csv --robo-csv robos.csv --threshold 0.5
     python logits_evaluation.py --config cfg.json --output resumen.csv
+    python logits_evaluation.py --config cfg.json --target-fpr 1.0 --fp-breakdown
+    python logits_evaluation.py --config cfg.json --consensus modelo_54 modelo_25
+    python logits_evaluation.py --config cfg.json --abstain-model modelo_54 --abstain-low 0 --abstain-high 2.3
 """
 
 from __future__ import annotations
@@ -135,32 +148,31 @@ def read_logits_csv(path: Path) -> Tuple[List[str], List[Dict[str, Any]]]:
     return model_cols, rows
 
 
-def optimal_threshold(pairs: List[Tuple[float, bool]]) -> Optional[Dict[str, Any]]:
-    """
-    Busca el umbral que maximiza el % de acierto (TP+TN). Empates: menos FP y,
-    entre los óptimos, el umbral central (máximo margen) para mayor robustez.
+def _counts_to_metrics(t: float, tp: int, tn: int, fp: int, fn: int) -> Dict[str, Any]:
+    total = tp + tn + fp + fn
+    return {
+        "threshold": t, "TP": tp, "TN": tn, "FP": fp, "FN": fn,
+        "accuracy_pct": (tp + tn) / total * 100.0 if total else 0.0,
+        "recall_pct": tp / (tp + fn) * 100.0 if (tp + fn) else 0.0,
+        "precision_pct": tp / (tp + fp) * 100.0 if (tp + fp) else 100.0,
+        "fpr_pct": fp / (fp + tn) * 100.0 if (fp + tn) else 0.0,
+    }
 
-    Implementación O(n log n): un único barrido sobre los valores ordenados de
-    mayor a menor, acumulando TP/FP a medida que baja el umbral.
+
+def threshold_sweep(pairs: List[Tuple[float, bool]]) -> List[Dict[str, Any]]:
+    """
+    Barrido O(n log n) de todos los umbrales relevantes (robo si valor > T).
+    Devuelve una lista de métricas (umbral asc): accuracy, recall, precision, fpr...
     """
     if not pairs:
-        return None
+        return []
     total = len(pairs)
     n_robo = sum(1 for _, r in pairs if r)
     n_norobo = total - n_robo
     sp = sorted(pairs, key=lambda x: x[0], reverse=True)
 
-    # (accuracy, fp, threshold, tp, tn, fn) para cada umbral candidato.
-    scored: List[Tuple[float, int, float, int, int, int]] = []
-
-    def _add(t: float, tp: int, fp: int) -> None:
-        tn = n_norobo - fp
-        fn = n_robo - tp
-        acc = (tp + tn) / total
-        scored.append((acc, fp, t, tp, tn, fn))
-
-    # Umbral por encima del máximo: se predice todo NO-ROBO.
-    _add(sp[0][0] + 1.0, 0, 0)
+    out: List[Dict[str, Any]] = []
+    out.append(_counts_to_metrics(sp[0][0] + 1.0, 0, n_norobo, 0, n_robo))  # todo NO-ROBO
 
     tp = fp = 0
     i = 0
@@ -174,18 +186,42 @@ def optimal_threshold(pairs: List[Tuple[float, bool]]) -> Optional[Dict[str, Any
                 fp += 1
             j += 1
         next_v = sp[j][0] if j < total else (v - 1.0)
-        _add((v + next_v) / 2.0, tp, fp)  # umbral entre este valor y el siguiente distinto
+        t = (v + next_v) / 2.0
+        out.append(_counts_to_metrics(t, tp, n_norobo - fp, fp, n_robo - tp))
         i = j
 
-    best_acc = max(s[0] for s in scored)
-    cand_acc = [s for s in scored if s[0] == best_acc]
-    min_fp = min(s[1] for s in cand_acc)
-    cand_fp = sorted((s for s in cand_acc if s[1] == min_fp), key=lambda s: s[2])
-    acc, fp, t, tp, tn, fn = cand_fp[len(cand_fp) // 2]  # umbral central del plateau óptimo
-    return {
-        "threshold": t, "accuracy_pct": acc * 100.0,
-        "TP": tp, "TN": tn, "FP": fp, "FN": fn,
-    }
+    out.sort(key=lambda d: d["threshold"])
+    return out
+
+
+def optimal_threshold(pairs: List[Tuple[float, bool]]) -> Optional[Dict[str, Any]]:
+    """Umbral que maximiza el % de acierto. Empates: menos FP y umbral central (máx. margen)."""
+    sweep = threshold_sweep(pairs)
+    if not sweep:
+        return None
+    best_acc = max(d["accuracy_pct"] for d in sweep)
+    cand = [d for d in sweep if d["accuracy_pct"] == best_acc]
+    min_fp = min(d["FP"] for d in cand)
+    cand = sorted((d for d in cand if d["FP"] == min_fp), key=lambda d: d["threshold"])
+    return dict(cand[len(cand) // 2])
+
+
+def threshold_for_fpr(pairs: List[Tuple[float, bool]], target_fpr_pct: float) -> Optional[Dict[str, Any]]:
+    """Menor umbral con FPR <= objetivo (maximiza recall sin pasarse de falsos positivos)."""
+    sweep = threshold_sweep(pairs)
+    feasible = [d for d in sweep if d["fpr_pct"] <= target_fpr_pct + 1e-9]
+    if not feasible:
+        return None
+    return dict(max(feasible, key=lambda d: d["recall_pct"]))
+
+
+def threshold_for_precision(pairs: List[Tuple[float, bool]], target_prec_pct: float) -> Optional[Dict[str, Any]]:
+    """Umbral con precisión >= objetivo que maximiza recall (debe predecir algún positivo)."""
+    sweep = threshold_sweep(pairs)
+    feasible = [d for d in sweep if (d["TP"] + d["FP"]) > 0 and d["precision_pct"] >= target_prec_pct - 1e-9]
+    if not feasible:
+        return None
+    return dict(max(feasible, key=lambda d: d["recall_pct"]))
 
 
 def evaluate(specs: List[Dict[str, Any]], threshold: float) -> Dict[str, Any]:
@@ -250,7 +286,13 @@ def evaluate(specs: List[Dict[str, Any]], threshold: float) -> Dict[str, Any]:
             "optimo": optimal_threshold(pairs_by_model[m]),
         }
 
-    return {"threshold": threshold, "models": model_order, "stats": results}
+    return {
+        "threshold": threshold,
+        "models": model_order,
+        "stats": results,
+        "pairs_by_model": pairs_by_model,
+        "loaded": loaded,
+    }
 
 
 def print_report(report: Dict[str, Any], specs: List[Dict[str, Any]]) -> None:
@@ -323,6 +365,195 @@ def print_report(report: Dict[str, Any], specs: List[Dict[str, Any]]) -> None:
     print("=" * 78)
 
 
+def print_target_thresholds(
+    report: Dict[str, Any],
+    target_fpr: Optional[float],
+    target_prec: Optional[float],
+) -> None:
+    """Umbral por modelo que cumple un FPR máximo o una precisión mínima, maximizando recall."""
+    models = report["models"]
+    pbm = report["pairs_by_model"]
+
+    if target_fpr is not None:
+        print()
+        print(f"Umbral por FPR objetivo (FPR <= {target_fpr:.2f}%), maximizando recall:")
+        h = (f"{'modelo':<16} {'umbral':>10} {'recall%':>8} {'FPR%':>7} "
+             f"{'prec%':>7} {'TP':>6} {'FP':>6} {'FN':>6}")
+        print(h)
+        print("-" * len(h))
+        for m in models:
+            d = threshold_for_fpr(pbm[m], target_fpr)
+            if d is None:
+                print(f"{m:<16} {'(imposible)':>10}")
+                continue
+            print(f"{m:<16} {d['threshold']:>10.4f} {d['recall_pct']:>7.1f}% "
+                  f"{d['fpr_pct']:>6.2f}% {d['precision_pct']:>6.1f}% "
+                  f"{d['TP']:>6} {d['FP']:>6} {d['FN']:>6}")
+        print("-" * len(h))
+
+    if target_prec is not None:
+        print()
+        print(f"Umbral por precisión objetivo (precisión >= {target_prec:.2f}%), maximizando recall:")
+        h = (f"{'modelo':<16} {'umbral':>10} {'recall%':>8} {'prec%':>7} "
+             f"{'FPR%':>7} {'TP':>6} {'FP':>6} {'FN':>6}")
+        print(h)
+        print("-" * len(h))
+        for m in models:
+            d = threshold_for_precision(pbm[m], target_prec)
+            if d is None:
+                print(f"{m:<16} {'(imposible)':>10}")
+                continue
+            print(f"{m:<16} {d['threshold']:>10.4f} {d['recall_pct']:>7.1f}% "
+                  f"{d['precision_pct']:>6.1f}% {d['fpr_pct']:>6.2f}% "
+                  f"{d['TP']:>6} {d['FP']:>6} {d['FN']:>6}")
+        print("-" * len(h))
+
+
+def print_fp_breakdown(report: Dict[str, Any]) -> None:
+    """Falsos positivos por CSV (categoría) y modelo, al umbral fijo del report."""
+    models = report["models"]
+    loaded = report["loaded"]
+    thr = report["threshold"]
+    norobo = [(spec, rows) for spec, cols, rows in loaded if not spec["robo"]]
+    if not norobo:
+        return
+    print()
+    print(f"Desglose de FALSOS POSITIVOS por CSV (no-robo) al umbral T={thr}:")
+    h = f"{'csv':<22} {'neg':>6} " + " ".join(f"{m:>10}" for m in models)
+    print(h)
+    print("-" * len(h))
+    totals = {m: 0 for m in models}
+    for spec, rows in norobo:
+        name = spec["path"].name
+        neg = 0
+        cells = {m: 0 for m in models}
+        for row in rows:
+            counted = False
+            for m in models:
+                v = row.get(m)
+                if v is None:
+                    continue
+                counted = True
+                if v > thr:
+                    cells[m] += 1
+                    totals[m] += 1
+            if counted:
+                neg += 1
+        print(f"{name:<22} {neg:>6} " + " ".join(f"{cells[m]:>10}" for m in models))
+    print("-" * len(h))
+    print(f"{'TOTAL FP':<22} {'':>6} " + " ".join(f"{totals[m]:>10}" for m in models))
+    print("-" * len(h))
+
+
+def consensus_eval(
+    report: Dict[str, Any],
+    models_sel: List[str],
+    thresholds: Dict[str, float],
+    mode: str,
+) -> Dict[str, Any]:
+    """Combina varios modelos por AND/OR (cada uno con su umbral) sobre cada muestra."""
+    loaded = report["loaded"]
+    tp = tn = fp = fn = skipped = 0
+    for spec, cols, rows in loaded:
+        is_robo = bool(spec["robo"])
+        for row in rows:
+            vals = [row.get(m) for m in models_sel]
+            if any(v is None for v in vals):
+                skipped += 1
+                continue
+            preds = [v > thresholds[m] for v, m in zip(vals, models_sel)]
+            pred = all(preds) if mode == "and" else any(preds)
+            if is_robo:
+                tp += pred
+                fn += not pred
+            else:
+                fp += pred
+                tn += not pred
+    out = _counts_to_metrics(0.0, tp, tn, fp, fn)
+    out["skipped"] = skipped
+    out["mode"] = mode
+    return out
+
+
+def print_consensus(
+    report: Dict[str, Any],
+    models_sel: List[str],
+    modes: List[str],
+    threshold_mode: str,
+) -> None:
+    models = report["models"]
+    stats = report["stats"]
+    sel = [m for m in models_sel if m in models]
+    missing = [m for m in models_sel if m not in models]
+    if missing:
+        print(f"[WARN] Modelos de consenso no encontrados (se ignoran): {missing}")
+    if len(sel) < 2:
+        print("[WARN] El consenso necesita al menos 2 modelos válidos. Se omite.")
+        return
+
+    if threshold_mode == "fixed":
+        thresholds = {m: report["threshold"] for m in sel}
+    else:  # optimal
+        thresholds = {}
+        for m in sel:
+            opt = stats[m].get("optimo")
+            thresholds[m] = opt["threshold"] if opt else report["threshold"]
+
+    print()
+    print(f"Consenso entre modelos {sel} | umbrales={threshold_mode}:")
+    for m in sel:
+        print(f"    {m}: umbral={thresholds[m]:.4f}")
+    h = (f"{'modo':<6} {'acierto%':>9} {'recall%':>8} {'prec%':>7} {'FPR%':>7} "
+         f"{'TP':>6} {'TN':>7} {'FP':>6} {'FN':>6} {'skip':>5}")
+    print(h)
+    print("-" * len(h))
+    for mode in modes:
+        d = consensus_eval(report, sel, thresholds, mode)
+        label = "AND" if mode == "and" else "OR"
+        print(f"{label:<6} {d['accuracy_pct']:>8.1f}% {d['recall_pct']:>7.1f}% "
+              f"{d['precision_pct']:>6.1f}% {d['fpr_pct']:>6.2f}% "
+              f"{d['TP']:>6} {d['TN']:>7} {d['FP']:>6} {d['FN']:>6} {d['skipped']:>5}")
+    print("-" * len(h))
+
+
+def print_abstain(report: Dict[str, Any], model: str, low: float, high: float) -> None:
+    """Zona de abstención para un modelo: <low => no-robo, >high => robo, en medio => incierto."""
+    if model not in report["models"]:
+        print(f"[WARN] --abstain-model '{model}' no está entre los modelos. Se omite.")
+        return
+    pairs = report["pairs_by_model"][model]
+    tp = tn = fp = fn = unc_robo = unc_norobo = 0
+    for val, is_robo in pairs:
+        if val > high:
+            pred = 1
+        elif val < low:
+            pred = 0
+        else:
+            if is_robo:
+                unc_robo += 1
+            else:
+                unc_norobo += 1
+            continue
+        if is_robo:
+            tp += pred == 1
+            fn += pred == 0
+        else:
+            fp += pred == 1
+            tn += pred == 0
+    decided = tp + tn + fp + fn
+    incierto = unc_robo + unc_norobo
+    total = decided + incierto
+    d = _counts_to_metrics(0.0, tp, tn, fp, fn)
+    print()
+    print(f"Zona de abstención para '{model}': no-robo si <{low}, robo si >{high}, "
+          f"incierto en medio (candidatos a revisar, p. ej. con el VLM).")
+    print(f"    Muestras decididas : {decided}/{total} ({decided / total * 100.0:.1f}%)" if total else "    sin datos")
+    print(f"    Inciertas (a revisar): {incierto}/{total} "
+          f"({incierto / total * 100.0:.1f}%) -> robos={unc_robo}, no-robos={unc_norobo}" if total else "")
+    print(f"    Sobre las DECIDIDAS: acierto={d['accuracy_pct']:.1f}% | recall={d['recall_pct']:.1f}% | "
+          f"precisión={d['precision_pct']:.1f}% | FP={fp} | FN={fn}")
+
+
 def write_output(output_path: Path, report: Dict[str, Any]) -> None:
     models = report["models"]
     stats = report["stats"]
@@ -363,6 +594,24 @@ def main() -> None:
     parser.add_argument("--robo-csv", help="Ruta del CSV que contiene los robos (con --csvs).")
     parser.add_argument("--threshold", type=float, default=None, help="Umbral del logit (por defecto 0.0).")
     parser.add_argument("--output", help="Resumen de salida (.csv o .json).")
+
+    # Análisis adicionales para reducir falsos positivos.
+    parser.add_argument("--target-fpr", type=float, default=None,
+                        help="FPR máximo en %% (p. ej. 1.0): umbral por modelo que lo cumple maximizando recall.")
+    parser.add_argument("--target-precision", type=float, default=None,
+                        help="Precisión mínima en %% (p. ej. 95): umbral por modelo que la cumple maximizando recall.")
+    parser.add_argument("--fp-breakdown", action="store_true",
+                        help="Muestra los falsos positivos por CSV (categoría) y modelo al umbral fijo.")
+    parser.add_argument("--consensus", nargs="+", default=None,
+                        help="Lista de modelos para evaluar consenso AND/OR (al menos 2).")
+    parser.add_argument("--consensus-mode", choices=["and", "or", "both"], default="both",
+                        help="Modo de consenso a mostrar (por defecto ambos).")
+    parser.add_argument("--consensus-threshold-mode", choices=["optimal", "fixed"], default="optimal",
+                        help="Umbral por modelo en el consenso: óptimo (def) o el fijo --threshold.")
+    parser.add_argument("--abstain-model", default=None,
+                        help="Modelo para la zona de abstención (histéresis).")
+    parser.add_argument("--abstain-low", type=float, default=None, help="Umbral bajo de la abstención.")
+    parser.add_argument("--abstain-high", type=float, default=None, help="Umbral alto de la abstención.")
     args = parser.parse_args()
 
     if not args.config and not args.csvs:
@@ -387,6 +636,23 @@ def main() -> None:
 
     report = evaluate(specs, threshold)
     print_report(report, specs)
+
+    if args.target_fpr is not None or args.target_precision is not None:
+        print_target_thresholds(report, args.target_fpr, args.target_precision)
+
+    if args.fp_breakdown:
+        print_fp_breakdown(report)
+
+    if args.consensus:
+        modes = ["and", "or"] if args.consensus_mode == "both" else [args.consensus_mode]
+        print_consensus(report, args.consensus, modes, args.consensus_threshold_mode)
+
+    if args.abstain_model is not None:
+        if args.abstain_low is None or args.abstain_high is None:
+            raise SystemExit("--abstain-model requiere --abstain-low y --abstain-high.")
+        if args.abstain_low > args.abstain_high:
+            raise SystemExit("--abstain-low debe ser <= --abstain-high.")
+        print_abstain(report, args.abstain_model, args.abstain_low, args.abstain_high)
 
     if args.output:
         write_output(Path(args.output).expanduser().resolve(), report)

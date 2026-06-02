@@ -205,6 +205,34 @@ def validate_poses_npy(poses_path: Path) -> Tuple[bool, str, int, int]:
     return True, "ok", n_valid, t_total
 
 
+def _value_from_logits(logits_1d: "torch.Tensor", value_kind: str) -> float:
+    """
+    Calcula el valor de salida a partir del vector de logits [num_clases]:
+        - logit1  : logit crudo de clase[1] (por defecto).
+        - logit0  : logit crudo de clase[0].
+        - margin  : logit[1] - logit[0] (margen del argmax, "confianza" de robo).
+        - prob1   : softmax -> P(clase 1) en [0,1].
+        - entropy : entropía de la softmax (incertidumbre; alta = poco fiable).
+    """
+    if int(logits_1d.shape[0]) < 2:
+        raise RuntimeError(
+            f"El modelo solo produjo {int(logits_1d.shape[0])} logit(s); no existe clase[1]."
+        )
+    if value_kind == "logit1":
+        return float(logits_1d[1].item())
+    if value_kind == "logit0":
+        return float(logits_1d[0].item())
+    if value_kind == "margin":
+        return float((logits_1d[1] - logits_1d[0]).item())
+    probs = torch.softmax(logits_1d, dim=0)
+    if value_kind == "prob1":
+        return float(probs[1].item())
+    if value_kind == "entropy":
+        p = probs.clamp_min(1e-12)
+        return float((-(p * p.log()).sum()).item())
+    raise ValueError(f"value_kind desconocido: {value_kind}")
+
+
 def logit_class1(
     *,
     checkpoint: Dict[str, Any],
@@ -213,8 +241,9 @@ def logit_class1(
     clip_name: str,
     device: torch.device,
     tmp_dir: Path,
+    value_kind: str = "logit1",
 ) -> float:
-    """Inferencia (pipeline por defecto de test_model2) sobre un user_dir y logit crudo de clase[1]."""
+    """Inferencia (pipeline por defecto de test_model2) sobre un user_dir y valor de salida elegido."""
     _tid, _prob, logits, _clf_ms, _total_ms, cleanup = tm.infer_user_track(
         checkpoint=checkpoint,
         model=model,
@@ -228,11 +257,7 @@ def logit_class1(
     )
     tm._safe_unlink(cleanup)
     logits_1d = logits.detach().float().cpu().reshape(-1)
-    if int(logits_1d.shape[0]) < 2:
-        raise RuntimeError(
-            f"El modelo solo produjo {int(logits_1d.shape[0])} logit(s); no existe clase[1]."
-        )
-    return float(logits_1d[1].item())
+    return _value_from_logits(logits_1d, value_kind)
 
 
 def write_csv(output_path: Path, model_names: List[str], rows: List[Dict[str, Any]]) -> None:
@@ -278,6 +303,15 @@ def main() -> None:
         action="store_true",
         help="Solo evalúa clips con un único usuario (un solo poses.npy); omite los multiusuario.",
     )
+    parser.add_argument(
+        "--value",
+        choices=["logit1", "logit0", "margin", "prob1", "entropy"],
+        default="logit1",
+        help=(
+            "Valor a guardar por celda: logit1 (def, logit clase[1]), logit0, "
+            "margin (logit[1]-logit[0]), prob1 (softmax P(robo)), entropy (incertidumbre)."
+        ),
+    )
     args = parser.parse_args()
 
     input_dir = Path(args.input_dir).expanduser().resolve()
@@ -301,6 +335,7 @@ def main() -> None:
     else:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[INFO] Device: {device}")
+    print(f"[INFO] Valor por celda: {args.value}")
 
     modelos = load_models_config(models_path)
     model_names = [m["nombre"] for m in modelos]
@@ -375,6 +410,7 @@ def main() -> None:
                         clip_name=clip_name,
                         device=device,
                         tmp_dir=tmp_root,
+                        value_kind=args.value,
                     )
                     row["logits"][mname] = val
                     print(f"    [{mname}] logit clase[1] = {val:+.6f}")
