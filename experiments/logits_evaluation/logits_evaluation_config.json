@@ -1,8 +1,23 @@
 {
   "threshold": 0.0,
   "csvs": [
-    { "path": "/home/debian/Documentos/Kanvis/Clips/robos.csv",   "robo": true },
-    { "path": "/home/debian/Documentos/Kanvis/Clips/compras.csv", "robo": false },
-    { "path": "/home/debian/Documentos/Kanvis/Clips/paseos.csv",  "robo": false }
+    { "path": "/home/angel/IAModel/logits_output/0.csv",   "robo": false},
+    { "path": "/home/angel/IAModel/logits_output/1.csv", "robo": false },
+    { "path": "/home/angel/IAModel/logits_output/2.csv",  "robo": false },
+    { "path": "/home/angel/IAModel/logits_output/3.csv",   "robo": false},
+    { "path": "/home/angel/IAModel/logits_output/4.csv", "robo": false },
+    { "path": "/home/angel/IAModel/logits_output/5.csv",  "robo": false },
+    { "path": "/home/angel/IAModel/logits_output/6.csv",   "robo": true},
+    { "path": "/home/angel/IAModel/logits_output/7.csv", "robo": false },
+    { "path": "/home/angel/IAModel/logits_output/9.csv",  "robo": false },
+    { "path": "/home/angel/IAModel/logits_output/0_single.csv",   "robo": false},
+    { "path": "/home/angel/IAModel/logits_output/1_single.csv", "robo": false },
+    { "path": "/home/angel/IAModel/logits_output/2_single.csv",  "robo": false },
+    { "path": "/home/angel/IAModel/logits_output/3_single.csv",   "robo": false},
+    { "path": "/home/angel/IAModel/logits_output/4_single.csv", "robo": false },
+    { "path": "/home/angel/IAModel/logits_output/5_single.csv",  "robo": false },
+    { "path": "/home/angel/IAModel/logits_output/6_single.csv",   "robo": true},
+    { "path": "/home/angel/IAModel/logits_output/7_single.csv", "robo": false },
+    { "path": "/home/angel/IAModel/logits_output/9_single.csv",  "robo": false }
   ]
 }
