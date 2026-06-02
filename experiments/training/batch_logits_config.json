@@ -1,0 +1,566 @@
+[
+  {
+    "nombre": "caso1",
+    "modelo": "/home/debian/Documentos/UGR/modelosaux/modelo_25.pt",
+    "modelo_nombre": "modelo_25",
+    "merged_npy": "/home/debian/Documentos/Kanvis/Clips/caso1/merged.npy"
+  },
+  {
+    "nombre": "caso1",
+    "modelo": "/home/debian/Documentos/UGR/modelosaux/modelo_57.pt",
+    "modelo_nombre": "modelo_57",
+    "merged_npy": "/home/debian/Documentos/Kanvis/Clips/caso1/merged.npy"
+  }
+  ,
+  {
+    "nombre": "caso1",
+    "modelo": "/home/debian/Documentos/UGR/modelosaux/modelo_54.pt",
+    "modelo_nombre": "modelo_54",
+    "merged_npy": "/home/debian/Documentos/Kanvis/Clips/caso1/merged.npy"
+  }
+  ,
+  {
+    "nombre": "caso1",
+    "modelo": "/home/debian/Documentos/UGR/modelosaux/modelo_12.pt",
+    "modelo_nombre": "modelo_12",
+    "merged_npy": "/home/debian/Documentos/Kanvis/Clips/caso1/merged.npy"
+  },
+  {
+    "nombre": "caso2",
+    "modelo": "/home/debian/Documentos/UGR/modelosaux/modelo_25.pt",
+    "modelo_nombre": "modelo_25",
+    "merged_npy": "/home/debian/Documentos/Kanvis/Clips/caso2/merged.npy"
+  },
+  {
+    "nombre": "caso2",
+    "modelo": "/home/debian/Documentos/UGR/modelosaux/modelo_57.pt",
+    "modelo_nombre": "modelo_57",
+    "merged_npy": "/home/debian/Documentos/Kanvis/Clips/caso2/merged.npy"
+  }
+  ,
+  {
+    "nombre": "caso2",
+    "modelo": "/home/debian/Documentos/UGR/modelosaux/modelo_54.pt",
+    "modelo_nombre": "modelo_54",
+    "merged_npy": "/home/debian/Documentos/Kanvis/Clips/caso2/merged.npy"
+  }
+  ,
+  {
+    "nombre": "caso2",
+    "modelo": "/home/debian/Documentos/UGR/modelosaux/modelo_12.pt",
+    "modelo_nombre": "modelo_12",
+    "merged_npy": "/home/debian/Documentos/Kanvis/Clips/caso2/merged.npy"
+  },
+  {
+    "nombre": "caso3",
+    "modelo": "/home/debian/Documentos/UGR/modelosaux/modelo_25.pt",
+    "modelo_nombre": "modelo_25",
+    "merged_npy": "/home/debian/Documentos/Kanvis/Clips/caso3/merged.npy"
+  },
+  {
+    "nombre": "caso3",
+    "modelo": "/home/debian/Documentos/UGR/modelosaux/modelo_57.pt",
+    "modelo_nombre": "modelo_57",
+    "merged_npy": "/home/debian/Documentos/Kanvis/Clips/caso3/merged.npy"
+  }
+  ,
+  {
+    "nombre": "caso3",
+    "modelo": "/home/debian/Documentos/UGR/modelosaux/modelo_54.pt",
+    "modelo_nombre": "modelo_54",
+    "merged_npy": "/home/debian/Documentos/Kanvis/Clips/caso3/merged.npy"
+  }
+  ,
+  {
+    "nombre": "caso3",
+    "modelo": "/home/debian/Documentos/UGR/modelosaux/modelo_12.pt",
+    "modelo_nombre": "modelo_12",
+    "merged_npy": "/home/debian/Documentos/Kanvis/Clips/caso3/merged.npy"
+  },
+  {
+    "nombre": "caso4",
+    "modelo": "/home/debian/Documentos/UGR/modelosaux/modelo_25.pt",
+    "modelo_nombre": "modelo_25",
+    "merged_npy": "/home/debian/Documentos/Kanvis/Clips/caso4/merged.npy"
+  },
+  {
+    "nombre": "caso4",
+    "modelo": "/home/debian/Documentos/UGR/modelosaux/modelo_57.pt",
+    "modelo_nombre": "modelo_57",
+    "merged_npy": "/home/debian/Documentos/Kanvis/Clips/caso4/merged.npy"
+  }
+  ,
+  {
+    "nombre": "caso4",
+    "modelo": "/home/debian/Documentos/UGR/modelosaux/modelo_54.pt",
+    "modelo_nombre": "modelo_54",
+    "merged_npy": "/home/debian/Documentos/Kanvis/Clips/caso4/merged.npy"
+  }
+  ,
+  {
+    "nombre": "caso4",
+    "modelo": "/home/debian/Documentos/UGR/modelosaux/modelo_12.pt",
+    "modelo_nombre": "modelo_12",
+    "merged_npy": "/home/debian/Documentos/Kanvis/Clips/caso4/merged.npy"
+  },
+  {
+    "nombre": "compra1",
+    "modelo": "/home/debian/Documentos/UGR/modelosaux/modelo_25.pt",
+    "modelo_nombre": "modelo_25",
+    "merged_npy": "/home/debian/Documentos/Kanvis/Clips/compra1/merged.npy"
+  },
+  {
+    "nombre": "compra1",
+    "modelo": "/home/debian/Documentos/UGR/modelosaux/modelo_57.pt",
+    "modelo_nombre": "modelo_57",
+    "merged_npy": "/home/debian/Documentos/Kanvis/Clips/compra1/merged.npy"
+  }
+  ,
+  {
+    "nombre": "compra1",
+    "modelo": "/home/debian/Documentos/UGR/modelosaux/modelo_54.pt",
+    "modelo_nombre": "modelo_54",
+    "merged_npy": "/home/debian/Documentos/Kanvis/Clips/compra1/merged.npy"
+  }
+  ,
+  {
+    "nombre": "compra1",
+    "modelo": "/home/debian/Documentos/UGR/modelosaux/modelo_12.pt",
+    "modelo_nombre": "modelo_12",
+    "merged_npy": "/home/debian/Documentos/Kanvis/Clips/compra1/merged.npy"
+  },
+  {
+    "nombre": "compra2",
+    "modelo": "/home/debian/Documentos/UGR/modelosaux/modelo_25.pt",
+    "modelo_nombre": "modelo_25",
+    "merged_npy": "/home/debian/Documentos/Kanvis/Clips/compra2/merged.npy"
+  },
+  {
+    "nombre": "compra2",
+    "modelo": "/home/debian/Documentos/UGR/modelosaux/modelo_57.pt",
+    "modelo_nombre": "modelo_57",
+    "merged_npy": "/home/debian/Documentos/Kanvis/Clips/compra2/merged.npy"
+  }
+  ,
+  {
+    "nombre": "compra2",
+    "modelo": "/home/debian/Documentos/UGR/modelosaux/modelo_54.pt",
+    "modelo_nombre": "modelo_54",
+    "merged_npy": "/home/debian/Documentos/Kanvis/Clips/compra2/merged.npy"
+  }
+  ,
+  {
+    "nombre": "compra2",
+    "modelo": "/home/debian/Documentos/UGR/modelosaux/modelo_12.pt",
+    "modelo_nombre": "modelo_12",
+    "merged_npy": "/home/debian/Documentos/Kanvis/Clips/compra2/merged.npy"
+  },
+  {
+    "nombre": "compra3",
+    "modelo": "/home/debian/Documentos/UGR/modelosaux/modelo_25.pt",
+    "modelo_nombre": "modelo_25",
+    "merged_npy": "/home/debian/Documentos/Kanvis/Clips/compra3/merged.npy"
+  },
+  {
+    "nombre": "compra3",
+    "modelo": "/home/debian/Documentos/UGR/modelosaux/modelo_57.pt",
+    "modelo_nombre": "modelo_57",
+    "merged_npy": "/home/debian/Documentos/Kanvis/Clips/compra3/merged.npy"
+  }
+  ,
+  {
+    "nombre": "compra3",
+    "modelo": "/home/debian/Documentos/UGR/modelosaux/modelo_54.pt",
+    "modelo_nombre": "modelo_54",
+    "merged_npy": "/home/debian/Documentos/Kanvis/Clips/compra3/merged.npy"
+  }
+  ,
+  {
+    "nombre": "compra3",
+    "modelo": "/home/debian/Documentos/UGR/modelosaux/modelo_12.pt",
+    "modelo_nombre": "modelo_12",
+    "merged_npy": "/home/debian/Documentos/Kanvis/Clips/compra3/merged.npy"
+  },
+  {
+    "nombre": "compra4",
+    "modelo": "/home/debian/Documentos/UGR/modelosaux/modelo_25.pt",
+    "modelo_nombre": "modelo_25",
+    "merged_npy": "/home/debian/Documentos/Kanvis/Clips/compra4/merged.npy"
+  },
+  {
+    "nombre": "compra4",
+    "modelo": "/home/debian/Documentos/UGR/modelosaux/modelo_57.pt",
+    "modelo_nombre": "modelo_57",
+    "merged_npy": "/home/debian/Documentos/Kanvis/Clips/compra4/merged.npy"
+  }
+  ,
+  {
+    "nombre": "compra4",
+    "modelo": "/home/debian/Documentos/UGR/modelosaux/modelo_54.pt",
+    "modelo_nombre": "modelo_54",
+    "merged_npy": "/home/debian/Documentos/Kanvis/Clips/compra4/merged.npy"
+  }
+  ,
+  {
+    "nombre": "compra4",
+    "modelo": "/home/debian/Documentos/UGR/modelosaux/modelo_12.pt",
+    "modelo_nombre": "modelo_12",
+    "merged_npy": "/home/debian/Documentos/Kanvis/Clips/compra4/merged.npy"
+  }
+  ,
+  {
+    "nombre": "compra5",
+    "modelo": "/home/debian/Documentos/UGR/modelosaux/modelo_25.pt",
+    "modelo_nombre": "modelo_25",
+    "merged_npy": "/home/debian/Documentos/Kanvis/Clips/compra5/merged.npy"
+  },
+  {
+    "nombre": "compra5",
+    "modelo": "/home/debian/Documentos/UGR/modelosaux/modelo_57.pt",
+    "modelo_nombre": "modelo_57",
+    "merged_npy": "/home/debian/Documentos/Kanvis/Clips/compra5/merged.npy"
+  }
+  ,
+  {
+    "nombre": "compra5",
+    "modelo": "/home/debian/Documentos/UGR/modelosaux/modelo_54.pt",
+    "modelo_nombre": "modelo_54",
+    "merged_npy": "/home/debian/Documentos/Kanvis/Clips/compra5/merged.npy"
+  }
+  ,
+  {
+    "nombre": "compra5",
+    "modelo": "/home/debian/Documentos/UGR/modelosaux/modelo_12.pt",
+    "modelo_nombre": "modelo_12",
+    "merged_npy": "/home/debian/Documentos/Kanvis/Clips/compra5/merged.npy"
+  }
+  ,
+  {
+    "nombre": "compra6",
+    "modelo": "/home/debian/Documentos/UGR/modelosaux/modelo_25.pt",
+    "modelo_nombre": "modelo_25",
+    "merged_npy": "/home/debian/Documentos/Kanvis/Clips/compra6/merged.npy"
+  }
+  ,
+  {
+    "nombre": "compra6",
+    "modelo": "/home/debian/Documentos/UGR/modelosaux/modelo_57.pt",
+    "modelo_nombre": "modelo_57",
+    "merged_npy": "/home/debian/Documentos/Kanvis/Clips/compra6/merged.npy"
+  }
+  ,
+  {
+    "nombre": "compra6",
+    "modelo": "/home/debian/Documentos/UGR/modelosaux/modelo_54.pt",
+    "modelo_nombre": "modelo_54",
+    "merged_npy": "/home/debian/Documentos/Kanvis/Clips/compra6/merged.npy"
+  }
+  ,
+  {
+    "nombre": "compra6",
+    "modelo": "/home/debian/Documentos/UGR/modelosaux/modelo_12.pt",
+    "modelo_nombre": "modelo_12",
+    "merged_npy": "/home/debian/Documentos/Kanvis/Clips/compra6/merged.npy"
+  },
+  {
+    "nombre": "compra7",
+    "modelo": "/home/debian/Documentos/UGR/modelosaux/modelo_25.pt",
+    "modelo_nombre": "modelo_25",
+    "merged_npy": "/home/debian/Documentos/Kanvis/Clips/compra7/merged.npy"
+  },
+  {
+    "nombre": "compra7",
+    "modelo": "/home/debian/Documentos/UGR/modelosaux/modelo_57.pt",
+    "modelo_nombre": "modelo_57",
+    "merged_npy": "/home/debian/Documentos/Kanvis/Clips/compra7/merged.npy"
+  },
+  {
+    "nombre": "compra7",
+    "modelo": "/home/debian/Documentos/UGR/modelosaux/modelo_54.pt",
+    "modelo_nombre": "modelo_54",
+    "merged_npy": "/home/debian/Documentos/Kanvis/Clips/compra7/merged.npy"
+  },
+  {
+    "nombre": "compra7",
+    "modelo": "/home/debian/Documentos/UGR/modelosaux/modelo_12.pt",
+    "modelo_nombre": "modelo_12",
+    "merged_npy": "/home/debian/Documentos/Kanvis/Clips/compra7/merged.npy"
+  },
+  {
+    "nombre": "pasadaandando",
+    "modelo": "/home/debian/Documentos/UGR/modelosaux/modelo_25.pt",
+    "modelo_nombre": "modelo_25",
+    "merged_npy": "/home/debian/Documentos/Kanvis/Clips/pasadaandando/merged.npy"
+  },
+  {
+    "nombre": "pasadaandando",
+    "modelo": "/home/debian/Documentos/UGR/modelosaux/modelo_57.pt",
+    "modelo_nombre": "modelo_57",
+    "merged_npy": "/home/debian/Documentos/Kanvis/Clips/pasadaandando/merged.npy"
+  }
+  ,
+  {
+    "nombre": "pasadaandando",
+    "modelo": "/home/debian/Documentos/UGR/modelosaux/modelo_54.pt",
+    "modelo_nombre": "modelo_54",
+    "merged_npy": "/home/debian/Documentos/Kanvis/Clips/pasadaandando/merged.npy"
+  }
+  ,
+  {
+    "nombre": "pasadaandando",
+    "modelo": "/home/debian/Documentos/UGR/modelosaux/modelo_12.pt",
+    "modelo_nombre": "modelo_12",
+    "merged_npy": "/home/debian/Documentos/Kanvis/Clips/pasadaandando/merged.npy"
+  },
+  {
+    "nombre": "pasadaandando2",
+    "modelo": "/home/debian/Documentos/UGR/modelosaux/modelo_25.pt",
+    "modelo_nombre": "modelo_25",
+    "merged_npy": "/home/debian/Documentos/Kanvis/Clips/pasadaandando2/merged.npy"
+  },
+  {
+    "nombre": "pasadaandando2",
+    "modelo": "/home/debian/Documentos/UGR/modelosaux/modelo_57.pt",
+    "modelo_nombre": "modelo_57",
+    "merged_npy": "/home/debian/Documentos/Kanvis/Clips/pasadaandando2/merged.npy"
+  }
+  ,
+  {
+    "nombre": "pasadaandando2",
+    "modelo": "/home/debian/Documentos/UGR/modelosaux/modelo_54.pt",
+    "modelo_nombre": "modelo_54",
+    "merged_npy": "/home/debian/Documentos/Kanvis/Clips/pasadaandando2/merged.npy"
+  }
+  ,
+  {
+    "nombre": "pasadaandando2",
+    "modelo": "/home/debian/Documentos/UGR/modelosaux/modelo_12.pt",
+    "modelo_nombre": "modelo_12",
+    "merged_npy": "/home/debian/Documentos/Kanvis/Clips/pasadaandando2/merged.npy"
+  },
+  {
+    "nombre": "robojesus1",
+    "modelo": "/home/debian/Documentos/UGR/modelosaux/modelo_25.pt",
+    "modelo_nombre": "modelo_25",
+    "merged_npy": "/home/debian/Documentos/Kanvis/Clips/robojesus1/merged.npy"
+  },
+  {
+    "nombre": "robojesus1",
+    "modelo": "/home/debian/Documentos/UGR/modelosaux/modelo_57.pt",
+    "modelo_nombre": "modelo_57",
+    "merged_npy": "/home/debian/Documentos/Kanvis/Clips/robojesus1/merged.npy"
+  }
+  ,
+  {
+    "nombre": "robojesus1",
+    "modelo": "/home/debian/Documentos/UGR/modelosaux/modelo_54.pt",
+    "modelo_nombre": "modelo_54",
+    "merged_npy": "/home/debian/Documentos/Kanvis/Clips/robojesus1/merged.npy"
+  }
+  ,
+  {
+    "nombre": "robojesus1",
+    "modelo": "/home/debian/Documentos/UGR/modelosaux/modelo_12.pt",
+    "modelo_nombre": "modelo_12",
+    "merged_npy": "/home/debian/Documentos/Kanvis/Clips/robojesus1/merged.npy"
+  },
+  {
+    "nombre": "robojesus2",
+    "modelo": "/home/debian/Documentos/UGR/modelosaux/modelo_25.pt",
+    "modelo_nombre": "modelo_25",
+    "merged_npy": "/home/debian/Documentos/Kanvis/Clips/robojesus2/merged.npy"
+  },
+  {
+    "nombre": "robojesus2",
+    "modelo": "/home/debian/Documentos/UGR/modelosaux/modelo_57.pt",
+    "modelo_nombre": "modelo_57",
+    "merged_npy": "/home/debian/Documentos/Kanvis/Clips/robojesus2/merged.npy"
+  }
+  ,
+  {
+    "nombre": "robojesus2",
+    "modelo": "/home/debian/Documentos/UGR/modelosaux/modelo_54.pt",
+    "modelo_nombre": "modelo_54",
+    "merged_npy": "/home/debian/Documentos/Kanvis/Clips/robojesus2/merged.npy"
+  }
+  ,
+  {
+    "nombre": "robojesus2",
+    "modelo": "/home/debian/Documentos/UGR/modelosaux/modelo_12.pt",
+    "modelo_nombre": "modelo_12",
+    "merged_npy": "/home/debian/Documentos/Kanvis/Clips/robojesus2/merged.npy"
+  },
+  {
+    "nombre": "robojesus3",
+    "modelo": "/home/debian/Documentos/UGR/modelosaux/modelo_25.pt",
+    "modelo_nombre": "modelo_25",
+    "merged_npy": "/home/debian/Documentos/Kanvis/Clips/robojesus3/merged.npy"
+  },
+  {
+    "nombre": "robojesus3",
+    "modelo": "/home/debian/Documentos/UGR/modelosaux/modelo_57.pt",
+    "modelo_nombre": "modelo_57",
+    "merged_npy": "/home/debian/Documentos/Kanvis/Clips/robojesus3/merged.npy"
+  }
+  ,
+  {
+    "nombre": "robojesus3",
+    "modelo": "/home/debian/Documentos/UGR/modelosaux/modelo_54.pt",
+    "modelo_nombre": "modelo_54",
+    "merged_npy": "/home/debian/Documentos/Kanvis/Clips/robojesus3/merged.npy"
+  }
+  ,
+  {
+    "nombre": "robojesus3",
+    "modelo": "/home/debian/Documentos/UGR/modelosaux/modelo_12.pt",
+    "modelo_nombre": "modelo_12",
+    "merged_npy": "/home/debian/Documentos/Kanvis/Clips/robojesus3/merged.npy"
+  },
+  {
+    "nombre": "robospablo1",
+    "modelo": "/home/debian/Documentos/UGR/modelosaux/modelo_25.pt",
+    "modelo_nombre": "modelo_25",
+    "merged_npy": "/home/debian/Documentos/Kanvis/Clips/robospablo/r1/merged.npy"
+  },
+  {
+    "nombre": "robospablo1",
+    "modelo": "/home/debian/Documentos/UGR/modelosaux/modelo_57.pt",
+    "modelo_nombre": "modelo_57",
+    "merged_npy": "/home/debian/Documentos/Kanvis/Clips/robospablo/r1/merged.npy"
+  }
+  ,
+  {
+    "nombre": "robospablo1",
+    "modelo": "/home/debian/Documentos/UGR/modelosaux/modelo_54.pt",
+    "modelo_nombre": "modelo_54",
+    "merged_npy": "/home/debian/Documentos/Kanvis/Clips/robospablo/r1/merged.npy"
+  }
+  ,
+  {
+    "nombre": "robospablo1",
+    "modelo": "/home/debian/Documentos/UGR/modelosaux/modelo_12.pt",
+    "modelo_nombre": "modelo_12",
+    "merged_npy": "/home/debian/Documentos/Kanvis/Clips/robospablo/r1/merged.npy"
+  },
+  {
+    "nombre": "robospablo2",
+    "modelo": "/home/debian/Documentos/UGR/modelosaux/modelo_25.pt",
+    "modelo_nombre": "modelo_25",
+    "merged_npy": "/home/debian/Documentos/Kanvis/Clips/robospablo/r2/merged.npy"
+  },
+  {
+    "nombre": "robospablo2",
+    "modelo": "/home/debian/Documentos/UGR/modelosaux/modelo_57.pt",
+    "modelo_nombre": "modelo_57",
+    "merged_npy": "/home/debian/Documentos/Kanvis/Clips/robospablo/r2/merged.npy"
+  },
+  {
+    "nombre": "robospablo2",
+    "modelo": "/home/debian/Documentos/UGR/modelosaux/modelo_54.pt",
+    "modelo_nombre": "modelo_54",
+    "merged_npy": "/home/debian/Documentos/Kanvis/Clips/robospablo/r2/merged.npy"
+  },
+  {
+    "nombre": "robospablo2",
+    "modelo": "/home/debian/Documentos/UGR/modelosaux/modelo_12.pt",
+    "modelo_nombre": "modelo_12",
+    "merged_npy": "/home/debian/Documentos/Kanvis/Clips/robospablo/r2/merged.npy"
+  },
+  {
+    "nombre": "robospablo3",
+    "modelo": "/home/debian/Documentos/UGR/modelosaux/modelo_25.pt",
+    "modelo_nombre": "modelo_25",
+    "merged_npy": "/home/debian/Documentos/Kanvis/Clips/robospablo/r3/merged.npy"
+  },
+  {
+    "nombre": "robospablo3",
+    "modelo": "/home/debian/Documentos/UGR/modelosaux/modelo_57.pt",
+    "modelo_nombre": "modelo_57",
+    "merged_npy": "/home/debian/Documentos/Kanvis/Clips/robospablo/r3/merged.npy"
+  },
+  {
+    "nombre": "robospablo3",
+    "modelo": "/home/debian/Documentos/UGR/modelosaux/modelo_54.pt",
+    "modelo_nombre": "modelo_54",
+    "merged_npy": "/home/debian/Documentos/Kanvis/Clips/robospablo/r3/merged.npy"
+  },
+  {
+    "nombre": "robospablo3",
+    "modelo": "/home/debian/Documentos/UGR/modelosaux/modelo_12.pt",
+    "modelo_nombre": "modelo_12",
+    "merged_npy": "/home/debian/Documentos/Kanvis/Clips/robospablo/r3/merged.npy"
+  },
+  {
+    "nombre": "robospablo4",
+    "modelo": "/home/debian/Documentos/UGR/modelosaux/modelo_25.pt",
+    "modelo_nombre": "modelo_25",
+    "merged_npy": "/home/debian/Documentos/Kanvis/Clips/robospablo/r4/merged.npy"
+  },
+  {
+    "nombre": "robospablo4",
+    "modelo": "/home/debian/Documentos/UGR/modelosaux/modelo_57.pt",
+    "modelo_nombre": "modelo_57",
+    "merged_npy": "/home/debian/Documentos/Kanvis/Clips/robospablo/r4/merged.npy"
+  },
+  {
+    "nombre": "robospablo4",
+    "modelo": "/home/debian/Documentos/UGR/modelosaux/modelo_54.pt",
+    "modelo_nombre": "modelo_54",
+    "merged_npy": "/home/debian/Documentos/Kanvis/Clips/robospablo/r4/merged.npy"
+  },
+  {
+    "nombre": "robospablo4",
+    "modelo": "/home/debian/Documentos/UGR/modelosaux/modelo_12.pt",
+    "modelo_nombre": "modelo_12",
+    "merged_npy": "/home/debian/Documentos/Kanvis/Clips/robospablo/r4/merged.npy"
+  },
+  {
+    "nombre": "robospablo5",
+    "modelo": "/home/debian/Documentos/UGR/modelosaux/modelo_25.pt",
+    "modelo_nombre": "modelo_25",
+    "merged_npy": "/home/debian/Documentos/Kanvis/Clips/robospablo/r5/merged.npy"
+  },
+  {
+    "nombre": "robospablo5",
+    "modelo": "/home/debian/Documentos/UGR/modelosaux/modelo_57.pt",
+    "modelo_nombre": "modelo_57",
+    "merged_npy": "/home/debian/Documentos/Kanvis/Clips/robospablo/r5/merged.npy"
+  },
+  {
+    "nombre": "robospablo5",
+    "modelo": "/home/debian/Documentos/UGR/modelosaux/modelo_54.pt",
+    "modelo_nombre": "modelo_54",
+    "merged_npy": "/home/debian/Documentos/Kanvis/Clips/robospablo/r5/merged.npy"
+  },
+  {
+    "nombre": "robospablo5",
+    "modelo": "/home/debian/Documentos/UGR/modelosaux/modelo_12.pt",
+    "modelo_nombre": "modelo_12",
+    "merged_npy": "/home/debian/Documentos/Kanvis/Clips/robospablo/r5/merged.npy"
+  },
+  {
+    "nombre": "robospablo8",
+    "modelo": "/home/debian/Documentos/UGR/modelosaux/modelo_25.pt",
+    "modelo_nombre": "modelo_25",
+    "merged_npy": "/home/debian/Documentos/Kanvis/Clips/robospablo/r8/merged.npy"
+  },
+  {
+    "nombre": "robospablo8",
+    "modelo": "/home/debian/Documentos/UGR/modelosaux/modelo_57.pt",
+    "modelo_nombre": "modelo_57",
+    "merged_npy": "/home/debian/Documentos/Kanvis/Clips/robospablo/r8/merged.npy"
+  }
+  ,
+  {
+    "nombre": "robospablo8",
+    "modelo": "/home/debian/Documentos/UGR/modelosaux/modelo_54.pt",
+    "modelo_nombre": "modelo_54",
+    "merged_npy": "/home/debian/Documentos/Kanvis/Clips/robospablo/r8/merged.npy"
+  },
+  {
+    "nombre": "robospablo8",
+    "modelo": "/home/debian/Documentos/UGR/modelosaux/modelo_12.pt",
+    "modelo_nombre": "modelo_12",
+    "merged_npy": "/home/debian/Documentos/Kanvis/Clips/robospablo/r8/merged.npy"
+  }
+]

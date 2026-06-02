@@ -337,13 +337,16 @@ def scale_video(video_in: str, video_out: str, height: int | None = None) -> boo
     return r.returncode == 0
 
 
-def run_debug_extract(video_path: str, yolo_pose_model: str | None = None) -> Path | None:
+def run_debug_extract(video_path: str, yolo_pose_model: str | None = None, output_dir: str | None = None) -> Path | None:
     """
     Modo debug/test: extrae poses de un único vídeo y guarda en carpeta temporal.
     Genera poses_full.npy y poses.npy (normalizados 0-1) por usuario, igual que el flujo normal.
 
     yolo_pose_model: si se indica (p. ej. \"yolo11n-pose.pt\"), usa ese modelo YOLO pose para
     esta extracción en lugar del global cargado desde config (p. ej. yolo11x-pose.pt).
+
+    output_dir: si se indica, guarda los .npy en ese directorio (se crea si no existe) en lugar
+    del directorio por defecto basado en OUTPUT de config.py.
     """
     video_path = Path(video_path).resolve()
     if not video_path.exists():
@@ -351,7 +354,10 @@ def run_debug_extract(video_path: str, yolo_pose_model: str | None = None) -> Pa
         return None
     stem = video_path.stem or "clip"
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    out_dir = OUTPUT / "debug_extract" / f"{timestamp}_{stem}"
+    if output_dir:
+        out_dir = Path(output_dir).expanduser().resolve()
+    else:
+        out_dir = OUTPUT / "debug_extract" / f"{timestamp}_{stem}"
     out_dir.mkdir(parents=True, exist_ok=True)
     temp_clip = out_dir / "_temp_scaled.mp4"
     print(f"[DEBUG] Procesando: {video_path}")
@@ -831,6 +837,8 @@ def main():
     parser = argparse.ArgumentParser(description="Extractor de poses YOLO para clips")
     parser.add_argument("--debug", "--test", dest="debug_video", metavar="VIDEO", help="Modo debug: extrae poses de un único vídeo en carpeta temporal (poses_full.npy, poses.npy)")
     parser.add_argument("--limit", "-n", type=int, default=None, metavar="N", help="Solo procesar los primeros N clips del CSV (útil para pruebas)")
+    parser.add_argument("--yolo-pose-model", dest="yolo_pose_model", default=None, metavar="MODELO", help="Modelo YOLO pose a usar en modo debug (p. ej. yolo11n-pose.pt). Sobrescribe el de config.py")
+    parser.add_argument("--output", "-o", dest="output_dir", default=None, metavar="DIR", help="Directorio donde guardar los .npy en modo debug. Sobrescribe la ruta por defecto de config.py")
     args = parser.parse_args()
 
     if args.limit is not None and args.debug_video is None:
@@ -839,7 +847,7 @@ def main():
         DEBUG_MODE = True
 
     if args.debug_video:
-        run_debug_extract(args.debug_video)
+        run_debug_extract(args.debug_video, yolo_pose_model=args.yolo_pose_model, output_dir=args.output_dir)
         if log_file:
             if original_stdout is not None:
                 sys.stdout = original_stdout

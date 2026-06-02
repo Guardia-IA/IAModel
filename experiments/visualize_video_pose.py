@@ -7,6 +7,7 @@ Uso:
     python visualize_video_pose.py video.mp4
     python visualize_video_pose.py video.mp4 poses.npy
     python visualize_video_pose.py video.mp4 --npy poses.npy --model yolo11n-pose.pt
+    python visualize_video_pose.py video.mp4 --extra   # detecta y pinta móvil en la mano
 
 Nota sobre el .npy: debe corresponder al mismo clip que el vídeo.
   - El .npy viene de pose_extractor (poses.npy o poses_full.npy en user_X/).
@@ -36,9 +37,20 @@ CONNECTIONS = [(0, 2), (2, 4), (1, 3), (3, 5), (0, 1), (0, 6), (1, 7), (6, 7)]
 DISPLAY_W, DISPLAY_H = 640, 480
 MIN_CONF = 0.25  # confianza mínima para dibujar un keypoint
 
-# Escala para YOLO (igual que pose_extractor: CLIP_SCALE_HEIGHT=1080).
-# Permite comparar si YOLO a 1080p produce las mismas poses que el .npy extraído.
-YOLO_SCALE_HEIGHT = 1080
+# Tamaño de entrada para YOLO (letterbox interno de Ultralytics). Antes se escalaba a 1080p.
+YOLO_IMGSZ = 640
+
+# Detección de móvil (--extra): clase COCO "cell phone" y umbrales.
+CELL_PHONE_NAME = "cell phone"
+PHONE_CONF_THR = 0.25
+# Un móvil se considera "en la mano" si su centro está a menos de este porcentaje
+# de la dimensión mayor del frame respecto a alguna muñeca.
+PHONE_HAND_DIST_RATIO = 0.18
+# Índices de las muñecas dentro del array de 8 puntos (UPPER_KPS): 9->4 (izq), 10->5 (der).
+WRIST_IDXS = (4, 5)
+# Modo --hand-crop: lado del recorte cuadrado alrededor de la muñeca, como fracción
+# de la dimensión mayor del frame. Aumenta la resolución efectiva del móvil.
+HAND_CROP_RATIO = 0.25
 
 
 def load_pose_model(model_path: str):
@@ -47,13 +59,20 @@ def load_pose_model(model_path: str):
     except ImportError:
         print("Se necesita 'ultralytics' para detección de poses. Ejecuta: pip install ultralytics")
         sys.exit(1)
+    # 1) Ruta absoluta o relativa que exista tal cual.
     path = Path(model_path)
-    if not path.is_absolute():
-        path = Path(__file__).resolve().parent / model_path
-    if not path.exists():
-        print(f"Modelo no encontrado: {path}")
-        sys.exit(1)
-    return YOLO(str(path))
+    if path.exists():
+        return YOLO(str(path))
+    # 2) Relativa a la carpeta del script (p. ej. engine/ o pesos locales).
+    local = Path(__file__).resolve().parent / model_path
+    if local.exists():
+        return YOLO(str(local))
+    # 3) Nombre de modelo estándar de Ultralytics (sin separador de ruta):
+    #    se deja que YOLO lo descargue/resuelva automáticamente (p. ej. yolo11n.pt).
+    if os.sep not in model_path and (os.altsep is None or os.altsep not in model_path):
+        return YOLO(model_path)
+    print(f"Modelo no encontrado: {local}")
+    sys.exit(1)
 
 
 def get_upper_pose(results, frame_shape, choose_biggest: bool = True):
@@ -110,6 +129,69 @@ def draw_upper_skeleton(draw, points_xy, confs, w: int, h: int, color_line=(0, 2
             draw.ellipse([x - r, y - r, x + r, y + r], fill=color_pt, outline=color_pt)
 
 
+def find_phone_class_id(model):
+    """Busca el id de la clase 'cell phone' en los names del modelo de detección."""
+    names = getattr(model, "names", None)
+    if names is None:
+        return None
+    items = names.items() if isinstance(names, dict) else enumerate(names)
+    for k, v in items:
+        if str(v).lower() == CELL_PHONE_NAME:
+            return int(k)
+    return None
+
+
+def detect_phones(det_results, conf_thr=PHONE_CONF_THR):
+    """Devuelve lista de (box_xyxy, conf) de móviles detectados en el frame."""
+    phones = []
+    if not det_results or len(det_results) == 0:
+        return phones
+    r = det_results[0]
+    if r.boxes is None or len(r.boxes) == 0:
+        return phones
+    boxes = r.boxes.xyxy.cpu().numpy()
+    confs = r.boxes.conf.cpu().numpy()
+    for box, conf in zip(boxes, confs):
+        if conf >= conf_thr:
+            phones.append((box, float(conf)))
+    return phones
+
+
+def crop_around(frame, cx, cy, size):
+    """Recorta un cuadrado de lado `size` centrado en (cx, cy). Devuelve (crop, ox, oy)."""
+    h, w = frame.shape[:2]
+    half = int(size) // 2
+    x1 = max(0, int(cx) - half)
+    y1 = max(0, int(cy) - half)
+    x2 = min(w, int(cx) + half)
+    y2 = min(h, int(cy) + half)
+    if x2 <= x1 or y2 <= y1:
+        return None, 0, 0
+    return frame[y1:y2, x1:x2], x1, y1
+
+
+def phone_in_hand(phone_box, wrists_xy, frame_w, frame_h, thr_ratio=PHONE_HAND_DIST_RATIO):
+    """True si el centro del móvil está cerca de alguna muñeca."""
+    if not wrists_xy:
+        return False
+    cx = (phone_box[0] + phone_box[2]) / 2.0
+    cy = (phone_box[1] + phone_box[3]) / 2.0
+    thr = thr_ratio * max(frame_w, frame_h)
+    for wx, wy in wrists_xy:
+        if np.hypot(cx - wx, cy - wy) <= thr:
+            return True
+    return False
+
+
+def draw_phone_box(draw, box, in_hand):
+    """Dibuja el bounding box del móvil. Rojo si está en la mano, amarillo si no."""
+    x1, y1, x2, y2 = [int(v) for v in box]
+    color = (255, 0, 0) if in_hand else (255, 200, 0)
+    label = "Movil en mano" if in_hand else "Movil"
+    draw.rectangle([x1, y1, x2, y2], outline=color, width=3)
+    draw.text((x1 + 2, max(0, y1 - 12)), label, fill=color)
+
+
 def frame_to_pil(bgr_frame):
     """Convierte frame BGR (numpy) a PIL Image RGB."""
     rgb = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2RGB)
@@ -135,7 +217,10 @@ def load_npy_poses(npy_path: str):
     return data
 
 
-def run_app(video_path: str, model_path: str = "yolo11n-pose.pt", npy_path: str | None = None):
+def run_app(video_path: str, model_path: str = "yolo11n-pose.pt", npy_path: str | None = None,
+            detect_phone: bool = False, detect_model_path: str = "yolo11m.pt", imgsz: int = YOLO_IMGSZ,
+            sample: int = 1, phone_conf: float = PHONE_CONF_THR,
+            hand_crop: bool = False, crop_ratio: float = HAND_CROP_RATIO):
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         print(f"No se pudo abrir el vídeo: {video_path}")
@@ -147,6 +232,20 @@ def run_app(video_path: str, model_path: str = "yolo11n-pose.pt", npy_path: str 
         print(f"Poses cargadas desde {npy_path}: shape={npy_poses.shape}")
 
     model = load_pose_model(model_path) if npy_poses is None else None
+
+    detect_model = None
+    phone_cls_id = None
+    if detect_phone:
+        detect_model = load_pose_model(detect_model_path)  # carga genérica de YOLO
+        phone_cls_id = find_phone_class_id(detect_model)
+        if phone_cls_id is None:
+            print(f"Aviso: el modelo {detect_model_path} no tiene la clase '{CELL_PHONE_NAME}'.")
+        else:
+            modo = f"hand-crop (ratio={crop_ratio})" if hand_crop else "frame completo"
+            print(f"Detección de móvil activada (clase {phone_cls_id}) con {detect_model_path}, imgsz={imgsz}, sample={sample}, modo={modo}")
+    sample = max(1, int(sample))
+    last_phone_boxes = [[]]   # contenedor mutable para reusar entre frames sin nonlocal
+    last_crop_regions = [[]]  # zonas de recorte (modo --hand-crop) para dibujarlas
     fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
     delay_ms = max(1, int(1000 / fps))
     video_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 0
@@ -233,24 +332,48 @@ def run_app(video_path: str, model_path: str = "yolo11n-pose.pt", npy_path: str 
             else:
                 points_xy, confs = None, np.zeros(8)
         else:
-            # Escalar a 1080p para YOLO (igual que pose_extractor) y así comparar con .npy
-            h_orig, w_orig = frame.shape[:2]
-            if YOLO_SCALE_HEIGHT and h_orig != YOLO_SCALE_HEIGHT:
-                scale = YOLO_SCALE_HEIGHT / h_orig
-                w_1080 = int(round(w_orig * scale))
-                h_1080 = YOLO_SCALE_HEIGHT
-                frame_yolo = cv2.resize(frame, (w_1080, h_1080), interpolation=cv2.INTER_LINEAR)
-            else:
-                frame_yolo = frame
-                w_1080, h_1080 = w_orig, h_orig
-            results = model(frame_yolo, verbose=False)
-            points_xy, confs = get_upper_pose(results, frame_yolo.shape)
+            # Ultralytics hace letterbox interno a imgsz y devuelve keypoints en
+            # coordenadas del frame original, así que no hace falta reescalar a mano.
+            results = model(frame, imgsz=imgsz, verbose=False)
+            points_xy, confs = get_upper_pose(results, frame.shape)
             if confs is None:
                 confs = np.zeros(8)
-            elif points_xy is not None and (w_1080 != w_orig or h_1080 != h_orig):
-                # Escalar keypoints de vuelta al frame original para dibujar
-                points_xy[:, 0] = points_xy[:, 0] * (w_orig / w_1080)
-                points_xy[:, 1] = points_xy[:, 1] * (h_orig / h_1080)
+
+        # Detección de móvil en la mano (--extra). Solo cada `sample` frames; entre
+        # detecciones se reutiliza el último resultado para no inferir en todos los frames.
+        phone_boxes = last_phone_boxes[0]
+        if detect_model is not None and current_frame[0] % sample == 0:
+            det_kwargs = {"imgsz": imgsz, "verbose": False}
+            if phone_cls_id is not None:
+                det_kwargs["classes"] = [phone_cls_id]
+            wrists = []
+            if points_xy is not None and confs is not None:
+                for wi in WRIST_IDXS:
+                    if wi < len(confs) and confs[wi] >= MIN_CONF:
+                        wrists.append((points_xy[wi][0], points_xy[wi][1]))
+            phone_boxes = []
+            crop_regions = []
+            if hand_crop and wrists:
+                # Recorte alrededor de cada muñeca: el móvil ocupa más píxeles y YOLO lo
+                # detecta mejor. Lo detectado aquí ya está "en la mano" por construcción.
+                crop_px = max(64, int(crop_ratio * max(w_orig, h_orig)))
+                for (wx, wy) in wrists:
+                    crop, ox, oy = crop_around(frame, wx, wy, crop_px)
+                    if crop is None:
+                        continue
+                    crop_regions.append([ox, oy, ox + crop.shape[1], oy + crop.shape[0]])
+                    det_results = detect_model(crop, **det_kwargs)
+                    for box, _conf in detect_phones(det_results, conf_thr=phone_conf):
+                        gbox = [box[0] + ox, box[1] + oy, box[2] + ox, box[3] + oy]
+                        phone_boxes.append((gbox, True))
+                last_crop_regions[0] = crop_regions
+            else:
+                # Frame completo: útil cuando no hay pose/muñecas.
+                det_results = detect_model(frame, **det_kwargs)
+                for box, _conf in detect_phones(det_results, conf_thr=phone_conf):
+                    phone_boxes.append((box, phone_in_hand(box, wrists, w_orig, h_orig)))
+                last_crop_regions[0] = []
+            last_phone_boxes[0] = phone_boxes
 
         if show_video.get():
             img = frame_to_pil(frame)
@@ -260,6 +383,10 @@ def run_app(video_path: str, model_path: str = "yolo11n-pose.pt", npy_path: str 
         draw = ImageDraw.Draw(img)
         if points_xy is not None:
             draw_upper_skeleton(draw, points_xy, confs, w_orig, h_orig)
+        for cr in last_crop_regions[0]:
+            draw.rectangle([int(cr[0]), int(cr[1]), int(cr[2]), int(cr[3])], outline=(120, 120, 120), width=1)
+        for box, in_hand in phone_boxes:
+            draw_phone_box(draw, box, in_hand)
 
         img = img.resize((DISPLAY_W, DISPLAY_H), Image.Resampling.LANCZOS)
         photo = ImageTk.PhotoImage(img)
@@ -268,7 +395,11 @@ def run_app(video_path: str, model_path: str = "yolo11n-pose.pt", npy_path: str 
 
         current_frame[0] += 1
         src = "npy" if npy_poses is not None else "yolo"
-        status.config(text=f"Frame {current_frame[0]} | {src} | {'vídeo+esqueleto' if show_video.get() else 'solo esqueleto'} | Esp=pausa Q=salir")
+        phone_info = ""
+        if detect_model is not None:
+            n_hand = sum(1 for _b, ih in phone_boxes if ih)
+            phone_info = f" | móviles: {len(phone_boxes)} (en mano: {n_hand})"
+        status.config(text=f"Frame {current_frame[0]} | {src}{phone_info} | {'vídeo+esqueleto' if show_video.get() else 'solo esqueleto'} | Esp=pausa Q=salir")
         root.after(delay_ms, update)
 
     root.after(0, update)
@@ -281,6 +412,13 @@ def main():
     parser.add_argument("video", type=str, help="Ruta al archivo MP4")
     parser.add_argument("npy", type=str, nargs="?", default=None, help="Opcional: fichero .npy con poses precalculadas (del mismo clip)")
     parser.add_argument("--model", type=str, default="yolo11n-pose.pt", help="Modelo YOLO pose si no se usa .npy")
+    parser.add_argument("--extra", action="store_true", help="Detecta si el usuario lleva un móvil en la mano y pinta su bounding box")
+    parser.add_argument("--detect-model", dest="detect_model", type=str, default="yolo11n.pt", help="Modelo YOLO de detección de objetos para --extra (default: yolo11n.pt)")
+    parser.add_argument("--imgsz", type=int, default=YOLO_IMGSZ, help=f"Tamaño de entrada para YOLO (default: {YOLO_IMGSZ})")
+    parser.add_argument("--sample", type=int, default=1, metavar="N", help="Ejecutar la detección de móvil cada N frames (default: 1 = todos). Entre medias reutiliza el último resultado")
+    parser.add_argument("--phone-conf", dest="phone_conf", type=float, default=PHONE_CONF_THR, help=f"Confianza mínima para detectar móvil (default: {PHONE_CONF_THR}). Baja el valor si no lo detecta")
+    parser.add_argument("--hand-crop", dest="hand_crop", action="store_true", help="Detectar el móvil sobre un recorte alrededor de las muñecas (mejor para objetos pequeños)")
+    parser.add_argument("--crop-ratio", dest="crop_ratio", type=float, default=HAND_CROP_RATIO, help=f"Lado del recorte de mano como fracción de la dimensión mayor del frame (default: {HAND_CROP_RATIO})")
     args = parser.parse_args()
 
     npy_path = args.npy
@@ -291,7 +429,10 @@ def main():
         print(f"Archivo no encontrado: {args.video}")
         sys.exit(1)
 
-    run_app(args.video, model_path=args.model, npy_path=npy_path)
+    run_app(args.video, model_path=args.model, npy_path=npy_path,
+            detect_phone=args.extra, detect_model_path=args.detect_model, imgsz=args.imgsz,
+            sample=args.sample, phone_conf=args.phone_conf,
+            hand_crop=args.hand_crop, crop_ratio=args.crop_ratio)
 
 
 if __name__ == "__main__":
