@@ -28,6 +28,8 @@ cuentan en el recuento). Un poses.npy es válido si:
       igual que la extracción / test_model2 (un keypoint no detectado es (0,0)).
 
 Dispositivo: --device cpu | gpu (=cuda) | auto.
+Modo --single: solo evalúa clips con un único usuario (un solo poses.npy);
+los clips multiusuario se omiten.
 
 Modelos (--models): fichero JSON con una lista. Cada elemento puede ser:
     - la ruta completa al .pt (el nombre de columna = nombre del fichero):
@@ -126,12 +128,15 @@ def build_model_from_checkpoint(
     return checkpoint, model
 
 
-def discover_samples(input_dir: Path) -> List[Tuple[str, str, Path]]:
+def discover_samples(input_dir: Path, single_only: bool = False) -> List[Tuple[str, str, Path]]:
     """
     Recorre input_dir/<clip>/<usuario>/poses.npy.
 
     Devuelve lista de (clip_name, usuario, user_dir). clip_name viene de meta.json
     si existe, si no del nombre de la carpeta del clip.
+
+    Si single_only=True, solo se incluyen los clips con EXACTAMENTE un usuario
+    (un único poses.npy); los clips multiusuario se omiten.
     """
     samples: List[Tuple[str, str, Path]] = []
     for clip_dir in sorted(p for p in input_dir.iterdir() if p.is_dir()):
@@ -153,6 +158,9 @@ def discover_samples(input_dir: Path) -> List[Tuple[str, str, Path]]:
         ]
         if not user_dirs:
             print(f"[WARN] '{clip_dir.name}' no tiene carpetas de usuario con poses.npy. Se omite.")
+            continue
+        if single_only and len(user_dirs) != 1:
+            print(f"[SKIP] '{clip_dir.name}' tiene {len(user_dirs)} usuarios (modo --single: solo 1). Se omite.")
             continue
         for ud in user_dirs:
             samples.append((clip_name, ud.name, ud))
@@ -265,6 +273,11 @@ def main() -> None:
         default="auto",
         help="cpu | gpu (=cuda) | auto (autodetección, por defecto).",
     )
+    parser.add_argument(
+        "--single",
+        action="store_true",
+        help="Solo evalúa clips con un único usuario (un solo poses.npy); omite los multiusuario.",
+    )
     args = parser.parse_args()
 
     input_dir = Path(args.input_dir).expanduser().resolve()
@@ -300,7 +313,9 @@ def main() -> None:
         if not Path(m["modelo"]).expanduser().resolve().is_file():
             errores.append(f"No existe el modelo '{m['nombre']}': {m['modelo']}")
 
-    all_samples = discover_samples(input_dir)
+    if args.single:
+        print("[INFO] Modo --single: solo clips con un único usuario.")
+    all_samples = discover_samples(input_dir, single_only=args.single)
     if not all_samples:
         errores.append(f"No se encontró ningún 'poses.npy' bajo {input_dir} (estructura clip/usuario/poses.npy).")
 

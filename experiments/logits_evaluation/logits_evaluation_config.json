@@ -1,0 +1,8 @@
+{
+  "threshold": 0.0,
+  "csvs": [
+    { "path": "/home/debian/Documentos/Kanvis/Clips/robos.csv",   "robo": true },
+    { "path": "/home/debian/Documentos/Kanvis/Clips/compras.csv", "robo": false },
+    { "path": "/home/debian/Documentos/Kanvis/Clips/paseos.csv",  "robo": false }
+  ]
+}
