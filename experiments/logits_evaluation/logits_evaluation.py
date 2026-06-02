@@ -41,6 +41,8 @@ Análisis extra para reducir falsos positivos (todos opcionales):
     --target-precision X  umbral por modelo con precisión >= X%% (maximiza recall).
     --fp-breakdown        FP por CSV (categoría) y modelo: ve qué categoría los causa.
     --consensus M1 M2 ... consenso AND/OR entre modelos (cada uno con su umbral).
+    --consensus-search    prueba TODAS las combinaciones (--consensus-size, def 2) y
+                          elige la mejor según --consensus-rank (accuracy/f1/precision/recall/fp).
     --abstain-model M --abstain-low L --abstain-high H
                           zona de abstención: <L no-robo, >H robo, en medio "incierto"
                           (candidatos a revisar, p. ej. con un VLM en cascada).
@@ -150,13 +152,30 @@ def read_logits_csv(path: Path) -> Tuple[List[str], List[Dict[str, Any]]]:
 
 def _counts_to_metrics(t: float, tp: int, tn: int, fp: int, fn: int) -> Dict[str, Any]:
     total = tp + tn + fp + fn
+    recall = tp / (tp + fn) if (tp + fn) else 0.0
+    precision = tp / (tp + fp) if (tp + fp) else 1.0
+    f1 = (2 * precision * recall / (precision + recall)) if (precision + recall) else 0.0
     return {
         "threshold": t, "TP": tp, "TN": tn, "FP": fp, "FN": fn,
         "accuracy_pct": (tp + tn) / total * 100.0 if total else 0.0,
-        "recall_pct": tp / (tp + fn) * 100.0 if (tp + fn) else 0.0,
-        "precision_pct": tp / (tp + fp) * 100.0 if (tp + fp) else 100.0,
+        "recall_pct": recall * 100.0,
+        "precision_pct": precision * 100.0,
+        "f1_pct": f1 * 100.0,
         "fpr_pct": fp / (fp + tn) * 100.0 if (fp + tn) else 0.0,
     }
+
+
+def _build_thresholds(
+    report: Dict[str, Any], models_sel: List[str], threshold_mode: str
+) -> Dict[str, float]:
+    """Umbral por modelo para el consenso: el óptimo de cada uno, o el fijo del report."""
+    if threshold_mode == "fixed":
+        return {m: report["threshold"] for m in models_sel}
+    out: Dict[str, float] = {}
+    for m in models_sel:
+        opt = report["stats"][m].get("optimo")
+        out[m] = opt["threshold"] if opt else report["threshold"]
+    return out
 
 
 def threshold_sweep(pairs: List[Tuple[float, bool]]) -> List[Dict[str, Any]]:
@@ -482,7 +501,6 @@ def print_consensus(
     threshold_mode: str,
 ) -> None:
     models = report["models"]
-    stats = report["stats"]
     sel = [m for m in models_sel if m in models]
     missing = [m for m in models_sel if m not in models]
     if missing:
@@ -491,13 +509,7 @@ def print_consensus(
         print("[WARN] El consenso necesita al menos 2 modelos válidos. Se omite.")
         return
 
-    if threshold_mode == "fixed":
-        thresholds = {m: report["threshold"] for m in sel}
-    else:  # optimal
-        thresholds = {}
-        for m in sel:
-            opt = stats[m].get("optimo")
-            thresholds[m] = opt["threshold"] if opt else report["threshold"]
+    thresholds = _build_thresholds(report, sel, threshold_mode)
 
     print()
     print(f"Consenso entre modelos {sel} | umbrales={threshold_mode}:")
@@ -514,6 +526,72 @@ def print_consensus(
               f"{d['precision_pct']:>6.1f}% {d['fpr_pct']:>6.2f}% "
               f"{d['TP']:>6} {d['TN']:>7} {d['FP']:>6} {d['FN']:>6} {d['skipped']:>5}")
     print("-" * len(h))
+
+
+def _rank_key(d: Dict[str, Any], rank_by: str):
+    """Clave de ordenación (menor = mejor) según la métrica elegida."""
+    if rank_by == "accuracy":
+        return (-d["accuracy_pct"], d["FP"])
+    if rank_by == "f1":
+        return (-d["f1_pct"], d["FP"])
+    if rank_by == "precision":
+        return (-d["precision_pct"], -d["recall_pct"])
+    if rank_by == "recall":
+        return (-d["recall_pct"], d["FP"])
+    if rank_by == "fp":
+        return (d["FP"], -d["recall_pct"])
+    return (-d["accuracy_pct"], d["FP"])
+
+
+def print_consensus_search(
+    report: Dict[str, Any],
+    size: int,
+    modes: List[str],
+    threshold_mode: str,
+    rank_by: str,
+    top_k: int,
+) -> None:
+    """Prueba TODAS las combinaciones de 'size' modelos, evalúa el consenso y las ordena."""
+    import itertools
+
+    models = report["models"]
+    if len(models) < size:
+        print(f"[WARN] Se piden combinaciones de {size} pero solo hay {len(models)} modelos.")
+        return
+
+    thr_all = _build_thresholds(report, models, threshold_mode)
+
+    rows: List[Dict[str, Any]] = []
+    for combo in itertools.combinations(models, size):
+        sub_thr = {m: thr_all[m] for m in combo}
+        for mode in modes:
+            d = consensus_eval(report, list(combo), sub_thr, mode)
+            d["combo"] = combo
+            d["mode_label"] = "AND" if mode == "and" else "OR"
+            rows.append(d)
+
+    rows.sort(key=lambda d: _rank_key(d, rank_by))
+
+    print()
+    print(f"Búsqueda de consenso: combinaciones de {size} modelos | umbrales={threshold_mode} | "
+          f"ordenado por '{rank_by}' (mejor arriba). Top {top_k}:")
+    combo_w = max(28, 2 + sum(len(m) + 1 for m in models[:size]))
+    h = (f"{'combinacion':<{combo_w}} {'modo':<4} {'acierto%':>9} {'recall%':>8} "
+         f"{'prec%':>7} {'F1%':>7} {'FPR%':>7} {'FP':>6} {'FN':>6}")
+    print(h)
+    print("-" * len(h))
+    for d in rows[:top_k]:
+        combo_str = "+".join(d["combo"])
+        print(f"{combo_str:<{combo_w}} {d['mode_label']:<4} {d['accuracy_pct']:>8.1f}% "
+              f"{d['recall_pct']:>7.1f}% {d['precision_pct']:>6.1f}% {d['f1_pct']:>6.1f}% "
+              f"{d['fpr_pct']:>6.2f}% {d['FP']:>6} {d['FN']:>6}")
+    print("-" * len(h))
+
+    best = rows[0]
+    print(f">> Mejor combinación ({rank_by}): {'+'.join(best['combo'])} [{best['mode_label']}] "
+          f"-> acierto={best['accuracy_pct']:.1f}%, recall={best['recall_pct']:.1f}%, FP={best['FP']}")
+    print(f"   Reprodúcela con: --consensus {' '.join(best['combo'])} "
+          f"--consensus-mode {best['mode_label'].lower()} --consensus-threshold-mode {threshold_mode}")
 
 
 def print_abstain(report: Dict[str, Any], model: str, low: float, high: float) -> None:
@@ -604,6 +682,15 @@ def main() -> None:
                         help="Muestra los falsos positivos por CSV (categoría) y modelo al umbral fijo.")
     parser.add_argument("--consensus", nargs="+", default=None,
                         help="Lista de modelos para evaluar consenso AND/OR (al menos 2).")
+    parser.add_argument("--consensus-search", action="store_true",
+                        help="Prueba TODAS las combinaciones y elige automáticamente la mejor.")
+    parser.add_argument("--consensus-size", type=int, default=2,
+                        help="Nº de modelos por combinación en --consensus-search (por defecto 2).")
+    parser.add_argument("--consensus-rank", choices=["accuracy", "f1", "precision", "recall", "fp"],
+                        default="accuracy",
+                        help="Métrica para ordenar las combinaciones en la búsqueda (por defecto accuracy).")
+    parser.add_argument("--consensus-top", type=int, default=10,
+                        help="Cuántas combinaciones mostrar en la búsqueda (por defecto 10).")
     parser.add_argument("--consensus-mode", choices=["and", "or", "both"], default="both",
                         help="Modo de consenso a mostrar (por defecto ambos).")
     parser.add_argument("--consensus-threshold-mode", choices=["optimal", "fixed"], default="optimal",
@@ -646,6 +733,15 @@ def main() -> None:
     if args.consensus:
         modes = ["and", "or"] if args.consensus_mode == "both" else [args.consensus_mode]
         print_consensus(report, args.consensus, modes, args.consensus_threshold_mode)
+
+    if args.consensus_search:
+        modes = ["and", "or"] if args.consensus_mode == "both" else [args.consensus_mode]
+        if args.consensus_size < 2:
+            raise SystemExit("--consensus-size debe ser >= 2.")
+        print_consensus_search(
+            report, args.consensus_size, modes,
+            args.consensus_threshold_mode, args.consensus_rank, args.consensus_top,
+        )
 
     if args.abstain_model is not None:
         if args.abstain_low is None or args.abstain_high is None:
