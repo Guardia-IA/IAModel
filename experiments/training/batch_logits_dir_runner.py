@@ -20,6 +20,15 @@ Para cada poses.npy (un usuario) se ejecuta la inferencia (mismo pipeline por
 defecto que test_model2.py) con cada modelo de --models, y se guarda el LOGIT
 CRUDO de clase[1] (índice 1 de la salida del modelo).
 
+Antes de evaluar se valida cada poses.npy (los no válidos se OMITEN, pero se
+cuentan en el recuento). Un poses.npy es válido si:
+    - No está vacío y tiene forma [T, 8, 2] (los 8 keypoints).
+    - Tiene MÁS de 36 frames (3 s) con la "persona entera" visible, donde un
+      frame cuenta si sus 8 keypoints son visibles (ninguno (0,0) ni NaN),
+      igual que la extracción / test_model2 (un keypoint no detectado es (0,0)).
+
+Dispositivo: --device cpu | gpu (=cuda) | auto.
+
 Modelos (--models): fichero JSON con una lista. Cada elemento puede ser:
     - la ruta completa al .pt (el nombre de columna = nombre del fichero):
         [
@@ -52,10 +61,16 @@ import json
 import shutil
 import sys
 import tempfile
+from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+import numpy as np
 import torch
+
+# --- Criterios de validez de un poses.npy (un usuario) ---
+EXPECTED_KPS = 8          # 8 keypoints: hombros, codos, muñecas, caderas (KEEP_KPS de pose_extractor_clean)
+MIN_VALID_FRAMES = 36     # "más de 36 frames" (3 s a 12 fps) con la persona entera visible
 
 # experiments/ y experiments/training/ en el path para que test_model2 resuelva sus imports.
 _THIS_DIR = Path(__file__).resolve().parent          # experiments/training
@@ -144,6 +159,44 @@ def discover_samples(input_dir: Path) -> List[Tuple[str, str, Path]]:
     return samples
 
 
+def validate_poses_npy(poses_path: Path) -> Tuple[bool, str, int, int]:
+    """
+    Comprueba si un poses.npy es válido para evaluar.
+
+    Criterios (igual que la extracción / test_model2: un keypoint no detectado es (0,0)):
+        - No vacío y con forma [T, 8, 2] (los 8 keypoints).
+        - Frame con "persona entera" = los 8 keypoints visibles (ninguno (0,0) ni NaN).
+        - Más de MIN_VALID_FRAMES (36) frames con la persona entera visible.
+
+    Devuelve (es_valido, motivo, n_frames_validos, n_frames_totales).
+    """
+    try:
+        arr = np.load(str(poses_path), allow_pickle=False)
+    except Exception as e:  # noqa: BLE001
+        return False, f"no_se_pudo_leer ({e})", 0, 0
+
+    if getattr(arr, "size", 0) == 0 or getattr(arr, "ndim", 0) == 0:
+        return False, "vacio", 0, 0
+    if arr.ndim != 3 or int(arr.shape[2]) != 2:
+        return False, f"shape_invalida {tuple(arr.shape)} (se esperaba [T,8,2])", 0, int(arr.shape[0]) if arr.ndim >= 1 else 0
+    t_total = int(arr.shape[0])
+    if t_total == 0:
+        return False, "vacio (0 frames)", 0, 0
+    if int(arr.shape[1]) != EXPECTED_KPS:
+        return False, f"no_tiene_8_keypoints (J={int(arr.shape[1])})", 0, t_total
+
+    arr = arr.astype(np.float64, copy=False)
+    is_zero = (arr[..., 0] == 0.0) & (arr[..., 1] == 0.0)          # [T, 8] keypoint ausente
+    is_nan = np.isnan(arr).any(axis=2)                             # [T, 8] keypoint NaN
+    not_visible = is_zero | is_nan                                 # [T, 8]
+    frame_full_body = ~not_visible.any(axis=1)                     # [T] los 8 visibles
+    n_valid = int(frame_full_body.sum())
+
+    if n_valid <= MIN_VALID_FRAMES:
+        return False, f"pocos_frames_validos ({n_valid} <= {MIN_VALID_FRAMES})", n_valid, t_total
+    return True, "ok", n_valid, t_total
+
+
 def logit_class1(
     *,
     checkpoint: Dict[str, Any],
@@ -206,7 +259,12 @@ def main() -> None:
     parser.add_argument("--input-dir", required=True, help="Carpeta raíz con subcarpetas de clips.")
     parser.add_argument("--models", required=True, help="JSON con la lista de modelos (nombre + ruta .pt).")
     parser.add_argument("--output", required=True, help="Ruta de salida (.csv o .json).")
-    parser.add_argument("--device", default=None, help="cpu | cuda (autodetección si se omite).")
+    parser.add_argument(
+        "--device",
+        choices=["cpu", "gpu", "cuda", "auto"],
+        default="auto",
+        help="cpu | gpu (=cuda) | auto (autodetección, por defecto).",
+    )
     args = parser.parse_args()
 
     input_dir = Path(args.input_dir).expanduser().resolve()
@@ -221,9 +279,14 @@ def main() -> None:
     if not models_path.is_file():
         raise SystemExit(f"No existe el fichero de modelos: {models_path}")
 
-    device = torch.device(
-        args.device if args.device else ("cuda" if torch.cuda.is_available() else "cpu")
-    )
+    if args.device in ("gpu", "cuda"):
+        if not torch.cuda.is_available():
+            raise SystemExit("Se pidió GPU/CUDA pero torch.cuda.is_available() es False.")
+        device = torch.device("cuda")
+    elif args.device == "cpu":
+        device = torch.device("cpu")
+    else:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[INFO] Device: {device}")
 
     modelos = load_models_config(models_path)
@@ -237,8 +300,8 @@ def main() -> None:
         if not Path(m["modelo"]).expanduser().resolve().is_file():
             errores.append(f"No existe el modelo '{m['nombre']}': {m['modelo']}")
 
-    samples = discover_samples(input_dir)
-    if not samples:
+    all_samples = discover_samples(input_dir)
+    if not all_samples:
         errores.append(f"No se encontró ningún 'poses.npy' bajo {input_dir} (estructura clip/usuario/poses.npy).")
 
     if errores:
@@ -247,7 +310,32 @@ def main() -> None:
             print(f"  - {msg}")
         raise SystemExit(1)
 
-    print(f"[INFO] Modelos: {len(modelos)} | Muestras (poses.npy): {len(samples)}")
+    # --- Validación de cada poses.npy + recuento ---
+    print(f"[INFO] poses.npy encontrados: {len(all_samples)}. Validando...")
+    samples: List[Tuple[str, str, Path]] = []
+    invalidos: List[Tuple[str, str, str]] = []
+    for clip_name, usuario, user_dir in all_samples:
+        ok, motivo, n_valid, t_total = validate_poses_npy(user_dir / "poses.npy")
+        if ok:
+            samples.append((clip_name, usuario, user_dir))
+        else:
+            invalidos.append((clip_name, usuario, motivo))
+            print(f"[SKIP] {clip_name}/{usuario}: {motivo} (frames_validos={n_valid}, T={t_total})")
+
+    print("[RECUENTO] -----------------------------------------")
+    print(f"[RECUENTO] npy totales encontrados : {len(all_samples)}")
+    print(f"[RECUENTO] npy válidos             : {len(samples)}")
+    print(f"[RECUENTO] npy descartados         : {len(invalidos)}")
+    if invalidos:
+        motivos = Counter(m.split(" ")[0].split("(")[0] for _, _, m in invalidos)
+        for mot, cnt in motivos.most_common():
+            print(f"[RECUENTO]   - {mot}: {cnt}")
+    print("[RECUENTO] -----------------------------------------")
+
+    if not samples:
+        raise SystemExit("No hay ningún poses.npy válido que evaluar (todos descartados).")
+
+    print(f"[INFO] Modelos: {len(modelos)} | Muestras válidas: {len(samples)}")
     print(f"[INFO] Total inferencias a realizar: {len(modelos) * len(samples)}")
     print("[INFO] Comprobación previa OK.")
 
