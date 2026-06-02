@@ -135,40 +135,47 @@ def read_logits_csv(path: Path) -> Tuple[List[str], List[Dict[str, Any]]]:
     return model_cols, rows
 
 
-def _counts_at(pairs: List[Tuple[float, bool]], thr: float) -> Tuple[int, int, int, int]:
-    """Devuelve (TP, TN, FP, FN) para un umbral dado (robo si logit > thr)."""
-    tp = tn = fp = fn = 0
-    for val, is_robo in pairs:
-        pred_robo = val > thr
-        if is_robo:
-            tp += pred_robo
-            fn += not pred_robo
-        else:
-            fp += pred_robo
-            tn += not pred_robo
-    return tp, tn, fp, fn
-
-
 def optimal_threshold(pairs: List[Tuple[float, bool]]) -> Optional[Dict[str, Any]]:
     """
     Busca el umbral que maximiza el % de acierto (TP+TN). Empates: menos FP y,
     entre los óptimos, el umbral central (máximo margen) para mayor robustez.
+
+    Implementación O(n log n): un único barrido sobre los valores ordenados de
+    mayor a menor, acumulando TP/FP a medida que baja el umbral.
     """
     if not pairs:
         return None
-    vals = sorted({v for v, _ in pairs})
-    # Candidatos: por debajo del mínimo, puntos medios entre valores y por encima del máximo.
-    cands = [vals[0] - 1.0]
-    for i in range(len(vals) - 1):
-        cands.append((vals[i] + vals[i + 1]) / 2.0)
-    cands.append(vals[-1] + 1.0)
+    total = len(pairs)
+    n_robo = sum(1 for _, r in pairs if r)
+    n_norobo = total - n_robo
+    sp = sorted(pairs, key=lambda x: x[0], reverse=True)
 
-    scored = []
-    for t in cands:
-        tp, tn, fp, fn = _counts_at(pairs, t)
-        n = tp + tn + fp + fn
-        acc = (tp + tn) / n if n else 0.0
+    # (accuracy, fp, threshold, tp, tn, fn) para cada umbral candidato.
+    scored: List[Tuple[float, int, float, int, int, int]] = []
+
+    def _add(t: float, tp: int, fp: int) -> None:
+        tn = n_norobo - fp
+        fn = n_robo - tp
+        acc = (tp + tn) / total
         scored.append((acc, fp, t, tp, tn, fn))
+
+    # Umbral por encima del máximo: se predice todo NO-ROBO.
+    _add(sp[0][0] + 1.0, 0, 0)
+
+    tp = fp = 0
+    i = 0
+    while i < total:
+        v = sp[i][0]
+        j = i
+        while j < total and sp[j][0] == v:
+            if sp[j][1]:
+                tp += 1
+            else:
+                fp += 1
+            j += 1
+        next_v = sp[j][0] if j < total else (v - 1.0)
+        _add((v + next_v) / 2.0, tp, fp)  # umbral entre este valor y el siguiente distinto
+        i = j
 
     best_acc = max(s[0] for s in scored)
     cand_acc = [s for s in scored if s[0] == best_acc]
@@ -186,12 +193,19 @@ def evaluate(specs: List[Dict[str, Any]], threshold: float) -> Dict[str, Any]:
     # Carga de todos los CSV y unión de modelos.
     loaded: List[Tuple[Dict[str, Any], List[str], List[Dict[str, Any]]]] = []
     model_order: List[str] = []
-    for spec in specs:
+    total_rows = 0
+    print(f"[INFO] Leyendo {len(specs)} CSV...")
+    for idx, spec in enumerate(specs, start=1):
         cols, rows = read_logits_csv(spec["path"])
+        total_rows += len(rows)
         for c in cols:
             if c not in model_order:
                 model_order.append(c)
         loaded.append((spec, cols, rows))
+        tag = "ROBO" if spec["robo"] else "NO-ROBO"
+        print(f"[INFO]   ({idx}/{len(specs)}) [{tag}] {spec['path'].name}: "
+              f"{len(rows)} filas, {len(cols)} modelos")
+    print(f"[INFO] Total: {total_rows} filas | {len(model_order)} modelos detectados.")
 
     # Inicializa contadores y pares (logit, is_robo) por modelo.
     stats: Dict[str, Dict[str, int]] = {
@@ -199,6 +213,7 @@ def evaluate(specs: List[Dict[str, Any]], threshold: float) -> Dict[str, Any]:
     }
     pairs_by_model: Dict[str, List[Tuple[float, bool]]] = {m: [] for m in model_order}
 
+    print("[INFO] Agregando muestras por modelo...")
     for spec, cols, rows in loaded:
         is_robo = bool(spec["robo"])
         for row in rows:
@@ -215,8 +230,10 @@ def evaluate(specs: List[Dict[str, Any]], threshold: float) -> Dict[str, Any]:
                     stats[m]["FP" if pred_robo else "TN"] += 1
 
     # Deriva métricas.
+    print(f"[INFO] Calculando métricas y umbral óptimo de {len(model_order)} modelos...")
     results: Dict[str, Any] = {}
-    for m in model_order:
+    for mi, m in enumerate(model_order, start=1):
+        print(f"[INFO]   ({mi}/{len(model_order)}) {m}...")
         s = stats[m]
         tp, fn, tn, fp, na = s["TP"], s["FN"], s["TN"], s["FP"], s["NA"]
         evaluables = tp + fn + tn + fp
