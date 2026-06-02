@@ -135,6 +135,52 @@ def read_logits_csv(path: Path) -> Tuple[List[str], List[Dict[str, Any]]]:
     return model_cols, rows
 
 
+def _counts_at(pairs: List[Tuple[float, bool]], thr: float) -> Tuple[int, int, int, int]:
+    """Devuelve (TP, TN, FP, FN) para un umbral dado (robo si logit > thr)."""
+    tp = tn = fp = fn = 0
+    for val, is_robo in pairs:
+        pred_robo = val > thr
+        if is_robo:
+            tp += pred_robo
+            fn += not pred_robo
+        else:
+            fp += pred_robo
+            tn += not pred_robo
+    return tp, tn, fp, fn
+
+
+def optimal_threshold(pairs: List[Tuple[float, bool]]) -> Optional[Dict[str, Any]]:
+    """
+    Busca el umbral que maximiza el % de acierto (TP+TN). Empates: menos FP y,
+    entre los óptimos, el umbral central (máximo margen) para mayor robustez.
+    """
+    if not pairs:
+        return None
+    vals = sorted({v for v, _ in pairs})
+    # Candidatos: por debajo del mínimo, puntos medios entre valores y por encima del máximo.
+    cands = [vals[0] - 1.0]
+    for i in range(len(vals) - 1):
+        cands.append((vals[i] + vals[i + 1]) / 2.0)
+    cands.append(vals[-1] + 1.0)
+
+    scored = []
+    for t in cands:
+        tp, tn, fp, fn = _counts_at(pairs, t)
+        n = tp + tn + fp + fn
+        acc = (tp + tn) / n if n else 0.0
+        scored.append((acc, fp, t, tp, tn, fn))
+
+    best_acc = max(s[0] for s in scored)
+    cand_acc = [s for s in scored if s[0] == best_acc]
+    min_fp = min(s[1] for s in cand_acc)
+    cand_fp = sorted((s for s in cand_acc if s[1] == min_fp), key=lambda s: s[2])
+    acc, fp, t, tp, tn, fn = cand_fp[len(cand_fp) // 2]  # umbral central del plateau óptimo
+    return {
+        "threshold": t, "accuracy_pct": acc * 100.0,
+        "TP": tp, "TN": tn, "FP": fp, "FN": fn,
+    }
+
+
 def evaluate(specs: List[Dict[str, Any]], threshold: float) -> Dict[str, Any]:
     """Calcula métricas por modelo agregando todas las muestras de todos los CSV."""
     # Carga de todos los CSV y unión de modelos.
@@ -147,10 +193,11 @@ def evaluate(specs: List[Dict[str, Any]], threshold: float) -> Dict[str, Any]:
                 model_order.append(c)
         loaded.append((spec, cols, rows))
 
-    # Inicializa contadores por modelo.
+    # Inicializa contadores y pares (logit, is_robo) por modelo.
     stats: Dict[str, Dict[str, int]] = {
         m: {"TP": 0, "FN": 0, "TN": 0, "FP": 0, "NA": 0} for m in model_order
     }
+    pairs_by_model: Dict[str, List[Tuple[float, bool]]] = {m: [] for m in model_order}
 
     for spec, cols, rows in loaded:
         is_robo = bool(spec["robo"])
@@ -160,6 +207,7 @@ def evaluate(specs: List[Dict[str, Any]], threshold: float) -> Dict[str, Any]:
                 if val is None:
                     stats[m]["NA"] += 1
                     continue
+                pairs_by_model[m].append((val, is_robo))
                 pred_robo = val > threshold
                 if is_robo:
                     stats[m]["TP" if pred_robo else "FN"] += 1
@@ -182,6 +230,7 @@ def evaluate(specs: List[Dict[str, Any]], threshold: float) -> Dict[str, Any]:
             "evaluables": evaluables, "aciertos": aciertos,
             "accuracy_pct": acc, "recall_pct": recall,
             "especificidad_pct": especificidad, "precision_pct": precision,
+            "optimo": optimal_threshold(pairs_by_model[m]),
         }
 
     return {"threshold": threshold, "models": model_order, "stats": results}
@@ -226,6 +275,34 @@ def print_report(report: Dict[str, Any], specs: List[Dict[str, Any]]) -> None:
           f"{stats[best_acc]['aciertos']}/{stats[best_acc]['evaluables']})")
     print(f">> Modelo con MÁS falsos positivos : {most_fp} (FP={stats[most_fp]['FP']})")
     print(f">> Modelo con MENOS falsos positivos: {least_fp} (FP={stats[least_fp]['FP']})")
+
+    # --- Umbral óptimo por modelo (el que maximiza el acierto) ---
+    print()
+    print("Umbral óptimo por modelo (maximiza % de acierto):")
+    h2 = f"{'modelo':<16} {'umbral_opt':>11} {'acierto_opt%':>13} {'TP':>5} {'TN':>5} {'FP':>5} {'FN':>5}"
+    print(h2)
+    print("-" * len(h2))
+    best_opt_model = None
+    best_opt_acc = -1.0
+    for m in models:
+        opt = stats[m].get("optimo")
+        if not opt:
+            print(f"{m:<16} {'(sin datos)':>11}")
+            continue
+        print(
+            f"{m:<16} {opt['threshold']:>11.4f} {opt['accuracy_pct']:>12.1f}% "
+            f"{opt['TP']:>5} {opt['TN']:>5} {opt['FP']:>5} {opt['FN']:>5}"
+        )
+        if opt["accuracy_pct"] > best_opt_acc:
+            best_opt_acc = opt["accuracy_pct"]
+            best_opt_model = m
+    print("-" * len(h2))
+    if best_opt_model is not None:
+        opt = stats[best_opt_model]["optimo"]
+        print(
+            f">> Mejor con su umbral óptimo: {best_opt_model} "
+            f"(umbral={opt['threshold']:.4f}, acierto={opt['accuracy_pct']:.1f}%, FP={opt['FP']})"
+        )
     print("=" * 78)
 
 
@@ -240,16 +317,21 @@ def write_output(output_path: Path, report: Dict[str, Any]) -> None:
             json.dump(payload, f, indent=2, ensure_ascii=False)
     elif fmt == ".csv":
         cols = ["modelo", "accuracy_pct", "aciertos", "evaluables",
-                "TP", "TN", "FP", "FN", "recall_pct", "especificidad_pct", "precision_pct", "NA"]
+                "TP", "TN", "FP", "FN", "recall_pct", "especificidad_pct", "precision_pct", "NA",
+                "umbral_optimo", "accuracy_optimo_pct", "FP_optimo"]
         with open(output_path, "w", encoding="utf-8", newline="") as f:
             w = csv.writer(f)
             w.writerow(cols)
             for m in models:
                 s = stats[m]
+                opt = s.get("optimo") or {}
                 w.writerow([m, f"{s['accuracy_pct']:.4f}", s["aciertos"], s["evaluables"],
                             s["TP"], s["TN"], s["FP"], s["FN"],
                             f"{s['recall_pct']:.4f}", f"{s['especificidad_pct']:.4f}",
-                            f"{s['precision_pct']:.4f}", s["NA"]])
+                            f"{s['precision_pct']:.4f}", s["NA"],
+                            f"{opt.get('threshold'):.4f}" if opt else "",
+                            f"{opt.get('accuracy_pct'):.4f}" if opt else "",
+                            opt.get("FP", "")])
     else:
         raise SystemExit("--output debe terminar en .csv o .json")
     print(f"[INFO] Resumen escrito en: {output_path}")
