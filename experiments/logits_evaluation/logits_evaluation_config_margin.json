@@ -1,0 +1,14 @@
+{
+  "threshold": 0.0,
+  "csvs": [
+    { "path": "/home/angel/IAModel/logits_output_margin/0.csv", "robo": false },
+    { "path": "/home/angel/IAModel/logits_output_margin/1.csv", "robo": false },
+    { "path": "/home/angel/IAModel/logits_output_margin/2.csv", "robo": false },
+    { "path": "/home/angel/IAModel/logits_output_margin/3.csv", "robo": false },
+    { "path": "/home/angel/IAModel/logits_output_margin/4.csv", "robo": false },
+    { "path": "/home/angel/IAModel/logits_output_margin/5.csv", "robo": false },
+    { "path": "/home/angel/IAModel/logits_output_margin/6.csv", "robo": true },
+    { "path": "/home/angel/IAModel/logits_output_margin/7.csv", "robo": false },
+    { "path": "/home/angel/IAModel/logits_output_margin/9.csv", "robo": false }
+  ]
+}
