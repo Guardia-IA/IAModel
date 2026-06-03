@@ -43,6 +43,9 @@ Análisis extra para reducir falsos positivos (todos opcionales):
     --consensus M1 M2 ... consenso AND/OR entre modelos (cada uno con su umbral).
     --consensus-search    prueba TODAS las combinaciones (--consensus-size, def 2) y
                           elige la mejor según --consensus-rank (accuracy/f1/precision/recall/fp).
+    --fuse M1 M2 [--fuse-op min|mean|max]
+                          combina modelos en UN solo score y propone la X a desplegar
+                          (min = tipo AND, menos FP). Ideal si despliegas "si score > X => robo".
     --abstain-model M --abstain-low L --abstain-high H
                           zona de abstención: <L no-robo, >H robo, en medio "incierto"
                           (candidatos a revisar, p. ej. con un VLM en cascada).
@@ -594,6 +597,88 @@ def print_consensus_search(
           f"--consensus-mode {best['mode_label'].lower()} --consensus-threshold-mode {threshold_mode}")
 
 
+def build_fused_pairs(
+    report: Dict[str, Any], models_sel: List[str], op: str
+) -> Tuple[List[Tuple[float, bool]], int]:
+    """Combina los modelos elegidos en un ÚNICO score por muestra (min/mean/max/sum)."""
+    ops = {
+        "min": min,
+        "max": max,
+        "mean": lambda vs: sum(vs) / len(vs),
+        "sum": sum,
+    }
+    fn = ops[op]
+    pairs: List[Tuple[float, bool]] = []
+    skipped = 0
+    for spec, cols, rows in report["loaded"]:
+        is_robo = bool(spec["robo"])
+        for row in rows:
+            vals = [row.get(m) for m in models_sel]
+            if any(v is None for v in vals):
+                skipped += 1
+                continue
+            pairs.append((float(fn(vals)), is_robo))
+    return pairs, skipped
+
+
+def _metrics_at(pairs: List[Tuple[float, bool]], thr: float) -> Dict[str, Any]:
+    tp = tn = fp = fn = 0
+    for v, is_robo in pairs:
+        pred = v > thr
+        if is_robo:
+            tp += pred
+            fn += not pred
+        else:
+            fp += pred
+            tn += not pred
+    return _counts_to_metrics(thr, tp, tn, fp, fn)
+
+
+def print_fuse(
+    report: Dict[str, Any],
+    models_sel: List[str],
+    op: str,
+    threshold: float,
+    target_fpr: Optional[float],
+    target_prec: Optional[float],
+) -> None:
+    """Evalúa un score fusionado (UN solo valor, UN solo umbral) y propone la X a desplegar."""
+    models = report["models"]
+    sel = [m for m in models_sel if m in models]
+    missing = [m for m in models_sel if m not in models]
+    if missing:
+        print(f"[WARN] Modelos de fusión no encontrados (se ignoran): {missing}")
+    if len(sel) < 2:
+        print("[WARN] --fuse necesita al menos 2 modelos válidos. Se omite.")
+        return
+
+    pairs, skipped = build_fused_pairs(report, sel, op)
+    if not pairs:
+        print("[WARN] Sin muestras válidas para la fusión.")
+        return
+
+    print()
+    print(f"Score FUSIONADO = {op}({', '.join(sel)})  ->  un único valor, un único umbral X.")
+    if skipped:
+        print(f"    (muestras omitidas por falta de algún modelo: {skipped})")
+
+    def _line(tag: str, d: Optional[Dict[str, Any]]) -> None:
+        if d is None:
+            print(f"    {tag:<22} (imposible)")
+            return
+        print(f"    {tag:<22} X={d['threshold']:>9.4f} | acierto={d['accuracy_pct']:.1f}% | "
+              f"recall={d['recall_pct']:.1f}% | precisión={d['precision_pct']:.1f}% | "
+              f"FPR={d['fpr_pct']:.2f}% | FP={d['FP']} | FN={d['FN']}")
+
+    _line(f"umbral fijo (X={threshold})", _metrics_at(pairs, threshold))
+    _line("umbral óptimo (acc)", optimal_threshold(pairs))
+    if target_fpr is not None:
+        _line(f"FPR <= {target_fpr:.2f}%", threshold_for_fpr(pairs, target_fpr))
+    if target_prec is not None:
+        _line(f"precisión >= {target_prec:.2f}%", threshold_for_precision(pairs, target_prec))
+    print("    Despliega: si score > X => robo  (con X de la fila que prefieras).")
+
+
 def print_abstain(report: Dict[str, Any], model: str, low: float, high: float) -> None:
     """Zona de abstención para un modelo: <low => no-robo, >high => robo, en medio => incierto."""
     if model not in report["models"]:
@@ -695,6 +780,10 @@ def main() -> None:
                         help="Modo de consenso a mostrar (por defecto ambos).")
     parser.add_argument("--consensus-threshold-mode", choices=["optimal", "fixed"], default="optimal",
                         help="Umbral por modelo en el consenso: óptimo (def) o el fijo --threshold.")
+    parser.add_argument("--fuse", nargs="+", default=None,
+                        help="Modelos a fusionar en un ÚNICO score (>=2) para un único umbral.")
+    parser.add_argument("--fuse-op", choices=["min", "mean", "max", "sum"], default="min",
+                        help="Cómo fusionar: min (AND-like, menos FP), mean, max (OR-like), sum.")
     parser.add_argument("--abstain-model", default=None,
                         help="Modelo para la zona de abstención (histéresis).")
     parser.add_argument("--abstain-low", type=float, default=None, help="Umbral bajo de la abstención.")
@@ -742,6 +831,9 @@ def main() -> None:
             report, args.consensus_size, modes,
             args.consensus_threshold_mode, args.consensus_rank, args.consensus_top,
         )
+
+    if args.fuse:
+        print_fuse(report, args.fuse, args.fuse_op, threshold, args.target_fpr, args.target_precision)
 
     if args.abstain_model is not None:
         if args.abstain_low is None or args.abstain_high is None:
