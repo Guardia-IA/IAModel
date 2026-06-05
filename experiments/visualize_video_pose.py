@@ -22,8 +22,10 @@ import sys
 from pathlib import Path
 
 import numpy as np
-import tkinter as tk
-from PIL import Image, ImageDraw, ImageTk
+from PIL import Image, ImageDraw
+# NOTA: tkinter e ImageTk se importan de forma perezosa dentro de run_app(),
+# para poder usar las funciones de este módulo (dibujo de pose, carga de npy)
+# desde scripts de terminal/SSH sin entorno gráfico.
 
 # OpenCV solo para lectura de vídeo e inferencia YOLO (no se usa imshow)
 import cv2
@@ -221,6 +223,14 @@ def run_app(video_path: str, model_path: str = "yolo11n-pose.pt", npy_path: str 
             detect_phone: bool = False, detect_model_path: str = "yolo11m.pt", imgsz: int = YOLO_IMGSZ,
             sample: int = 1, phone_conf: float = PHONE_CONF_THR,
             hand_crop: bool = False, crop_ratio: float = HAND_CROP_RATIO):
+    try:
+        import tkinter as tk
+        from PIL import ImageTk
+    except Exception as e:
+        print(f"No se pudo iniciar la interfaz gráfica (tkinter): {e}")
+        print("Estás en un entorno sin GUI. Para terminal/SSH usa export_skeleton_video.py.")
+        return
+
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         print(f"No se pudo abrir el vídeo: {video_path}")
