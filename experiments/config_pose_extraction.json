@@ -1,18 +1,18 @@
 {
   "category_limits": {
-    "0": 1000,
+    "0": null,
     "1": null,
     "2": null,
     "3": null,
     "4": null,
-    "5": 1000,
+    "5": null,
     "6": null,
     "7": null,
-    "8": 0,
+    "8": null,
     "9": null,
-    "10": 0,
-    "12": 0,
-    "13": 0
+    "10": null,
+    "12": null,
+    "13": null
   }
 }
 

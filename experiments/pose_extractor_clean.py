@@ -85,7 +85,7 @@ MIN_COVERAGE_RATIO = 0.8               # Mínimo % de la duración con buena cal
 DEFAULT_FPS = 12                       # FPS por defecto si no se puede leer del vídeo
 
 # Filtro de duración mínima por usuario (en segundos)
-MIN_USER_SECONDS = 2.0                 # Usuarios con menos de esto se ignoran
+MIN_USER_SECONDS = 4.0                 # Usuarios con menos de esto se ignoran
 
 # Filtro de visibilidad corporal: no guardar usuarios que solo muestren mano, cabeza, etc.
 # Un frame cuenta como "cuerpo visible" si al menos BODY_VISIBLE_MIN_KPS keypoints están
