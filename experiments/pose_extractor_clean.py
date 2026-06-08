@@ -574,6 +574,15 @@ def process_single_csv(
             clip_name = make_clip_name(
                 video_rel_path, t_start, t_end, category, used_clip_names, dir_rel_path
             )
+            data_dir = Path(DATA_RESULT_BASE) / category / clip_name
+            if data_dir.is_dir():
+                print(
+                    f"[OMITIDO] Clip '{clip_name}' fila {fila_csv} ya existe en "
+                    f"{data_dir}; se omite (reanudación)."
+                )
+                category_counters[category] = category_counters.get(category, 0) + 1
+                continue
+
             temp_cat_dir = Path(TEMP_CLIPS_BASE) / category
             temp_cat_dir.mkdir(parents=True, exist_ok=True)
             clip_path = str(temp_cat_dir / f"{clip_name}.mp4")
