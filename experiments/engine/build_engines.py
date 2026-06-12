@@ -40,7 +40,7 @@ def build_engine(
     imgsz: int = 640,
     verbose: bool = True,
 ) -> Path | None:
-    """
+    """o
     Exporta un modelo YOLO a TensorRT .engine.
     Devuelve la ruta del .engine generado o None si falló.
     """
