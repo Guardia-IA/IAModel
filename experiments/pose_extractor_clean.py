@@ -75,10 +75,11 @@ DELETE_TEMP_VIDEOS = True       # Si True, borra los vídeos temporales al termi
 SAVE_PROCESSED_CLIP = True
 
 # --- FILTROS DE CALIDAD ---
+# Umbral de confianza: keypoints con conf <= MIN_KP_CONF se guardan como NaN (no se infieren).
 MIN_KP_CONF = 0.5
 RELIABILITY_THR = 0.9                  # Ratio mínimo de frames válidos para guardar (90%)
 KEEP_KPS = [5, 6, 7, 8, 9, 10, 11, 12]  # Hombros, codos, muñecas, cadera (sin piernas)
-CRITICAL_KPS = [7, 8, 9, 10]           # Muñecas y codos
+CRITICAL_KPS = [7, 8, 9, 10]           # Muñecas y codos (estadística de oclusión)
 
 # --- FILTRO POR COBERTURA EN TIEMPO ---
 MIN_COVERAGE_RATIO = 0.8               # Mínimo % de la duración con buena calidad (80%)
@@ -99,6 +100,48 @@ OCCLUSION_CONF_THR = 0.3              # keypoints con conf < esto se consideran 
 
 # Pose sentinela para mantener 1:1 frame–pose cuando no hay detección (evita desfase vídeo/poses)
 NAN_POSE = np.full((len(KEEP_KPS), 2), np.nan, dtype=np.float32)
+EMPTY_KP_MASK = np.zeros(len(KEEP_KPS), dtype=bool)
+
+
+def _build_masked_pose(kpts_row: np.ndarray, confs_row: np.ndarray) -> np.ndarray:
+    """[8, 2] con NaN en keypoints con conf <= MIN_KP_CONF (no guardar inferencias dudosas)."""
+    out = kpts_row[np.array(KEEP_KPS, dtype=int)].astype(np.float32, copy=True)
+    for j, coco_idx in enumerate(KEEP_KPS):
+        if float(confs_row[coco_idx]) <= MIN_KP_CONF:
+            out[j] = np.nan
+    return out
+
+
+def _keypoint_mask_from_pose(kpt_pose: np.ndarray) -> np.ndarray:
+    """True por keypoint visible (sin NaN en x/y). Forma [8]."""
+    return ~np.isnan(kpt_pose).any(axis=1)
+
+
+def _visible_kp_count(kpt_pose: np.ndarray) -> int:
+    return int(_keypoint_mask_from_pose(kpt_pose).sum())
+
+
+def _frame_body_visible(kpt_pose: np.ndarray) -> bool:
+    return _visible_kp_count(kpt_pose) >= BODY_VISIBLE_MIN_KPS
+
+
+def _frame_usable(kpt_pose: np.ndarray) -> bool:
+    """Frame útil: persona detectada con suficientes keypoints visibles (p. ej. robo de perfil)."""
+    if np.isnan(kpt_pose).all():
+        return False
+    return _frame_body_visible(kpt_pose)
+
+
+def _save_user_pose_files(user_dir: Path, info: dict) -> None:
+    """Guarda poses_full, poses, keypoint_mask y valid_mask."""
+    poses_full_arr = np.array(info["poses_full"], dtype=np.float32)
+    np.save(str(user_dir / "poses_full.npy"), poses_full_arr)
+    np.save(str(user_dir / "poses.npy"), np.array(info["poses"], dtype=np.float32))
+    keypoint_mask_arr = np.array(info["keypoint_masks"], dtype=bool)
+    np.save(str(user_dir / "keypoint_mask.npy"), keypoint_mask_arr)
+    visible_per_frame = np.sum(keypoint_mask_arr, axis=1)
+    valid_mask = visible_per_frame >= BODY_VISIBLE_MIN_KPS
+    np.save(str(user_dir / "valid_mask.npy"), valid_mask)
 
 
 def _get_device() -> str:
@@ -398,6 +441,7 @@ def run_debug_extract(video_path: str, yolo_pose_model: str | None = None, outpu
         if frame is None or r.keypoints is None or r.boxes.id is None:
             for tid in list(temp_person_data.keys()):
                 temp_person_data[tid]['poses_full'].append(NAN_POSE.copy())
+                temp_person_data[tid]['keypoint_masks'].append(EMPTY_KP_MASK.copy())
                 temp_person_data[tid]['total'] += 1
             continue
         boxes = r.boxes.xyxy.cpu().numpy()
@@ -408,26 +452,32 @@ def run_debug_extract(video_path: str, yolo_pose_model: str | None = None, outpu
         for tid in list(temp_person_data.keys()):
             if tid not in ids:
                 temp_person_data[tid]['poses_full'].append(NAN_POSE.copy())
+                temp_person_data[tid]['keypoint_masks'].append(EMPTY_KP_MASK.copy())
                 temp_person_data[tid]['total'] += 1
         for i, track_id in enumerate(ids):
             if track_id not in temp_person_data:
                 c_t, c_b = get_color_attributes(frame, boxes[i])
                 temp_person_data[track_id] = {
-                    'poses_full': [], 'poses': [], 'v_cnt': 0, 'total': 0, 'body_visible_cnt': 0,
+                    'poses_full': [], 'poses': [], 'keypoint_masks': [],
+                    'v_cnt': 0, 'total': 0, 'body_visible_cnt': 0,
                     'clothes': {'top': c_t, 'bottom': c_b},
                     'kp_conf_sum': 0.0, 'occluded_frames': 0, 'bbox_ratios': [],
                 }
             conf_kp = confs[i][KEEP_KPS]
-            body_visible = int(np.sum(conf_kp > MIN_KP_CONF) >= BODY_VISIBLE_MIN_KPS)
+            kpt_pose = _build_masked_pose(kpts[i], confs[i])
+            body_visible = int(_frame_body_visible(kpt_pose))
             temp_person_data[track_id]['body_visible_cnt'] += body_visible
-            valid = all(confs[i][idx] > MIN_KP_CONF for idx in CRITICAL_KPS)
-            kpt_pose = kpts[i][KEEP_KPS]
+            usable = _frame_usable(kpt_pose)
             temp_person_data[track_id]['poses_full'].append(kpt_pose)
-            if valid:
+            temp_person_data[track_id]['keypoint_masks'].append(_keypoint_mask_from_pose(kpt_pose))
+            if usable:
                 temp_person_data[track_id]['poses'].append(kpt_pose)
                 temp_person_data[track_id]['v_cnt'] += 1
             temp_person_data[track_id]['total'] += 1
-            temp_person_data[track_id]['kp_conf_sum'] += float(np.mean(conf_kp))
+            visible_confs = conf_kp[conf_kp > MIN_KP_CONF]
+            temp_person_data[track_id]['kp_conf_sum'] += (
+                float(np.mean(visible_confs)) if visible_confs.size else 0.0
+            )
             if any(confs[i][idx] < OCCLUSION_CONF_THR for idx in CRITICAL_KPS):
                 temp_person_data[track_id]['occluded_frames'] += 1
             bbox = boxes[i]
@@ -451,12 +501,7 @@ def run_debug_extract(video_path: str, yolo_pose_model: str | None = None, outpu
         rel = valid / total
         user_dir = out_dir / f"user_{tid}"
         user_dir.mkdir(exist_ok=True)
-        poses_full_arr = np.array(info['poses_full'])
-        np.save(str(user_dir / "poses_full.npy"), poses_full_arr)
-        np.save(str(user_dir / "poses.npy"), np.array(info['poses']))
-        # Máscara para entrenamiento: True = frame con pose válida (sin NaN). Evita usar NaN en el loss.
-        valid_mask = ~np.isnan(poses_full_arr).any(axis=(1, 2))
-        np.save(str(user_dir / "valid_mask.npy"), valid_mask)
+        _save_user_pose_files(user_dir, info)
         users_meta.append({
             "track_id": int(tid),
             "valid_pct": round(rel * 100, 1),
@@ -621,6 +666,7 @@ def process_single_csv(
                 if frame is None or r.keypoints is None or r.boxes.id is None:
                     for tid in list(temp_person_data.keys()):
                         temp_person_data[tid]['poses_full'].append(NAN_POSE.copy())
+                        temp_person_data[tid]['keypoint_masks'].append(EMPTY_KP_MASK.copy())
                         temp_person_data[tid]['total'] += 1
                     continue
 
@@ -642,37 +688,40 @@ def process_single_csv(
                 for tid in list(temp_person_data.keys()):
                     if tid not in ids:
                         temp_person_data[tid]['poses_full'].append(NAN_POSE.copy())
+                        temp_person_data[tid]['keypoint_masks'].append(EMPTY_KP_MASK.copy())
                         temp_person_data[tid]['total'] += 1
                 for i, track_id in enumerate(ids):
                     if track_id not in temp_person_data:
                         c_t, c_b = get_color_attributes(frame, boxes[i])
                         temp_person_data[track_id] = {
-                            'poses_full': [], 'poses': [],
+                            'poses_full': [], 'poses': [], 'keypoint_masks': [],
                             'v_cnt': 0, 'total': 0, 'body_visible_cnt': 0,
                             'clothes': {'top': c_t, 'bottom': c_b},
                             'kp_conf_sum': 0.0, 'occluded_frames': 0, 'bbox_ratios': []
                         }
 
                     conf_kp = confs[i][KEEP_KPS]
-                    body_visible = int(np.sum(conf_kp > MIN_KP_CONF) >= BODY_VISIBLE_MIN_KPS)
+                    kpt_pose = _build_masked_pose(kpts[i], confs[i])
+                    bbox = boxes[i]
+                    body_visible = int(_frame_body_visible(kpt_pose))
                     temp_person_data[track_id]['body_visible_cnt'] += body_visible
 
-                    # Filtro de confianza en puntos críticos (muñecas, codos)
-                    valid = all(confs[i][idx] > MIN_KP_CONF for idx in CRITICAL_KPS)
-                    kpt_pose = kpts[i][KEEP_KPS]
-                    bbox = boxes[i]
+                    usable = _frame_usable(kpt_pose)
 
-                    # poses_full: todo el tracking
+                    # poses_full: secuencia 1:1; NaN solo en keypoints no visibles
                     temp_person_data[track_id]['poses_full'].append(kpt_pose)
+                    temp_person_data[track_id]['keypoint_masks'].append(_keypoint_mask_from_pose(kpt_pose))
 
-                    # poses: solo frames válidos
-                    if valid:
+                    # poses: frames con suficientes keypoints visibles (sin exigir los 4 brazos)
+                    if usable:
                         temp_person_data[track_id]['poses'].append(kpt_pose)
                         temp_person_data[track_id]['v_cnt'] += 1
                     temp_person_data[track_id]['total'] += 1
 
-                    # Metadatos enriquecidos
-                    temp_person_data[track_id]['kp_conf_sum'] += float(np.mean(conf_kp))
+                    visible_confs = conf_kp[conf_kp > MIN_KP_CONF]
+                    temp_person_data[track_id]['kp_conf_sum'] += (
+                        float(np.mean(visible_confs)) if visible_confs.size else 0.0
+                    )
                     if any(confs[i][idx] < OCCLUSION_CONF_THR for idx in CRITICAL_KPS):
                         temp_person_data[track_id]['occluded_frames'] += 1
                     h_bbox = bbox[3] - bbox[1]
@@ -751,13 +800,10 @@ def process_single_csv(
                 }
                 users_meta.append(user_meta)
 
-                # Carpetas user_X con poses + máscara para entrenamiento (True = frame válido, sin NaN)
+                # Carpetas user_X con poses + máscaras para entrenamiento
                 user_dir = data_dir / f"user_{tid}"
                 user_dir.mkdir(exist_ok=True)
-                np.save(str(user_dir / "poses_full.npy"), poses_full_arr)
-                np.save(str(user_dir / "poses.npy"), np.array(info['poses']))
-                valid_mask = ~np.isnan(poses_full_arr).any(axis=(1, 2))
-                np.save(str(user_dir / "valid_mask.npy"), valid_mask)
+                _save_user_pose_files(user_dir, info)
 
                 if not passes_filters:
                     print(

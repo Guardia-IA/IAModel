@@ -51,7 +51,7 @@ class PoseExample:
     track_id: int
     clip_name: str
     category_str: str   # por si quieres inspeccionar
-    valid_mask_path: Optional[Path] = None  # si usa poses_full.npy: máscara de frames válidos (sin NaN)
+    valid_mask_path: Optional[Path] = None  # poses_full: True si el frame tiene >= BODY_VISIBLE_MIN_KPS visibles
 
 
 def get_data_result_root() -> Path:
@@ -68,7 +68,8 @@ def collect_examples(pose_source: str = "filtered", single_user_only: bool = Fal
       2) Por defecto en categoría 6, si hay varios usuarios, quedarse con el que tenga más frames.
       3) Si single_user_only=True: solo clips con exactamente un usuario (también para categoría 6).
       3) pose_source: "filtered" -> usa poses.npy, "full" -> usa poses_full.npy.
-      4) Si "full": usa valid_mask.npy para entrenar solo con frames válidos (sin NaN);
+      4) Si "full": usa valid_mask.npy para entrenar con frames con suficientes keypoints visibles;
+         keypoints ausentes en poses_full van como NaN (→ 0 tras nan_to_num).
          si no hay máscara o hay NaN sin máscara, se descarta el clip.
     """
     root = get_data_result_root()

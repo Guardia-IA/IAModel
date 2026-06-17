@@ -25,17 +25,32 @@ CONNECTIONS = [(0, 1), (0, 2), (2, 4), (1, 3), (3, 5), (0, 6), (1, 7), (6, 7)]
 W, H = 600, 600
 
 
+def _kp_visible(pt) -> bool:
+    """Keypoint dibujable: coordenadas finitas y no (0,0) ausente."""
+    if pt is None or len(pt) < 2:
+        return False
+    x, y = float(pt[0]), float(pt[1])
+    if not np.isfinite(x) or not np.isfinite(y):
+        return False
+    return not (x == 0.0 and y == 0.0)
+
+
 def draw_skeleton_pil(draw, points, color_line, color_pt):
-    """Dibuja un esqueleto con PIL ImageDraw."""
+    """Dibuja un esqueleto con PIL ImageDraw (omite keypoints NaN o ausentes)."""
     for start, end in CONNECTIONS:
-        if start < len(points) and end < len(points):
-            x1 = int(points[start][0] * W)
-            y1 = int(points[start][1] * H)
-            x2 = int(points[end][0] * W)
-            y2 = int(points[end][1] * H)
-            draw.line([(x1, y1), (x2, y2)], fill=color_line, width=2)
+        if start >= len(points) or end >= len(points):
+            continue
+        if not _kp_visible(points[start]) or not _kp_visible(points[end]):
+            continue
+        x1 = int(points[start][0] * W)
+        y1 = int(points[start][1] * H)
+        x2 = int(points[end][0] * W)
+        y2 = int(points[end][1] * H)
+        draw.line([(x1, y1), (x2, y2)], fill=color_line, width=2)
     r = 4
     for pt in points:
+        if not _kp_visible(pt):
+            continue
         x = int(pt[0] * W)
         y = int(pt[1] * H)
         draw.ellipse([x - r, y - r, x + r, y + r], fill=color_pt, outline=color_pt)

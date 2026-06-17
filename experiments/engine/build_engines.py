@@ -94,8 +94,8 @@ def main():
         "--model", "--models",
         dest="models",
         nargs="+",
-        default=["yolo11n-pose.pt", "yolo11m-pose.pt"],
-        help="Modelo(s) a exportar (ej: yolo11n-pose.pt yolo11x-pose.pt)",
+        default=["yolo26n-pose.pt", "yolo11m-pose.pt"],
+        help="Modelo(s) a exportar (ej: yolo26n-pose.pt yolo11x-pose.pt)",
     )
     parser.add_argument(
         "-o", "--output",
