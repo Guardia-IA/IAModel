@@ -10,7 +10,7 @@ Salida:
 
 Ejemplo:
   name=..._conservas_001536_001546_6, start=2, end=9
-  → video_path=..._conservas_001536_001546_6, 00:00:02, 00:00:09, 6
+  → video_path=..._conservas_001536_001546_6/clip.mp4, 00:00:02, 00:00:09, 6
 
 Uso:
   python parser_theft_web.py entrada.csv
@@ -72,11 +72,14 @@ def _read_input_csv(path: Path) -> list[dict[str, str]]:
         return rows
 
 
+CLIP_FILENAME = "clip.mp4"
+
+
 def _video_path_with_prefix(base_path: Path | None, name: str) -> str:
     name = name.strip()
     if not base_path:
-        return name
-    return str((base_path / name).as_posix())
+        return f"{name}/{CLIP_FILENAME}"
+    return str((base_path / name / CLIP_FILENAME).as_posix())
 
 
 def _check_paths(base_path: Path | None, name: str) -> dict[str, bool | str]:
@@ -89,7 +92,7 @@ def _check_paths(base_path: Path | None, name: str) -> dict[str, bool | str]:
         return info
 
     dir_path = base_path / name
-    clip_path = dir_path / "clip.mp4"
+    clip_path = dir_path / CLIP_FILENAME
     info["base_path"] = str(base_path)
     info["dir_path"] = str(dir_path)
     info["clip_path"] = str(clip_path)
