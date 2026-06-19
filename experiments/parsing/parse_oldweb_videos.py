@@ -8,7 +8,9 @@ Entrada (columnas):
 Salida:
   video_path, inicio, fin, #clasificacion
 
-video_path = {base_path}/{retail_id}/{camera_id}/{id}/clip_buffer.mp4
+video_path = {base_path}/{retail_id}/{camera_id}/{id_sin_guiones}/clip_buffer.mp4
+
+El id en la ruta se normaliza: minúsculas y sin guiones.
 
 Para clips ya recortados (clip_buffer.mp4):
   inicio = 00:00:00
@@ -64,8 +66,13 @@ def _read_input_file(path: Path) -> list[dict[str, str]]:
         return rows
 
 
+def _normalize_id(raw_id: str) -> str:
+    return raw_id.strip().lower().replace("-", "")
+
+
 def _build_video_path(base_path: Path, row: dict[str, str]) -> Path:
-    return base_path / row["retail_id"] / row["camera_id"] / row["id"] / CLIP_FILENAME
+    folder_id = _normalize_id(row["id"])
+    return base_path / row["retail_id"] / row["camera_id"] / folder_id / CLIP_FILENAME
 
 
 def _video_duration_hms(video_path: Path) -> str | None:
@@ -220,7 +227,7 @@ def main() -> int:
         "-b",
         type=Path,
         required=True,
-        help="Prefijo: {base}/{retail_id}/{camera_id}/{id}/clip_buffer.mp4",
+        help="Prefijo: {base}/{retail_id}/{camera_id}/{id_normalizado}/clip_buffer.mp4",
     )
     parser.add_argument("-o", "--output", type=Path, default=None, help="CSV de salida")
     parser.add_argument(
