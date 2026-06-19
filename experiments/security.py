@@ -101,9 +101,11 @@ def validate_csv(
         if not _is_valid_hms(fin_str):
             row_errors.append({"row": row_num, "msg": f"Fin no válido (HH:mm:ss): '{fin}'"})
 
-        # 3) inicio <= fin
+        # 3) inicio <= fin (00:00:00 + 00:00:00 = clip completo, válido)
         if _is_valid_hms(inicio_str) and _is_valid_hms(fin_str):
-            if _hms_to_seconds(inicio_str) > _hms_to_seconds(fin_str):
+            if inicio_str == "00:00:00" and fin_str == "00:00:00":
+                pass
+            elif _hms_to_seconds(inicio_str) > _hms_to_seconds(fin_str):
                 row_errors.append({"row": row_num, "msg": f"Inicio ({inicio_str}) > Fin ({fin_str})"})
 
         # 4) clasificación entero en rango

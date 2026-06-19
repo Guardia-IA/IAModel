@@ -13,8 +13,7 @@ video_path = {base_path}/{retail_id}/{camera_id}/{id_sin_guiones}/clip_buffer.mp
 El id en la ruta se normaliza: minúsculas y sin guiones.
 
 Para clips ya recortados (clip_buffer.mp4):
-  inicio = 00:00:00
-  fin    = duración del vídeo (si existe en disco)
+  inicio = fin = 00:00:00  →  el extractor usa el fichero completo sin recortar
 
 Uso:
   python parse_oldweb_videos.py entrada.txt --base-path /ruta/videos
@@ -32,6 +31,7 @@ INPUT_COLUMNS = ("id", "retail_id", "camera_id", "created_at", "category_id")
 OUTPUT_COLUMNS = ("video_path", "inicio", "fin", "#clasificacion")
 CLIP_FILENAME = "clip_buffer.mp4"
 INICIO_FULL_CLIP = "00:00:00"
+FIN_FULL_CLIP = "00:00:00"
 
 
 def seconds_to_hms(seconds: int | float) -> str:
@@ -164,8 +164,6 @@ def parse_oldweb_videos(
             exists = video_path.is_file()
             fin = _video_duration_hms(video_path)
             duration_ok = fin is not None
-            if fin is None:
-                fin = default_fin
 
             if skip_missing and not exists:
                 skipped += 1
@@ -175,7 +173,7 @@ def parse_oldweb_videos(
 
             if not quiet:
                 _print_row(
-                    i, total, row, video_path, INICIO_FULL_CLIP, fin,
+                    i, total, row, video_path, INICIO_FULL_CLIP, FIN_FULL_CLIP,
                     clasificacion, exists, duration_ok,
                 )
                 if pause:
@@ -189,7 +187,7 @@ def parse_oldweb_videos(
                 {
                     "video_path": str(video_path.as_posix()),
                     "inicio": INICIO_FULL_CLIP,
-                    "fin": fin,
+                    "fin": FIN_FULL_CLIP,
                     "#clasificacion": clasificacion,
                 }
             )

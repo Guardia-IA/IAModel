@@ -256,6 +256,46 @@ def hms_to_seconds(t: str) -> float:
     return h * 3600 + m * 60 + s
 
 
+def seconds_to_hms(seconds: float) -> str:
+    total = max(0, int(round(seconds)))
+    h = total // 3600
+    m = (total % 3600) // 60
+    s = total % 60
+    return f"{h:02d}:{m:02d}:{s:02d}"
+
+
+def _normalize_hms(t: str) -> str:
+    return str(t).strip().strip('"').strip("'")
+
+
+def _is_full_clip_range(t_start: str, t_end: str) -> bool:
+    """00:00:00 + 00:00:00 = usar el fichero de vídeo completo sin recortar."""
+    return _normalize_hms(t_start) == "00:00:00" and _normalize_hms(t_end) == "00:00:00"
+
+
+def _resolve_video_path(videos_dir: str, video_rel_path: str) -> str:
+    p = Path(str(video_rel_path).strip().strip('"').strip("'"))
+    if p.is_absolute():
+        return str(p.resolve())
+    return str((Path(videos_dir) / p).resolve())
+
+
+def _video_duration_from_file(video_path: str) -> float:
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        return 0.0
+    try:
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        frames = cap.get(cv2.CAP_PROP_FRAME_COUNT)
+        if fps is None or fps <= 0:
+            fps = DEFAULT_FPS
+        if frames is None or frames <= 0:
+            return 0.0
+        return float(frames) / float(fps)
+    finally:
+        cap.release()
+
+
 def _hms_to_compact(t: str) -> str:
     """Convierte 'HH:MM:SS' a 'HHMMSS' (sin dos puntos)."""
     return str(t).replace(":", "").strip()
@@ -286,7 +326,10 @@ def make_clip_name(
 
     t1 = _hms_to_compact(t_start)
     t2 = _hms_to_compact(t_end)
-    base = f"{path_norm}_{t1}_{t2}_{category}"
+    if _is_full_clip_range(t_start, t_end):
+        base = f"{path_norm}_full_{category}"
+    else:
+        base = f"{path_norm}_{t1}_{t2}_{category}"
 
     name = base
     n = 2
@@ -297,7 +340,7 @@ def make_clip_name(
     return name
 
 
-def cut_clip(video_in, start, end, video_out):
+def cut_clip(video_in, start, end, video_out) -> bool:
     """
     Recorta el vídeo con FFmpeg. Escala a CLIP_SCALE_HEIGHT si está configurado.
     Usa VAAPI cuando VAAPI_DEVICE está definido (Intel/AMD).
@@ -343,7 +386,10 @@ def cut_clip(video_in, start, end, video_out):
             '-i', video_in, '-vf', f"scale=-2:{scale_h}",
             '-c:v', 'libx264', '-loglevel', 'error', video_out
         ]
-        subprocess.run(command_fb)
+        result = subprocess.run(command_fb, capture_output=True, text=True)
+    if result.returncode != 0 and result.stderr:
+        print(f"[FFmpeg] {result.stderr.strip()[:400]}")
+    return result.returncode == 0 and os.path.isfile(video_out)
 
 
 def scale_video(video_in: str, video_out: str, height: int | None = None) -> bool:
@@ -584,10 +630,11 @@ def process_single_csv(
     if category_counters is None:
         category_counters = {}
     for index, row in tqdm(df.iterrows(), total=len(df), desc="Procesando CSV"):
-        video_rel_path = row.iloc[0]  # Nombre del vídeo en la primera columna
-        t_start = row.iloc[1]        # HH:MM:SS
-        t_end = row.iloc[2]          # HH:MM:SS
+        video_rel_path = str(row.iloc[0]).strip().strip('"').strip("'")
+        t_start = _normalize_hms(str(row.iloc[1]))
+        t_end = _normalize_hms(str(row.iloc[2]))
         category = str(int(row.iloc[3]))
+        use_full_clip = _is_full_clip_range(t_start, t_end)
 
         # fila_csv = número de fila en el CSV
         fila_csv = start_row + int(index)
@@ -601,16 +648,30 @@ def process_single_csv(
             )
             continue
 
-        # Duración teórica del clip según el CSV
-        clip_duration = max(0.0, hms_to_seconds(t_end) - hms_to_seconds(t_start))
-        
-        video_full_path = os.path.join(VIDEOS_DIR_RES, video_rel_path)
+        video_full_path = _resolve_video_path(VIDEOS_DIR_RES, video_rel_path)
         if not os.path.exists(video_full_path):
             failed_clips.append({
                 "csv": str(CSV_PATH), "row": fila_csv, "video": video_rel_path,
                 "error": "Archivo no encontrado",
             })
             continue
+
+        if use_full_clip:
+            clip_duration = _video_duration_from_file(video_full_path)
+            if clip_duration <= 0:
+                failed_clips.append({
+                    "csv": str(CSV_PATH), "row": fila_csv, "video": video_rel_path,
+                    "error": "Modo clip completo (00:00:00–00:00:00): no se pudo leer duración del vídeo",
+                })
+                continue
+        else:
+            clip_duration = max(0.0, hms_to_seconds(t_end) - hms_to_seconds(t_start))
+            if clip_duration <= 0:
+                failed_clips.append({
+                    "csv": str(CSV_PATH), "row": fila_csv, "video": video_rel_path,
+                    "error": f"Duración inválida: inicio={t_start}, fin={t_end}",
+                })
+                continue
 
         cap = None
         clip_path = None
@@ -630,10 +691,27 @@ def process_single_csv(
 
             temp_cat_dir = Path(TEMP_CLIPS_BASE) / category
             temp_cat_dir.mkdir(parents=True, exist_ok=True)
-            clip_path = str(temp_cat_dir / f"{clip_name}.mp4")
+            clip_is_temp = False
 
-            print(f"[Clip] {clip_name} | Fila CSV: {fila_csv} | Inicio: {t_start} | Fin: {t_end} | Video: {video_rel_path}")
-            cut_clip(video_full_path, t_start, t_end, clip_path)
+            if use_full_clip:
+                clip_path = video_full_path
+                print(
+                    f"[Clip COMPLETO] {clip_name} | Fila CSV: {fila_csv} | "
+                    f"Duración: {seconds_to_hms(clip_duration)} | Video: {video_rel_path}"
+                )
+            else:
+                clip_path = str(temp_cat_dir / f"{clip_name}.mp4")
+                print(
+                    f"[Clip] {clip_name} | Fila CSV: {fila_csv} | "
+                    f"Inicio: {t_start} | Fin: {t_end} | Video: {video_rel_path}"
+                )
+                if not cut_clip(video_full_path, t_start, t_end, clip_path):
+                    failed_clips.append({
+                        "csv": str(CSV_PATH), "row": fila_csv, "video": video_rel_path,
+                        "error": f"FFmpeg no generó el clip temporal: {clip_path}",
+                    })
+                    continue
+                clip_is_temp = True
 
             # 3. Procesar Pose Tracking en el clip (stream=True reduce uso de memoria).
             # Cada clip usa su propio temp_person_data (estado fresco); no se reutiliza nada del clip anterior.
@@ -840,7 +918,8 @@ def process_single_csv(
                 "video_source": str(Path(video_full_path).resolve()),
                 "row_csv": int(fila_csv),
                 "t_start": str(t_start),
-                "t_end": str(t_end),
+                "t_end": seconds_to_hms(clip_duration) if use_full_clip else str(t_end),
+                "full_clip": use_full_clip,
                 "clip_duration": clip_duration,
                 "fps": fps,
                 "frame_count": processed_frame_count,
@@ -866,7 +945,7 @@ def process_single_csv(
                         shutil.copy2(clip_path, dest_clip)
                     except Exception as e:
                         print(f"[AVISO] No se pudo guardar clip en data_result: {e}")
-                if DELETE_TEMP_VIDEOS:
+                if DELETE_TEMP_VIDEOS and clip_is_temp:
                     os.remove(clip_path)
 
             # Contar clip como procesado para esta categoría (aunque luego descartes usuarios).

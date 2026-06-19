@@ -296,11 +296,33 @@ def main():
                 continue
             if not is_hms_format(str(row.iloc[1]).strip()) or not is_hms_format(str(row.iloc[2]).strip()):
                 continue
-            dur = hms_to_seconds(str(row.iloc[2]).strip()) - hms_to_seconds(str(row.iloc[1]).strip())
+            inicio_s = str(row.iloc[1]).strip()
+            fin_s = str(row.iloc[2]).strip()
+            if inicio_s == "00:00:00" and fin_s == "00:00:00":
+                video_rel = str(row.iloc[0]).strip().strip('"').strip("'")
+                video_full_path = Path(video_rel) if Path(video_rel).is_absolute() else (base_dir / video_rel)
+                video_full_path = video_full_path.resolve()
+                fps = get_video_fps(video_full_path, fps_cache)
+                try:
+                    out = subprocess.run(
+                        [
+                            "ffprobe", "-v", "error", "-show_entries", "format=duration",
+                            "-of", "csv=p=0", str(video_full_path),
+                        ],
+                        capture_output=True, text=True, timeout=10, check=False,
+                    )
+                    dur = float(out.stdout.strip()) if out.returncode == 0 and out.stdout.strip() else 0.0
+                except Exception:
+                    dur = 0.0
+                if dur <= 0:
+                    continue
+            else:
+                dur = hms_to_seconds(fin_s) - hms_to_seconds(inicio_s)
             if dur <= 0:
                 continue
             video_rel = str(row.iloc[0]).strip().strip('"').strip("'")
-            video_full_path = (base_dir / video_rel).resolve()
+            video_full_path = Path(video_rel) if Path(video_rel).is_absolute() else (base_dir / video_rel)
+            video_full_path = video_full_path.resolve()
             fps = get_video_fps(video_full_path, fps_cache)
             n_clips += 1
             total_seconds_of_video += dur
