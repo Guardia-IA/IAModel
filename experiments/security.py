@@ -11,7 +11,7 @@ import pandas as pd
 
 HMS_PATTERN = re.compile(r"^\d{1,2}:\d{2}:\d{2}$")
 DEFAULT_MIN_CLAS = 0
-DEFAULT_MAX_CLAS = 13
+DEFAULT_MAX_CLAS = 14
 
 
 def _is_valid_hms(val) -> bool:
