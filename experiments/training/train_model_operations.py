@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import math
+import os
 import random
 import sys
 import time
@@ -291,11 +292,108 @@ def specs_from_validate_manifest_payload(
     return out
 
 
-def get_data_result_root() -> Path:
-    root = DATA_RESULT_ROOT
-    if not root.exists():
-        raise RuntimeError(f"No se encontró la carpeta data_result en: {root}")
-    return root
+def _output_base_data_result_from_experiments_config() -> Optional[Path]:
+    """OUTPUT_BASE/data_result de experiments/config.py (misma salida que pose_extractor_clean)."""
+    try:
+        exp_dir = Path(__file__).resolve().parent.parent
+        if str(exp_dir) not in sys.path:
+            sys.path.insert(0, str(exp_dir))
+        from config import OUTPUT_BASE  # type: ignore[import-untyped]
+
+        if OUTPUT_BASE:
+            return Path(OUTPUT_BASE).expanduser().resolve() / "data_result"
+    except Exception:
+        pass
+    return None
+
+
+def _candidate_data_result_roots(explicit: str | Path | None = None) -> List[Path]:
+    candidates: List[Path] = []
+    seen: set[str] = set()
+
+    def _add(p: Path | None) -> None:
+        if p is None:
+            return
+        rp = p.expanduser().resolve()
+        key = str(rp)
+        if key not in seen:
+            seen.add(key)
+            candidates.append(rp)
+
+    if explicit is not None:
+        _add(Path(explicit))
+        return candidates
+
+    env_root = os.environ.get("GUADIA_DATA_RESULT_ROOT", "").strip()
+    if env_root:
+        _add(Path(env_root))
+    _add(Path(DATA_RESULT_ROOT))
+    _add(_output_base_data_result_from_experiments_config())
+    return candidates
+
+
+def get_data_result_root(data_root: str | Path | None = None) -> Path:
+    """
+    Resuelve la carpeta data_result.
+    Prioridad: argumento explícito → GUADIA_DATA_RESULT_ROOT → model_config → OUTPUT_BASE/data_result.
+    """
+    for root in _candidate_data_result_roots(data_root):
+        if root.is_dir():
+            return root
+    tried = "\n    ".join(str(p) for p in _candidate_data_result_roots(data_root))
+    raise RuntimeError(
+        "No se encontró la carpeta data_result. Rutas probadas:\n"
+        f"    {tried}\n"
+        "Indica la ruta correcta con --data-root o exporta GUADIA_DATA_RESULT_ROOT."
+    )
+
+
+def _parse_category_dir_name(name: str) -> Optional[int]:
+    s = str(name).strip()
+    if not s:
+        return None
+    if s.isdigit() or (s.startswith("-") and s[1:].isdigit()):
+        return int(s)
+    return None
+
+
+def scan_data_result_folders(data_root: str | Path | None = None) -> Dict[int, Dict[str, int]]:
+    """
+    Inventario por nombre de carpeta bajo data_result/{cat}/ (sin filtros de calidad).
+    Categoría = nombre de la carpeta si es entero (p. ej. 14).
+
+    clip_dirs: subcarpetas bajo {cat}/ (aunque falte meta.json).
+    clips: subcarpetas con meta.json (listas para train).
+    """
+    root = get_data_result_root(data_root)
+    out: Dict[int, Dict[str, int]] = {}
+    for cat_dir in sorted(root.iterdir()):
+        if not cat_dir.is_dir():
+            continue
+        cat = _parse_category_dir_name(cat_dir.name)
+        if cat is None:
+            continue
+        clip_dirs = 0
+        clips = 0
+        users = 0
+        for clip_dir in sorted(cat_dir.iterdir()):
+            if not clip_dir.is_dir():
+                continue
+            clip_dirs += 1
+            if not (clip_dir / "meta.json").is_file():
+                continue
+            clips += 1
+            for ud in sorted(clip_dir.iterdir()):
+                if not ud.is_dir() or not ud.name.startswith("user_"):
+                    continue
+                if (ud / "poses.npy").is_file() or (ud / "poses_full.npy").is_file():
+                    users += 1
+        out[cat] = {
+            "clip_dirs": clip_dirs,
+            "clips": clips,
+            "users_with_poses": users,
+        }
+    return dict(sorted(out.items()))
 
 
 def manifest_cache_path_for_uid(cache_dir: Path, uid: str) -> Path:
@@ -517,7 +615,7 @@ def expand_examples_with_category_augmentation(
         if ex.forced_ops is not None:
             out.append(ex)
             continue
-        n_req = _category_augment_count_for_label(cfg, _example_action_label(ex))
+        n_req = _category_augment_count_for_label(cfg, _example_folder_category(ex))
         if n_req <= 0:
             out.append(ex)
             continue
@@ -532,7 +630,7 @@ def expand_examples_with_category_augmentation(
             out.append(_copy_pose_example(ex, forced_ops=list(ops)))
             added_rows += 1
         expanded_clips += 1
-        cat = _example_action_label(ex)
+        cat = _example_folder_category(ex)
         by_cat[cat] = by_cat.get(cat, 0) + 1
 
     print(
@@ -547,9 +645,14 @@ def expand_examples_with_category_augmentation(
 
 
 def count_examples_by_action_label(examples: List[PoseExample]) -> Dict[int, int]:
+    """Cuenta ejemplos por carpeta de categoría (data_result/{cat}/)."""
+    return count_examples_by_folder_category(examples)
+
+
+def count_examples_by_folder_category(examples: List[PoseExample]) -> Dict[int, int]:
     counts: Dict[int, int] = {}
     for ex in examples:
-        cat = _example_action_label(ex)
+        cat = _example_folder_category(ex)
         counts[cat] = counts.get(cat, 0) + 1
     return dict(sorted(counts.items()))
 
@@ -1016,6 +1119,14 @@ def _example_action_label(ex: PoseExample) -> int:
     return int(ex.label)
 
 
+def _example_folder_category(ex: PoseExample) -> int:
+    """Categoría según carpeta data_result/{cat}/ (category_str), no label de entrenamiento."""
+    cat = _parse_category_dir_name(ex.category_str)
+    if cat is not None:
+        return cat
+    return _example_action_label(ex)
+
+
 def _copy_pose_example(
     ex: PoseExample,
     forced_ops: Optional[List[Dict[str, Any]]],
@@ -1289,6 +1400,7 @@ def collect_examples(
     min_valid_frames: int = MIN_VALID_FRAMES,
     min_valid_pct: float = MIN_VALID_PCT,
     max_occlusion_ratio: float = MAX_OCCLUSION_RATIO,
+    data_root: str | Path | None = None,
 ) -> List[PoseExample]:
     """
     Recorre data_result/{cat}/{clip_name}/ y construye ejemplos por usuario:
@@ -1302,13 +1414,16 @@ def collect_examples(
       6) pose_source: "filtered" usa poses.npy, "full" usa poses_full.npy (+ valid_mask).
       preflight_check_operations.py usa esta misma función para N y tiempos estimados.
     """
-    root = get_data_result_root()
+    root = get_data_result_root(data_root)
     examples: List[PoseExample] = []
 
     for cat_dir in sorted(root.iterdir()):
         if not cat_dir.is_dir():
             continue
         cat_str = cat_dir.name
+        folder_cat = _parse_category_dir_name(cat_str)
+        if folder_cat is None:
+            continue
         for clip_dir in sorted(cat_dir.iterdir()):
             if not clip_dir.is_dir():
                 continue
@@ -1402,7 +1517,7 @@ def collect_examples(
                         category_str=cat_str,
                         valid_mask_path=valid_mask_path,
                         users_in_clip=int(len(users)),
-                        action_label=int(label),
+                        action_label=int(folder_cat),
                     )
                 )
 

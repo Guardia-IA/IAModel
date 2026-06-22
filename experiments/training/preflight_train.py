@@ -26,6 +26,7 @@ try:
         MAX_OCCLUSION_RATIO,
         SEED,
         CATEGORY_AUGMENTATION_CONFIG_PATH,
+        DATA_RESULT_ROOT,
         ROBBERY_CLASS,
         PREFLIGHT_MIN_ROBBERY_TRAIN_ROWS,
         PREFLIGHT_MIN_NEGATIVE_TRAIN_ROWS,
@@ -35,8 +36,10 @@ try:
     from .train_model_operations import (  # type: ignore[attr-defined]
         collect_examples,
         split_examples,
+        get_data_result_root,
+        scan_data_result_folders,
         load_category_augmentation_config,
-        count_examples_by_action_label,
+        count_examples_by_folder_category,
         propose_category_augment_counts,
         summarize_category_aug_on_train,
         analyze_robbery_augment_balance,
@@ -51,6 +54,7 @@ except ImportError:
         MAX_OCCLUSION_RATIO,
         SEED,
         CATEGORY_AUGMENTATION_CONFIG_PATH,
+        DATA_RESULT_ROOT,
         ROBBERY_CLASS,
         PREFLIGHT_MIN_ROBBERY_TRAIN_ROWS,
         PREFLIGHT_MIN_NEGATIVE_TRAIN_ROWS,
@@ -60,8 +64,10 @@ except ImportError:
     from train_model_operations import (  # type: ignore[attr-defined]
         collect_examples,
         split_examples,
+        get_data_result_root,
+        scan_data_result_folders,
         load_category_augmentation_config,
-        count_examples_by_action_label,
+        count_examples_by_folder_category,
         propose_category_augment_counts,
         summarize_category_aug_on_train,
         analyze_robbery_augment_balance,
@@ -103,7 +109,7 @@ def _print_robbery_balance(
     min_negative_rows: int,
     neg_ratio_target: float,
 ) -> None:
-    header(f"4) Balance robo (clase {robbery_class}) vs resto (falsos positivos)")
+    header(f"5) Balance robo (clase {robbery_class}) vs resto (falsos positivos)")
     print(
         "  Prioridad: (1) no perder robos (FN) → augment clase 6 si hay pocos clips; "
         "(2) no disparar FP (normal→6) → augment negativos y ratio neg/robo alto."
@@ -131,25 +137,32 @@ def _print_cat_table(
     train_counts: Dict[int, int],
     val_counts: Dict[int, int],
     test_counts: Dict[int, int],
+    folder_scan: Dict[int, Dict[str, int]],
     current_aug: Dict[int, int],
     proposed_aug: Dict[int, int],
     current_rows: Dict[int, Dict[str, int]],
     proposed_rows: Dict[int, Dict[str, int]],
 ) -> None:
-    header("5) Detalle por categoría de acción")
+    header("6) Detalle por categoría (carpeta data_result/{cat}/)")
     cats = sorted(
-        set(global_counts) | set(train_counts) | set(val_counts) | set(test_counts),
+        set(folder_scan)
+        | set(global_counts)
+        | set(train_counts)
+        | set(val_counts)
+        | set(test_counts),
         key=lambda x: int(x),
     )
     print(
-        f"{'cat':>4} | {'total':>7} | {'train':>7} | {'val':>6} | {'test':>6} | "
+        f"{'cat':>4} | {'dirs':>5} | {'valid':>7} | {'train':>7} | {'val':>6} | {'test':>6} | "
         f"{'aug_now':>7} | {'aug_prop':>8} | {'rows_now':>8} | {'rows_prop':>9}"
     )
-    print("-" * 88)
+    print("-" * 96)
     total_train_rows_now = sum(v["train_rows"] for v in current_rows.values())
     total_train_rows_prop = sum(v["train_rows"] for v in proposed_rows.values())
 
     for cat in cats:
+        info = folder_scan.get(cat, {})
+        dirs = info.get("clip_dirs", info.get("clips", 0))
         g = global_counts.get(cat, 0)
         tr = train_counts.get(cat, 0)
         va = val_counts.get(cat, 0)
@@ -159,13 +172,14 @@ def _print_cat_table(
         rn = current_rows.get(cat, {}).get("train_rows", tr)
         rp = proposed_rows.get(cat, {}).get("train_rows", tr)
         print(
-            f"{cat:4d} | {g:7d} | {tr:7d} | {va:6d} | {te:6d} | "
+            f"{cat:4d} | {dirs:5d} | {g:7d} | {tr:7d} | {va:6d} | {te:6d} | "
             f"{an:7d} | {ap:8d} | {rn:8d} | {rp:9d}"
         )
 
-    print("-" * 88)
+    print("-" * 96)
     print(
-        f"{'Σ':>4} | {sum(global_counts.values()):7d} | {sum(train_counts.values()):7d} | "
+        f"{'Σ':>4} | {sum(i.get('clip_dirs', i.get('clips', 0)) for i in folder_scan.values()):5d} | "
+        f"{sum(global_counts.values()):7d} | {sum(train_counts.values()):7d} | "
         f"{sum(val_counts.values()):6d} | {sum(test_counts.values()):6d} | "
         f"{'':>7} | {'':>8} | {total_train_rows_now:8d} | {total_train_rows_prop:9d}"
     )
@@ -199,6 +213,39 @@ def _build_proposed_config(
     }
 
 
+def _print_folder_inventory(folder_scan: Dict[int, Dict[str, int]], data_root: Path) -> None:
+    header("1) Inventario en disco (carpetas data_result/{cat}/)")
+    print(f"  Raíz: {CYAN}{data_root}{RESET}")
+    print("  Categoría = nombre de carpeta numérica (p. ej. 14/).")
+    if not folder_scan:
+        print(f"  {YELLOW}No hay subcarpetas numéricas bajo data_result.{RESET}")
+        print(
+            f"  {YELLOW}Comprueba que apuntas a la carpeta correcta "
+            f"(--data-root o GUADIA_DATA_RESULT_ROOT).{RESET}"
+        )
+        return
+    print(f"\n{'cat':>4} | {'dirs':>6} | {'ready':>6} | {'users':>7}")
+    print("  dirs=subcarpetas clip | ready=con meta.json | users=con poses.npy")
+    print("-" * 32)
+    for cat, info in sorted(folder_scan.items(), key=lambda x: int(x[0])):
+        dirs = info.get("clip_dirs", info.get("clips", 0))
+        ready = info.get("clips", 0)
+        users = info.get("users_with_poses", 0)
+        flag = f" {YELLOW}[sin meta.json]{RESET}" if dirs > 0 and ready == 0 else ""
+        print(f"{cat:4d} | {dirs:6d} | {ready:6d} | {users:7d}{flag}")
+    print(f"\n  Total categorías en disco: {len(folder_scan)}")
+
+
+def _merge_train_counts_with_folders(
+    train_counts: Dict[int, int],
+    folder_scan: Dict[int, Dict[str, int]],
+) -> Dict[int, int]:
+    merged = {int(k): int(v) for k, v in train_counts.items()}
+    for cat in folder_scan:
+        merged.setdefault(int(cat), 0)
+    return dict(sorted(merged.items()))
+
+
 def run_preflight(
     *,
     pose_source: str = "filtered",
@@ -209,6 +256,7 @@ def run_preflight(
     max_occlusion_ratio: float = MAX_OCCLUSION_RATIO,
     train_ratio: Optional[float] = None,
     val_ratio: Optional[float] = None,
+    data_root: Optional[Path] = None,
     category_aug_config: Path = CATEGORY_AUGMENTATION_CONFIG_PATH,
     target_samples: Optional[int] = None,
     max_aug: int = 10,
@@ -219,7 +267,15 @@ def run_preflight(
     write_config: bool = False,
     output_config: Optional[Path] = None,
 ) -> Dict[str, Any]:
-    header("1) Recolección de ejemplos (mismo criterio que train_model_operations)")
+    resolved_root = get_data_result_root(data_root)
+    folder_scan = scan_data_result_folders(resolved_root)
+    _print_folder_inventory(folder_scan, resolved_root)
+
+    header("2) Ejemplos válidos (collect_examples — mismos filtros que train)")
+    print(
+        f"  Filtros: MIN_CLIP_SECONDS={min_clip_seconds}, MIN_VALID_FRAMES={min_valid_frames}, "
+        f"MIN_VALID_PCT={min_valid_pct}, MAX_OCCLUSION={max_occlusion_ratio}"
+    )
     examples = collect_examples(
         pose_source=pose_source,
         single_user_only=single_user_only,
@@ -227,12 +283,36 @@ def run_preflight(
         min_valid_frames=int(min_valid_frames),
         min_valid_pct=float(min_valid_pct),
         max_occlusion_ratio=float(max_occlusion_ratio),
+        data_root=resolved_root,
     )
     n_total = len(examples)
-    global_counts = count_examples_by_action_label(examples)
-    print(f"  Total ejemplos: {CYAN}{n_total}{RESET} | categorías: {len(global_counts)}")
+    global_counts = count_examples_by_folder_category(examples)
+    print(f"  Total ejemplos válidos: {CYAN}{n_total}{RESET} | categorías con datos: {len(global_counts)}")
 
-    header("2) Split train / val / test")
+    missing_after_filters = [
+        cat for cat in folder_scan
+        if folder_scan[cat].get("clips", 0) > 0 and global_counts.get(cat, 0) == 0
+    ]
+    pending_extraction = [
+        cat for cat in folder_scan
+        if folder_scan[cat].get("clip_dirs", 0) > 0 and folder_scan[cat].get("clips", 0) == 0
+    ]
+    if pending_extraction:
+        print(
+            f"  {YELLOW}[!] Carpetas con subcarpetas pero sin meta.json (extracción incompleta): "
+            f"{pending_extraction}{RESET}"
+        )
+    if missing_after_filters:
+        print(
+            f"  {YELLOW}[!] Carpetas con clips en disco pero 0 ejemplos tras filtros: "
+            f"{missing_after_filters}{RESET}"
+        )
+        print(
+            "      Revisa calidad (duración, frames válidos, oclusión) o relaja filtros con "
+            "--min-clip-seconds / --min-valid-frames / --min-valid-pct / --max-occlusion-ratio."
+        )
+
+    header("3) Split train / val / test")
     if (train_ratio is None) ^ (val_ratio is None):
         raise ValueError("Indica ambos --train-ratio y --val-ratio, o ninguno para heurística automática.")
     if train_ratio is None or val_ratio is None:
@@ -246,9 +326,10 @@ def run_preflight(
         print(f"  Ratios explícitos: train={tr:.3f} val={vr:.3f} test={te:.3f}")
 
     train_ex, val_ex, test_ex = split_examples(examples, seed=SEED, train_ratio=tr, val_ratio=vr)
-    train_counts = count_examples_by_action_label(train_ex)
-    val_counts = count_examples_by_action_label(val_ex)
-    test_counts = count_examples_by_action_label(test_ex)
+    train_counts = count_examples_by_folder_category(train_ex)
+    val_counts = count_examples_by_folder_category(val_ex)
+    test_counts = count_examples_by_folder_category(test_ex)
+    train_counts = _merge_train_counts_with_folders(train_counts, folder_scan)
 
     print(
         f"  Clips => train: {GREEN}{len(train_ex)}{RESET} ({_pct(len(train_ex), n_total):.1f}%) | "
@@ -257,7 +338,7 @@ def run_preflight(
     )
     print(f"  {YELLOW}Val/test: sin data augmentation en entrenamiento.{RESET}")
 
-    header("3) Augmentación por categoría (solo train)")
+    header("4) Augmentación por categoría (solo train)")
     cfg_path = Path(category_aug_config)
     current_cfg = load_category_augmentation_config(cfg_path)
     include_identity = bool(current_cfg.get("include_identity", True))
@@ -274,7 +355,7 @@ def run_preflight(
         max_aug=max_aug,
         include_identity=include_identity,
     )
-    for cat in train_counts:
+    for cat in folder_scan:
         proposed_aug.setdefault(int(cat), 0)
 
     balance = analyze_robbery_augment_balance(
@@ -321,13 +402,14 @@ def run_preflight(
         train_counts,
         val_counts,
         test_counts,
+        folder_scan,
         current_aug,
         proposed_aug,
         current_rows,
         proposed_rows,
     )
 
-    header("6) Resumen general antes de entrenar")
+    header("7) Resumen general antes de entrenar")
     print(f"  Pool original total:     {n_total} clips")
     print(f"  Train (sin augment):     {len(train_ex)} clips")
     print(f"  Train (config actual):   {sum(v['train_rows'] for v in current_rows.values())} filas dataset")
@@ -350,6 +432,8 @@ def run_preflight(
 
     return {
         "total": n_total,
+        "folder_scan": folder_scan,
+        "data_root": str(resolved_root),
         "split_ratios": {"train": tr, "val": vr, "test": te},
         "train_clips": len(train_ex),
         "val_clips": len(val_ex),
@@ -372,6 +456,15 @@ def main() -> int:
     parser.add_argument("--max-occlusion-ratio", type=float, default=MAX_OCCLUSION_RATIO)
     parser.add_argument("--train-ratio", type=float, default=None)
     parser.add_argument("--val-ratio", type=float, default=None)
+    parser.add_argument(
+        "--data-root",
+        type=str,
+        default=None,
+        help=(
+            f"Carpeta data_result (default: auto — model_config, GUADIA_DATA_RESULT_ROOT, "
+            f"OUTPUT_BASE/data_result). Actual model_config: {DATA_RESULT_ROOT}"
+        ),
+    )
     parser.add_argument(
         "--category-aug-config",
         type=str,
@@ -435,6 +528,7 @@ def main() -> int:
             max_occlusion_ratio=args.max_occlusion_ratio,
             train_ratio=args.train_ratio,
             val_ratio=args.val_ratio,
+            data_root=Path(args.data_root) if args.data_root else None,
             category_aug_config=Path(args.category_aug_config),
             target_samples=args.target_samples,
             max_aug=args.max_aug,
