@@ -1,20 +1,21 @@
 #!/usr/bin/env python3
 """
-Escanea una carpeta tipo data_result y lista clips con calidad aceptable:
+Escanea una carpeta tipo data_result y lista clips con calidad aceptable.
 
+Filtro por defecto (laxo):
   - un único usuario en meta.json
   - duración del clip entre min_sec y max_sec (default 5–10 s)
-  - poses.npy coherente con esa duración (frames ≈ duración × fps)
+
+Con --strict añade comprobaciones de poses.npy coherentes con la duración.
 
 Estructura esperada (recursiva):
   .../{cat}/{clip_name}/meta.json
-  .../{cat}/{clip_name}/user_{track_id}/poses.npy
 
 Uso:
   python scan_data_result_quality.py /ruta/a/data_result
   python scan_data_result_quality.py /ruta/a/data_result --list-ok
   python scan_data_result_quality.py /ruta/a/data_result --csv ok_clips.csv
-  python scan_data_result_quality.py /ruta/a/data_result --json report.json
+  python scan_data_result_quality.py /ruta/a/data_result --strict
 """
 from __future__ import annotations
 
@@ -27,16 +28,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
-try:
-    import numpy as np
-except ImportError as exc:
-    raise SystemExit("Se requiere numpy: pip install numpy") from exc
-
-
 DEFAULT_MIN_SEC = 5.0
 DEFAULT_MAX_SEC = 10.0
 DEFAULT_FPS = 12.5
-DEFAULT_POSE_TOLERANCE = 0.15  # ±15 % en conteo de frames vs duración×fps
+DEFAULT_POSE_TOLERANCE = 0.15
 
 
 @dataclass
@@ -104,11 +99,7 @@ def _parse_category_from_path(clip_dir: Path, root: Path) -> str:
     return "?"
 
 
-def _expected_frame_bounds(
-    duration_sec: float,
-    fps: float,
-    tolerance: float,
-) -> tuple[int, int]:
+def _expected_frame_bounds(duration_sec: float, fps: float, tolerance: float) -> tuple[int, int]:
     center = duration_sec * fps
     lo = int(max(1, center * (1.0 - tolerance)))
     hi = int(max(lo, center * (1.0 + tolerance)))
@@ -117,16 +108,84 @@ def _expected_frame_bounds(
 
 def _find_pose_file(user_dir: Path, pose_source: str) -> Optional[Path]:
     if pose_source == "full":
-        for name in ("poses_full.npy", "poses.npy"):
-            p = user_dir / name
-            if p.is_file():
-                return p
-        return None
-    for name in ("poses.npy", "poses_full.npy"):
+        names = ("poses_full.npy", "poses.npy")
+    else:
+        names = ("poses.npy", "poses_full.npy")
+    for name in names:
         p = user_dir / name
         if p.is_file():
             return p
     return None
+
+
+def _check_pose_strict(
+    report: ClipReport,
+    clip_dir: Path,
+    user: Dict[str, Any],
+    *,
+    min_sec: float,
+    max_sec: float,
+    pose_tolerance: float,
+    pose_source: str,
+    min_valid_pct: float,
+) -> None:
+    try:
+        import numpy as np
+    except ImportError as exc:
+        report.reasons.append("numpy_required_for_strict")
+        raise exc
+
+    track_id = user.get("track_id")
+    if track_id is None:
+        report.reasons.append("missing_track_id")
+        return
+    report.track_id = int(track_id)
+
+    pose_path = _find_pose_file(clip_dir / f"user_{track_id}", pose_source)
+    if pose_path is None:
+        report.reasons.append("missing_poses_npy")
+        return
+
+    try:
+        poses = np.load(pose_path)
+    except Exception:
+        report.reasons.append("invalid_poses_npy")
+        return
+
+    if poses.ndim != 3 or poses.shape[-1] != 2:
+        report.reasons.append(f"bad_poses_shape {getattr(poses, 'shape', None)}")
+        return
+
+    pose_len = int(poses.shape[0])
+    report.pose_frames = pose_len
+    report.pose_duration_sec = pose_len / report.fps if report.fps > 0 else 0.0
+
+    total_frames = _to_int(user.get("total_frames"), default=pose_len)
+    valid_frames = _to_int(user.get("valid_frames"), default=pose_len)
+    report.valid_frames = valid_frames
+    if total_frames <= 0:
+        total_frames = pose_len
+
+    if abs(pose_len - total_frames) > max(2, int(total_frames * pose_tolerance)):
+        report.reasons.append(
+            f"pose_meta_frame_mismatch (poses={pose_len}, meta total_frames={total_frames})"
+        )
+
+    lo, hi = _expected_frame_bounds(report.duration_sec, report.fps, pose_tolerance)
+    if pose_len < lo or pose_len > hi:
+        report.reasons.append(
+            f"pose_frames_out_of_range ({pose_len} not in [{lo}, {hi}])"
+        )
+
+    if report.pose_duration_sec < min_sec or report.pose_duration_sec > max_sec:
+        report.reasons.append(
+            f"pose_duration_out_of_range ({report.pose_duration_sec:.2f}s not in [{min_sec}, {max_sec}])"
+        )
+
+    if total_frames > 0 and valid_frames > 0 and min_valid_pct > 0:
+        valid_pct = 100.0 * valid_frames / total_frames
+        if valid_pct < min_valid_pct:
+            report.reasons.append(f"low_valid_pct ({valid_pct:.1f}% < {min_valid_pct}%)")
 
 
 def evaluate_clip(
@@ -135,6 +194,7 @@ def evaluate_clip(
     *,
     min_sec: float,
     max_sec: float,
+    strict: bool,
     pose_tolerance: float,
     pose_source: str,
     min_valid_pct: float,
@@ -155,80 +215,38 @@ def evaluate_clip(
         report.reasons.append("invalid_meta_json")
         return report
 
-    clip_name = str(meta.get("clip_name", clip_name))
-    report.clip_name = clip_name
+    report.clip_name = str(meta.get("clip_name", clip_name))
+    report.duration_sec = _to_float(meta.get("clip_duration"), default=0.0)
+    report.fps = _to_float(meta.get("fps"), default=DEFAULT_FPS)
+    if report.fps <= 0:
+        report.fps = DEFAULT_FPS
 
-    duration = _to_float(meta.get("clip_duration"), default=0.0)
-    fps = _to_float(meta.get("fps"), default=DEFAULT_FPS)
-    if fps <= 0:
-        fps = DEFAULT_FPS
-    report.duration_sec = duration
-    report.fps = fps
-
-    if duration < min_sec or duration > max_sec:
+    if report.duration_sec < min_sec or report.duration_sec > max_sec:
         report.reasons.append(
-            f"duration_out_of_range ({duration:.2f}s not in [{min_sec}, {max_sec}])"
+            f"duration_out_of_range ({report.duration_sec:.2f}s not in [{min_sec}, {max_sec}])"
         )
 
     users = meta.get("users") or []
     report.n_users = len(users)
     if len(users) != 1:
         report.reasons.append(f"multi_user (n={len(users)})")
-        return report
-
-    user = users[0]
-    track_id = user.get("track_id")
-    if track_id is None:
-        report.reasons.append("missing_track_id")
-        return report
-    report.track_id = int(track_id)
-
-    user_dir = clip_dir / f"user_{track_id}"
-    pose_path = _find_pose_file(user_dir, pose_source)
-    if pose_path is None:
-        report.reasons.append("missing_poses_npy")
-        return report
-
-    try:
-        poses = np.load(pose_path)
-    except Exception:
-        report.reasons.append("invalid_poses_npy")
-        return report
-
-    if poses.ndim != 3 or poses.shape[-1] != 2:
-        report.reasons.append(f"bad_poses_shape {getattr(poses, 'shape', None)}")
-        return report
-
-    pose_len = int(poses.shape[0])
-    report.pose_frames = pose_len
-    report.pose_duration_sec = pose_len / fps
-
-    total_frames = _to_int(user.get("total_frames"), default=pose_len)
-    valid_frames = _to_int(user.get("valid_frames"), default=pose_len)
-    report.valid_frames = valid_frames
-
-    if total_frames <= 0:
-        total_frames = pose_len
-    if abs(pose_len - total_frames) > max(2, int(total_frames * pose_tolerance)):
-        report.reasons.append(
-            f"pose_meta_frame_mismatch (poses={pose_len}, meta total_frames={total_frames})"
-        )
-
-    lo, hi = _expected_frame_bounds(duration, fps, pose_tolerance)
-    if pose_len < lo or pose_len > hi:
-        report.reasons.append(
-            f"pose_frames_out_of_range ({pose_len} not in [{lo}, {hi}] for {duration:.1f}s @ {fps:.1f}fps)"
-        )
-
-    if report.pose_duration_sec < min_sec or report.pose_duration_sec > max_sec:
-        report.reasons.append(
-            f"pose_duration_out_of_range ({report.pose_duration_sec:.2f}s not in [{min_sec}, {max_sec}])"
-        )
-
-    if total_frames > 0 and valid_frames > 0:
-        valid_pct = 100.0 * valid_frames / total_frames
-        if valid_pct < min_valid_pct:
-            report.reasons.append(f"low_valid_pct ({valid_pct:.1f}% < {min_valid_pct}%)")
+    else:
+        user = users[0]
+        track_id = user.get("track_id")
+        if track_id is not None:
+            report.track_id = int(track_id)
+        report.valid_frames = _to_int(user.get("valid_frames"), default=0)
+        if strict:
+            _check_pose_strict(
+                report,
+                clip_dir,
+                user,
+                min_sec=min_sec,
+                max_sec=max_sec,
+                pose_tolerance=pose_tolerance,
+                pose_source=pose_source,
+                min_valid_pct=min_valid_pct,
+            )
 
     report.ok = len(report.reasons) == 0
     return report
@@ -244,39 +262,41 @@ def scan_root(
     *,
     min_sec: float,
     max_sec: float,
+    strict: bool,
     pose_tolerance: float,
     pose_source: str,
     min_valid_pct: float,
 ) -> List[ClipReport]:
     if not root.is_dir():
         raise FileNotFoundError(f"No es una carpeta: {root}")
-    reports: List[ClipReport] = []
-    for clip_dir in iter_clip_dirs(root):
-        reports.append(
-            evaluate_clip(
-                clip_dir,
-                root,
-                min_sec=min_sec,
-                max_sec=max_sec,
-                pose_tolerance=pose_tolerance,
-                pose_source=pose_source,
-                min_valid_pct=min_valid_pct,
-            )
+    return [
+        evaluate_clip(
+            clip_dir,
+            root,
+            min_sec=min_sec,
+            max_sec=max_sec,
+            strict=strict,
+            pose_tolerance=pose_tolerance,
+            pose_source=pose_source,
+            min_valid_pct=min_valid_pct,
         )
-    return reports
+        for clip_dir in iter_clip_dirs(root)
+    ]
 
 
 def _reason_bucket(reason: str) -> str:
     return reason.split(" ", 1)[0].split("(", 1)[0]
 
 
-def print_summary(reports: List[ClipReport], root: Path) -> None:
+def print_summary(reports: List[ClipReport], root: Path, *, strict: bool) -> None:
     total = len(reports)
     ok_reports = [r for r in reports if r.ok]
     n_ok = len(ok_reports)
     pct = 100.0 * n_ok / total if total else 0.0
 
+    mode = "estricto (duración + 1 usuario + poses)" if strict else "laxo (duración + 1 usuario)"
     print(f"\nRaíz: {root.resolve()}")
+    print(f"Modo: {mode}")
     print(f"Clips escaneados: {total}")
     print(f"Aceptables: {n_ok} ({pct:.1f}%)")
 
@@ -304,18 +324,14 @@ def print_summary(reports: List[ClipReport], root: Path) -> None:
 
     if ok_reports:
         durs = [r.duration_sec for r in ok_reports]
-        poses = [r.pose_frames for r in ok_reports]
-        print(
-            f"\nAceptables — duración media: {sum(durs)/len(durs):.2f}s | "
-            f"frames pose medios: {sum(poses)/len(poses):.1f}"
-        )
+        print(f"\nAceptables — duración media: {sum(durs) / len(durs):.2f}s")
 
 
 def write_csv(path: Path, reports: List[ClipReport], root: Path, only_ok: bool) -> None:
     rows = [r for r in reports if r.ok or not only_ok]
     fields = [
         "path", "category", "clip_name", "ok", "duration_sec", "fps",
-        "track_id", "pose_frames", "valid_frames", "pose_duration_sec", "reasons",
+        "n_users", "track_id", "valid_frames", "reasons",
     ]
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8", newline="") as f:
@@ -327,9 +343,10 @@ def write_csv(path: Path, reports: List[ClipReport], root: Path, only_ok: bool) 
             w.writerow({k: d.get(k) for k in fields})
 
 
-def write_json(path: Path, reports: List[ClipReport], root: Path) -> None:
+def write_json(path: Path, reports: List[ClipReport], root: Path, *, strict: bool) -> None:
     payload = {
         "root": str(root.resolve()),
+        "mode": "strict" if strict else "lax",
         "total": len(reports),
         "acceptable": sum(1 for r in reports if r.ok),
         "clips": [r.as_dict(root) for r in reports],
@@ -342,38 +359,35 @@ def write_json(path: Path, reports: List[ClipReport], root: Path) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Escanea data_result y lista clips con calidad aceptable (1 usuario, 5–10 s, poses coherentes)."
+        description="Escanea data_result: por defecto 1 usuario y duración 5–10 s (filtro laxo)."
     )
-    parser.add_argument(
-        "root",
-        type=str,
-        help="Carpeta raíz (p. ej. data_result)",
-    )
+    parser.add_argument("root", type=str, help="Carpeta raíz (p. ej. data_result)")
     parser.add_argument("--min-sec", type=float, default=DEFAULT_MIN_SEC, help="Duración mínima (default 5)")
     parser.add_argument("--max-sec", type=float, default=DEFAULT_MAX_SEC, help="Duración máxima (default 10)")
+    parser.add_argument(
+        "--strict",
+        action="store_true",
+        help="Añadir comprobaciones de poses.npy coherentes con la duración",
+    )
     parser.add_argument(
         "--pose-tolerance",
         type=float,
         default=DEFAULT_POSE_TOLERANCE,
-        help="Tolerancia relativa en frames vs duración×fps (default 0.15)",
+        help="Solo con --strict: tolerancia en frames vs duración×fps (default 0.15)",
     )
     parser.add_argument(
         "--min-valid-pct",
         type=float,
         default=0.0,
-        help="Mínimo valid_pct del usuario (0 = no filtrar; p. ej. 20)",
+        help="Solo con --strict: mínimo valid_pct (0 = no filtrar)",
     )
     parser.add_argument(
         "--pose-source",
         choices=["filtered", "full"],
         default="filtered",
-        help="Preferir poses.npy (filtered) o poses_full.npy (full)",
+        help="Solo con --strict: poses.npy o poses_full.npy",
     )
-    parser.add_argument(
-        "--list-ok",
-        action="store_true",
-        help="Imprimir ruta de cada clip aceptable",
-    )
+    parser.add_argument("--list-ok", action="store_true", help="Imprimir ruta de cada clip aceptable")
     parser.add_argument("--csv", type=str, default=None, help="Exportar resultados a CSV")
     parser.add_argument("--json", type=str, default=None, help="Exportar informe completo a JSON")
     parser.add_argument(
@@ -393,6 +407,7 @@ def main() -> int:
             root,
             min_sec=float(args.min_sec),
             max_sec=float(args.max_sec),
+            strict=bool(args.strict),
             pose_tolerance=float(args.pose_tolerance),
             pose_source=args.pose_source,
             min_valid_pct=float(args.min_valid_pct),
@@ -405,7 +420,7 @@ def main() -> int:
         print(f"No se encontraron meta.json bajo {root}")
         return 0
 
-    print_summary(reports, root)
+    print_summary(reports, root, strict=bool(args.strict))
 
     if args.list_ok:
         print("\nClips aceptables:")
@@ -413,16 +428,14 @@ def main() -> int:
             if not r.ok:
                 continue
             rel = r.as_dict(root)["path"]
-            print(
-                f"  {rel} | {r.duration_sec:.1f}s | pose={r.pose_frames} frames "
-                f"({r.pose_duration_sec:.1f}s) | user_{r.track_id}"
-            )
+            extra = f" | user_{r.track_id}" if r.track_id is not None else ""
+            print(f"  {rel} | {r.duration_sec:.1f}s{extra}")
 
     if args.csv:
         write_csv(Path(args.csv), reports, root, only_ok=not args.csv_all)
 
     if args.json:
-        write_json(Path(args.json), reports, root)
+        write_json(Path(args.json), reports, root, strict=bool(args.strict))
 
     return 0
 
