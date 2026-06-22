@@ -55,8 +55,9 @@ class ClipReport:
         except ValueError:
             rel = str(self.path)
         return {
-            "path": rel,
-            "category": self.category,
+            "ruta_completa": str(self.path.resolve()),
+            "categoria": self.category,
+            "path_relativo": rel,
             "clip_name": self.clip_name,
             "ok": self.ok,
             "reasons": list(self.reasons),
@@ -88,14 +89,23 @@ def _to_int(value: Any, default: int = 0) -> int:
         return default
 
 
-def _parse_category_from_path(clip_dir: Path, root: Path) -> str:
+def _parse_category_from_path(clip_dir: Path, root: Path, meta: Optional[Dict[str, Any]] = None) -> str:
+    """
+    Categoría = nombre de la carpeta bajo data_result (0, 1, 2, …).
+    Estructura: data_result/{categoria}/{clip_name}/meta.json
+    """
     try:
         rel = clip_dir.relative_to(root)
-        parts = rel.parts
-        if len(parts) >= 2:
-            return parts[0]
+        if rel.parts:
+            cat = rel.parts[0]
+            if cat.isdigit() or (cat.startswith("-") and cat[1:].isdigit()):
+                return cat
     except ValueError:
         pass
+    if meta is not None:
+        cat_meta = meta.get("cat")
+        if cat_meta is not None:
+            return str(cat_meta).strip()
     return "?"
 
 
@@ -200,9 +210,8 @@ def evaluate_clip(
     min_valid_pct: float,
 ) -> ClipReport:
     meta_path = clip_dir / "meta.json"
-    category = _parse_category_from_path(clip_dir, root)
     clip_name = clip_dir.name
-    report = ClipReport(path=clip_dir, category=category, clip_name=clip_name, ok=False)
+    report = ClipReport(path=clip_dir.resolve(), category="?", clip_name=clip_name, ok=False)
 
     if not meta_path.is_file():
         report.reasons.append("missing_meta_json")
@@ -214,6 +223,8 @@ def evaluate_clip(
     except Exception:
         report.reasons.append("invalid_meta_json")
         return report
+
+    report.category = _parse_category_from_path(clip_dir, root, meta)
 
     report.clip_name = str(meta.get("clip_name", clip_name))
     report.duration_sec = _to_float(meta.get("clip_duration"), default=0.0)
@@ -330,17 +341,36 @@ def print_summary(reports: List[ClipReport], root: Path, *, strict: bool) -> Non
 def write_csv(path: Path, reports: List[ClipReport], root: Path, only_ok: bool) -> None:
     rows = [r for r in reports if r.ok or not only_ok]
     fields = [
-        "path", "category", "clip_name", "ok", "duration_sec", "fps",
-        "n_users", "track_id", "valid_frames", "reasons",
+        "ruta_completa",
+        "categoria",
+        "clip_name",
+        "ok",
+        "duration_sec",
+        "fps",
+        "n_users",
+        "track_id",
+        "valid_frames",
+        "reasons",
     ]
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8", newline="") as f:
         w = csv.DictWriter(f, fieldnames=fields)
         w.writeheader()
         for r in rows:
-            d = r.as_dict(root)
-            d["reasons"] = "; ".join(r.reasons)
-            w.writerow({k: d.get(k) for k in fields})
+            w.writerow(
+                {
+                    "ruta_completa": str(r.path.resolve()),
+                    "categoria": r.category,
+                    "clip_name": r.clip_name,
+                    "ok": r.ok,
+                    "duration_sec": round(r.duration_sec, 3),
+                    "fps": round(r.fps, 3),
+                    "n_users": r.n_users,
+                    "track_id": r.track_id if r.track_id is not None else "",
+                    "valid_frames": r.valid_frames,
+                    "reasons": "; ".join(r.reasons),
+                }
+            )
 
 
 def write_json(path: Path, reports: List[ClipReport], root: Path, *, strict: bool) -> None:
@@ -427,9 +457,10 @@ def main() -> int:
         for r in sorted(reports, key=lambda x: str(x.path)):
             if not r.ok:
                 continue
-            rel = r.as_dict(root)["path"]
             extra = f" | user_{r.track_id}" if r.track_id is not None else ""
-            print(f"  {rel} | {r.duration_sec:.1f}s{extra}")
+            print(
+                f"  [{r.category}] {r.path.resolve()} | {r.duration_sec:.1f}s{extra}"
+            )
 
     if args.csv:
         write_csv(Path(args.csv), reports, root, only_ok=not args.csv_all)
