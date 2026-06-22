@@ -47,6 +47,9 @@ SEED = 42
 # Augment on-the-fly en train (probabilidad por muestra y ops consecutivas).
 AUGMENT_PROB = 0.65
 AUGMENT_MAX_OPS = 2
+# Speed perturbation: factor < 1 acción más rápida; > 1 más lenta (interpolación temporal).
+AUGMENT_SPEED_FACTOR_LO = 0.85
+AUGMENT_SPEED_FACTOR_HI = 1.15
 
 # Rejilla determinista alineada con validate_npy + cuánto mezclar con augment aleatorio en train.
 MAX_DETERMINISTIC_VARIANTS = 64
@@ -69,6 +72,19 @@ EXTRA_MANIFEST_VIEWS_PER_CLIP_DEFAULT = 0
 # - mirror: alinea con validate_npy --mirror-compose-ratio (fracción de bases a las que se añade compose+mirror).
 PREFLIGHT_AUG_VARIANTS_PER_CLIP = 0.0
 PREFLIGHT_MIRROR_COMPOSE_RATIO_ESTIMATE = VALIDATE_NPY_MIRROR_COMPOSE_RATIO
+
+# Variantes augmentadas por clip según categoría de acción (config_category_augmentation.json).
+CATEGORY_AUGMENTATION_CONFIG_PATH = Path(__file__).parent / "config_category_augmentation.json"
+
+# Clase positiva de robo (multiclass y referencia para preflight / balanceo de augment).
+ROBBERY_CLASS = 6
+
+# Preflight_train: objetivos asimétricos (recall robo vs falsos positivos).
+PREFLIGHT_MIN_ROBBERY_TRAIN_ROWS = 40
+PREFLIGHT_MIN_NEGATIVE_TRAIN_ROWS = 15
+PREFLIGHT_NEGATIVE_TO_ROBBERY_RATIO = 4.0
+PREFLIGHT_ROBBERY_DOMINANCE_THRESHOLD = 0.25
+PREFLIGHT_ROBBERY_RARE_THRESHOLD = 0.08
 
 
 EXPERIMENTS: List[Dict[str, Any]] = [

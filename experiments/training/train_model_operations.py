@@ -33,11 +33,20 @@ try:
         SEED,
         AUGMENT_PROB,
         AUGMENT_MAX_OPS,
+        AUGMENT_SPEED_FACTOR_LO,
+        AUGMENT_SPEED_FACTOR_HI,
         MAX_DETERMINISTIC_VARIANTS,
         TRAIN_DETERMINISTIC_PROB,
         AUGMENT_PROFILE_DEFAULT,
         MANIFEST_VARIANT_SET_DEFAULT,
         EXTRA_MANIFEST_VIEWS_PER_CLIP_DEFAULT,
+        CATEGORY_AUGMENTATION_CONFIG_PATH,
+        ROBBERY_CLASS,
+        PREFLIGHT_MIN_ROBBERY_TRAIN_ROWS,
+        PREFLIGHT_MIN_NEGATIVE_TRAIN_ROWS,
+        PREFLIGHT_NEGATIVE_TO_ROBBERY_RATIO,
+        PREFLIGHT_ROBBERY_DOMINANCE_THRESHOLD,
+        PREFLIGHT_ROBBERY_RARE_THRESHOLD,
     )
 except ImportError:
     from model_config import (  # type: ignore[attr-defined]
@@ -53,11 +62,20 @@ except ImportError:
         SEED,
         AUGMENT_PROB,
         AUGMENT_MAX_OPS,
+        AUGMENT_SPEED_FACTOR_LO,
+        AUGMENT_SPEED_FACTOR_HI,
         MAX_DETERMINISTIC_VARIANTS,
         TRAIN_DETERMINISTIC_PROB,
         AUGMENT_PROFILE_DEFAULT,
         MANIFEST_VARIANT_SET_DEFAULT,
         EXTRA_MANIFEST_VIEWS_PER_CLIP_DEFAULT,
+        CATEGORY_AUGMENTATION_CONFIG_PATH,
+        ROBBERY_CLASS,
+        PREFLIGHT_MIN_ROBBERY_TRAIN_ROWS,
+        PREFLIGHT_MIN_NEGATIVE_TRAIN_ROWS,
+        PREFLIGHT_NEGATIVE_TO_ROBBERY_RATIO,
+        PREFLIGHT_ROBBERY_DOMINANCE_THRESHOLD,
+        PREFLIGHT_ROBBERY_RARE_THRESHOLD,
     )
 
 
@@ -109,6 +127,15 @@ def build_deterministic_variant_specs(
 
     specs: List[Dict[str, Any]] = [{"name": "identity", "ops": []}]
     specs.append({"name": "mirror", "ops": [{"op": "mirror"}]})
+
+    speed_cfg = prof.get("speed", {}) if isinstance(prof, dict) else {}
+    sp_lo = float(speed_cfg.get("min", AUGMENT_SPEED_FACTOR_LO))
+    sp_hi = float(speed_cfg.get("max", AUGMENT_SPEED_FACTOR_HI))
+    sp_step = float(steps.get("speed", 0.15))
+    for fac in _grid_values(sp_lo, sp_hi, sp_step):
+        if abs(fac - 1.0) < 1e-6:
+            continue
+        specs.append({"name": f"speed_{fac:.2f}", "ops": [{"op": "speed", "factor": float(fac)}]})
 
     for deg in _grid_values(r_lo, r_hi, r_step):
         if abs(deg) < 1e-9:
@@ -176,6 +203,8 @@ def _apply_deterministic_ops(
             sx = float(op.get("sx", 0.0))
             sy = float(op.get("sy", 0.0))
             out = _apply_noise(out, rng, sx, sy)
+        elif kind == "speed":
+            out = _apply_speed(out, float(op["factor"]))
         np.clip(out, 0.0, 1.0, out=out)
     return out
 
@@ -208,6 +237,8 @@ def _flatten_validate_manifest_item(item: Dict[str, Any]) -> List[Dict[str, Any]
         return [{"op": "shift", "dx": float(params["dx"]), "dy": float(params["dy"])}]
     if op == "noise":
         return [{"op": "noise", "sx": float(params["sigma_x"]), "sy": float(params["sigma_y"])}]
+    if op == "speed":
+        return [{"op": "speed", "factor": float(params["factor"])}]
     return []
 
 
@@ -313,6 +344,412 @@ def build_per_uid_variant_map(
     return per_uid
 
 
+# Recetas de augmentación por categoría (orden de prioridad; se asignan de forma estable por clip).
+CATEGORY_AUGMENT_RECIPE_BANK: List[Dict[str, Any]] = [
+    {"name": "mirror", "ops": [{"op": "mirror"}]},
+    {"name": "scale_small", "ops": [{"op": "scale", "pct": 92.0}]},
+    {"name": "scale_large", "ops": [{"op": "scale", "pct": 108.0}]},
+    {"name": "noise_light", "ops": [{"op": "noise", "sx": 0.003, "sy": 0.003}]},
+    {"name": "speed_fast", "ops": [{"op": "speed", "factor": 0.88}]},
+    {"name": "speed_slow", "ops": [{"op": "speed", "factor": 1.12}]},
+    {"name": "rotate_left", "ops": [{"op": "rotate", "deg": -8.0}]},
+    {"name": "rotate_right", "ops": [{"op": "rotate", "deg": 8.0}]},
+    {"name": "shift_up", "ops": [{"op": "shift", "dx": 0.0, "dy": -0.04}]},
+    {"name": "shift_down", "ops": [{"op": "shift", "dx": 0.0, "dy": 0.04}]},
+    {"name": "mirror_scale_small", "ops": [{"op": "mirror"}, {"op": "scale", "pct": 94.0}]},
+    {"name": "rotate_noise", "ops": [{"op": "rotate", "deg": 6.0}, {"op": "noise", "sx": 0.002, "sy": 0.002}]},
+    {"name": "scale_speed_fast", "ops": [{"op": "scale", "pct": 96.0}, {"op": "speed", "factor": 0.9}]},
+    {"name": "mirror_speed_slow", "ops": [{"op": "mirror"}, {"op": "speed", "factor": 1.1}]},
+    {"name": "shift_noise", "ops": [{"op": "shift", "dx": -0.03, "dy": 0.02}, {"op": "noise", "sx": 0.0025, "sy": 0.0025}]},
+]
+
+
+def load_category_augmentation_config(config_path: str | Path | None = None) -> Dict[str, Any]:
+    """
+    Lee config_category_augmentation.json.
+    categories: { "3": 5, ... } → N variantes augmentadas por clip de esa categoría.
+    """
+    path = Path(config_path or DEFAULT_CATEGORY_AUGMENTATION_CONFIG_PATH)
+    if not path.is_file():
+        return {"enabled": False, "default": 0, "categories": {}, "include_identity": True}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception as exc:
+        print(f"[CATEGORY-AUG] No se pudo leer {path}: {exc}")
+        return {"enabled": False, "default": 0, "categories": {}, "include_identity": True}
+    if not isinstance(data, dict):
+        return {"enabled": False, "default": 0, "categories": {}, "include_identity": True}
+    return data
+
+
+def _category_augment_count_for_label(cfg: Dict[str, Any], action_label: int) -> int:
+    cats = cfg.get("categories", {}) if isinstance(cfg.get("categories"), dict) else {}
+    key = str(int(action_label))
+    if key in cats and cats[key] is not None:
+        try:
+            return max(0, int(cats[key]))
+        except (TypeError, ValueError):
+            pass
+    try:
+        return max(0, int(cfg.get("default", 0)))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _category_augment_is_active(cfg: Dict[str, Any]) -> bool:
+    if not cfg.get("enabled", True):
+        return False
+    cats = cfg.get("categories", {}) if isinstance(cfg.get("categories"), dict) else {}
+    try:
+        default_n = max(0, int(cfg.get("default", 0)))
+    except (TypeError, ValueError):
+        default_n = 0
+    if default_n > 0:
+        return True
+    for v in cats.values():
+        if v is None:
+            continue
+        try:
+            if int(v) > 0:
+                return True
+        except (TypeError, ValueError):
+            continue
+    return False
+
+
+def _stable_permutation(size: int, seed: int) -> np.ndarray:
+    rng = np.random.default_rng(int(seed) & 0xFFFFFFFF)
+    idx = np.arange(size, dtype=np.int64)
+    rng.shuffle(idx)
+    return idx
+
+
+def _random_ops_for_augment_slot(
+    uid: str,
+    slot: int,
+    ranges: Dict[str, Tuple[float, float]],
+) -> List[Dict[str, Any]]:
+    """Genera 1–2 ops pseudo-aleatorias pero estables por clip+slot (si N supera el banco de recetas)."""
+    seed = (_stable_uid_hash(uid) * 1009 + slot * 9176 + 31) & 0xFFFFFFFF
+    rng = np.random.default_rng(int(seed))
+    pool = ["mirror", "rotate", "scale", "shift", "noise", "speed"]
+    n_ops = 1 if slot % 4 != 0 else 2
+    chosen = rng.choice(pool, size=min(n_ops, len(pool)), replace=False)
+    out: List[Dict[str, Any]] = []
+    for op in chosen:
+        if op == "mirror":
+            out.append({"op": "mirror"})
+        elif op == "rotate":
+            lo, hi = ranges.get("rotate_degrees", (-12.0, 12.0))
+            out.append({"op": "rotate", "deg": _rand_uniform(rng, lo, hi)})
+        elif op == "scale":
+            lo, hi = ranges.get("scale_percentage", (92.0, 110.0))
+            out.append({"op": "scale", "pct": _rand_uniform(rng, lo, hi)})
+        elif op == "shift":
+            lox, hix = ranges.get("shift_dx", (-0.05, 0.05))
+            loy, hiy = ranges.get("shift_dy", (-0.05, 0.05))
+            out.append({"op": "shift", "dx": _rand_uniform(rng, lox, hix), "dy": _rand_uniform(rng, loy, hiy)})
+        elif op == "noise":
+            lox, hix = ranges.get("noise_sigma_x", (0.0, 0.004))
+            loy, hiy = ranges.get("noise_sigma_y", (0.0, 0.004))
+            out.append({"op": "noise", "sx": _rand_uniform(rng, lox, hix), "sy": _rand_uniform(rng, loy, hiy)})
+        elif op == "speed":
+            lo, hi = ranges.get("speed_factor", (AUGMENT_SPEED_FACTOR_LO, AUGMENT_SPEED_FACTOR_HI))
+            out.append({"op": "speed", "factor": _rand_uniform(rng, lo, hi)})
+    return out
+
+
+def _category_augment_ops_for_clip(
+    uid: str,
+    n_variants: int,
+    recipe_bank: List[Dict[str, Any]],
+    ranges: Dict[str, Tuple[float, float]],
+    seed: int = SEED,
+) -> List[List[Dict[str, Any]]]:
+    """Devuelve exactamente n_variants listas de ops (una por variante augmentada)."""
+    if n_variants <= 0:
+        return []
+    bank = recipe_bank or CATEGORY_AUGMENT_RECIPE_BANK
+    perm = _stable_permutation(len(bank), (_stable_uid_hash(uid) ^ int(seed)) & 0xFFFFFFFF)
+    out: List[List[Dict[str, Any]]] = []
+    for slot in range(n_variants):
+        if slot < len(bank):
+            recipe = bank[int(perm[slot % len(perm)])]
+            out.append(list(recipe.get("ops", []) or []))
+        else:
+            out.append(_random_ops_for_augment_slot(uid, slot, ranges))
+    return out
+
+
+def expand_examples_with_category_augmentation(
+    examples: List[PoseExample],
+    cfg: Dict[str, Any],
+    augment_ranges: Optional[Dict[str, Tuple[float, float]]] = None,
+    recipe_bank: Optional[List[Dict[str, Any]]] = None,
+    seed: int = SEED,
+) -> List[PoseExample]:
+    """
+    Por cada clip base (forced_ops is None), genera variantes según config por categoría de acción.
+    include_identity=true → fila original (forced_ops=[]) + N variantes con ops fijas.
+    Solo debe invocarse sobre el split train (val/test sin augmentación).
+    """
+    if not _category_augment_is_active(cfg):
+        return examples
+    ranges = augment_ranges or {
+        "rotate_degrees": (-12.0, 12.0),
+        "scale_percentage": (92.0, 110.0),
+        "shift_dx": (-0.05, 0.05),
+        "shift_dy": (-0.05, 0.05),
+        "noise_sigma_x": (0.0, 0.004),
+        "noise_sigma_y": (0.0, 0.004),
+        "speed_factor": (AUGMENT_SPEED_FACTOR_LO, AUGMENT_SPEED_FACTOR_HI),
+    }
+    include_identity = bool(cfg.get("include_identity", True))
+    bank = recipe_bank or CATEGORY_AUGMENT_RECIPE_BANK
+
+    out: List[PoseExample] = []
+    expanded_clips = 0
+    added_rows = 0
+    by_cat: Dict[int, int] = {}
+
+    for ex in examples:
+        if ex.forced_ops is not None:
+            out.append(ex)
+            continue
+        n_req = _category_augment_count_for_label(cfg, _example_action_label(ex))
+        if n_req <= 0:
+            out.append(ex)
+            continue
+
+        uid = _example_uid(ex)
+        ops_list = _category_augment_ops_for_clip(uid, n_req, bank, ranges, seed=seed)
+        if include_identity:
+            out.append(_copy_pose_example(ex, forced_ops=[]))
+        else:
+            out.append(ex)
+        for ops in ops_list:
+            out.append(_copy_pose_example(ex, forced_ops=list(ops)))
+            added_rows += 1
+        expanded_clips += 1
+        cat = _example_action_label(ex)
+        by_cat[cat] = by_cat.get(cat, 0) + 1
+
+    print(
+        f"[CATEGORY-AUG] Clips expandidos: {expanded_clips} | "
+        f"filas augmentadas añadidas: {added_rows} | "
+        f"filas totales: {len(out)} (antes {len(examples)})"
+    )
+    if by_cat:
+        summary = ", ".join(f"cat{k}={v}" for k, v in sorted(by_cat.items()))
+        print(f"[CATEGORY-AUG] Clips expandidos por categoría de acción: {summary}")
+    return out
+
+
+def count_examples_by_action_label(examples: List[PoseExample]) -> Dict[int, int]:
+    counts: Dict[int, int] = {}
+    for ex in examples:
+        cat = _example_action_label(ex)
+        counts[cat] = counts.get(cat, 0) + 1
+    return dict(sorted(counts.items()))
+
+
+def train_rows_after_category_aug(n_clips: int, n_aug: int, include_identity: bool = True) -> int:
+    """Filas en train tras expansión por categoría (sin contar manifest u otras)."""
+    if n_clips <= 0:
+        return 0
+    if n_aug <= 0:
+        return n_clips
+    if include_identity:
+        return n_clips * (1 + n_aug)
+    return n_clips * n_aug
+
+
+def _aug_for_target_rows(
+    n_clips: int,
+    target_rows: int,
+    include_identity: bool,
+    max_aug: int,
+) -> int:
+    """Variantes augmentadas necesarias para alcanzar ~target_rows filas en train."""
+    n_clips = int(n_clips)
+    target_rows = int(target_rows)
+    max_aug = max(0, int(max_aug))
+    if n_clips <= 0 or target_rows <= 0:
+        return 0
+    if target_rows <= n_clips:
+        return 0
+    if include_identity:
+        needed = int(math.ceil(target_rows / n_clips)) - 1
+    else:
+        needed = int(math.ceil(target_rows / n_clips))
+    return min(max_aug, max(0, needed))
+
+
+def propose_category_augment_counts(
+    train_counts: Dict[int, int],
+    *,
+    robbery_class: int = ROBBERY_CLASS,
+    target_samples: Optional[int] = None,
+    min_robbery_rows: Optional[int] = None,
+    min_negative_rows: Optional[int] = None,
+    negative_to_robbery_ratio: float = PREFLIGHT_NEGATIVE_TO_ROBBERY_RATIO,
+    max_aug: int = 10,
+    include_identity: bool = True,
+) -> Dict[int, int]:
+    """
+    Propone augment por categoría con lógica asimétrica para detección de robo.
+
+    - Clase robbery_class (p. ej. 6): priorizar recall (robos no perdidos) → más augment si hay pocos.
+    - Resto de clases: priorizar reducir falsos positivos (acción normal → robo) → augment en minoritarias
+      y refuerzo si el robo domina el train o el total de negativos queda bajo respecto al robo efectivo.
+
+    Confundir 0↔1 u otras no-6 no se penaliza; solo importa no perder robos ni disparar FP hacia 6.
+    """
+    if not train_counts:
+        return {}
+    max_aug = max(0, int(max_aug))
+    robbery_class = int(robbery_class)
+    negative_to_robbery_ratio = max(1.0, float(negative_to_robbery_ratio))
+
+    counts = {int(k): int(v) for k, v in train_counts.items()}
+    n_rob = counts.get(robbery_class, 0)
+    neg_counts = {k: v for k, v in counts.items() if k != robbery_class}
+    neg_vals = [v for v in neg_counts.values() if v > 0]
+    total_train = sum(counts.values())
+
+    if min_negative_rows is None:
+        min_negative_rows = PREFLIGHT_MIN_NEGATIVE_TRAIN_ROWS
+    min_negative_rows = max(1, int(min_negative_rows))
+
+    if target_samples is not None:
+        base_target = max(1, int(target_samples))
+    elif neg_vals:
+        neg_median = sorted(neg_vals)[len(neg_vals) // 2]
+        base_target = max(20, min(150, int(neg_median)))
+    else:
+        base_target = 40
+
+    if min_robbery_rows is None:
+        min_robbery_rows = max(PREFLIGHT_MIN_ROBBERY_TRAIN_ROWS, base_target)
+    min_robbery_rows = max(1, int(min_robbery_rows))
+
+    proposals: Dict[int, int] = {cat: 0 for cat in counts}
+
+    # --- Fase A: recall de robo (evitar FN) ---
+    if n_rob > 0:
+        if n_rob >= min_robbery_rows * 2:
+            proposals[robbery_class] = 0
+        else:
+            proposals[robbery_class] = _aug_for_target_rows(
+                n_rob, min_robbery_rows, include_identity, max_aug
+            )
+        rob_share = n_rob / max(1, total_train)
+        if rob_share < PREFLIGHT_ROBBERY_RARE_THRESHOLD and proposals[robbery_class] < max_aug:
+            proposals[robbery_class] = min(max_aug, proposals[robbery_class] + 1)
+    else:
+        proposals[robbery_class] = 0
+
+    effective_rob = train_rows_after_category_aug(
+        n_rob, proposals.get(robbery_class, 0), include_identity
+    )
+    target_total_neg = max(
+        len(neg_counts) * min_negative_rows,
+        int(effective_rob * negative_to_robbery_ratio),
+    )
+
+    # --- Fase B: negativos (evitar FP hacia robo) ---
+    if neg_counts:
+        per_class_floor = max(min_negative_rows, target_total_neg // max(1, len(neg_counts)))
+        for cat, n in neg_counts.items():
+            if n <= 0:
+                continue
+            target_neg = per_class_floor
+            if n >= target_neg:
+                proposals[cat] = 0
+            else:
+                proposals[cat] = _aug_for_target_rows(n, target_neg, include_identity, max_aug)
+
+    # --- Fase C: robo muy frecuente en bruto → más diversidad negativa (FP) ---
+    if n_rob > 0 and total_train > 0:
+        rob_share = n_rob / total_train
+        if rob_share > PREFLIGHT_ROBBERY_DOMINANCE_THRESHOLD:
+            for cat in neg_counts:
+                if proposals.get(cat, 0) < max_aug:
+                    proposals[cat] = min(max_aug, proposals.get(cat, 0) + 1)
+
+    return proposals
+
+
+def analyze_robbery_augment_balance(
+    train_counts: Dict[int, int],
+    proposals: Dict[int, int],
+    *,
+    robbery_class: int = ROBBERY_CLASS,
+    include_identity: bool = True,
+    negative_to_robbery_ratio: float = PREFLIGHT_NEGATIVE_TO_ROBBERY_RATIO,
+) -> Dict[str, Any]:
+    """Métricas de balance robo vs negativos tras una propuesta de augment."""
+    robbery_class = int(robbery_class)
+    counts = {int(k): int(v) for k, v in train_counts.items()}
+    props = {int(k): int(v) for k, v in proposals.items()}
+    n_rob = counts.get(robbery_class, 0)
+    rob_rows = train_rows_after_category_aug(
+        n_rob, props.get(robbery_class, 0), include_identity
+    )
+    neg_rows = 0
+    for cat, n in counts.items():
+        if cat == robbery_class:
+            continue
+        neg_rows += train_rows_after_category_aug(n, props.get(cat, 0), include_identity)
+    ratio = neg_rows / max(1, rob_rows)
+    total = sum(counts.values())
+    return {
+        "robbery_class": robbery_class,
+        "robbery_clips_train": n_rob,
+        "robbery_rows_effective": rob_rows,
+        "negative_rows_effective": neg_rows,
+        "negative_to_robbery_ratio": float(ratio),
+        "negative_to_robbery_target": float(negative_to_robbery_ratio),
+        "robbery_share_raw": (n_rob / total) if total else 0.0,
+        "warnings": [
+            *(["Sin clips de robo en train: imposible entrenar detección de clase 6."] if n_rob == 0 else []),
+            *(
+                ["Robo muy raro en train: revisa augment de clase 6 y métricas de recall."]
+                if total and (n_rob / total) < 0.05
+                else []
+            ),
+            *(
+                [f"Ratio neg/robo efectivo ({ratio:.1f}) por debajo del objetivo ({negative_to_robbery_ratio:.1f}): riesgo de FP."]
+                if n_rob > 0 and ratio < negative_to_robbery_ratio * 0.85
+                else []
+            ),
+            *(
+                ["Robo domina el train en bruto (>25%): se ha reforzado augment de negativos."]
+                if total and (n_rob / total) > 0.25
+                else []
+            ),
+        ],
+    }
+
+
+def summarize_category_aug_on_train(
+    train_counts: Dict[int, int],
+    cfg: Dict[str, Any],
+) -> Dict[int, Dict[str, int]]:
+    """Por categoría: clips train originales y filas tras expansión según cfg."""
+    include_identity = bool(cfg.get("include_identity", True))
+    out: Dict[int, Dict[str, int]] = {}
+    for cat, n in train_counts.items():
+        n_aug = _category_augment_count_for_label(cfg, int(cat))
+        out[int(cat)] = {
+            "clips": int(n),
+            "aug_per_clip": int(n_aug),
+            "train_rows": train_rows_after_category_aug(int(n), int(n_aug), include_identity),
+        }
+    return out
+
+
 def expand_examples_with_manifest_extra_views(
     examples: List[PoseExample],
     mdir: Path,
@@ -339,6 +776,9 @@ def expand_examples_with_manifest_extra_views(
     n_partial = 0  # 0 < disponibles < n_req
     n_only_identity = 0  # specs solo identidad o una fila
     for ex in examples:
+        if ex.forced_ops is not None:
+            out.append(ex)
+            continue
         p = resolve_manifest_json_for_example(mdir, ex)
         if p is None:
             out.append(ex)
@@ -364,34 +804,12 @@ def expand_examples_with_manifest_extra_views(
             n_partial += 1
         else:
             n_only_identity += 1
-        out.append(
-            PoseExample(
-                pose_path=ex.pose_path,
-                label=ex.label,
-                track_id=ex.track_id,
-                clip_name=ex.clip_name,
-                category_str=ex.category_str,
-                valid_mask_path=ex.valid_mask_path,
-                users_in_clip=ex.users_in_clip,
-                forced_ops=[],
-            )
-        )
+        out.append(_copy_pose_example(ex, forced_ops=[]))
         n_extra = min(n_req, avail)
         for j in range(n_extra):
             spec = specs[1 + j]
             ops = list(spec.get("ops", []) or [])
-            out.append(
-                PoseExample(
-                    pose_path=ex.pose_path,
-                    label=ex.label,
-                    track_id=ex.track_id,
-                    clip_name=ex.clip_name,
-                    category_str=ex.category_str,
-                    valid_mask_path=ex.valid_mask_path,
-                    users_in_clip=ex.users_in_clip,
-                    forced_ops=ops,
-                )
-            )
+            out.append(_copy_pose_example(ex, forced_ops=ops))
     print(
         f"[EXPAND-VIEWS] Solicitadas {n_req} variantes extra por clip (además de identidad) | "
         f"variant_set={variant_set}"
@@ -473,6 +891,7 @@ SPLITS_DIR.mkdir(parents=True, exist_ok=True)
 
 # Augment on-the-fly (sin crear ficheros .npy en disco); AUGMENT_PROFILE_DEFAULT en model_config
 AUGMENT_CONFIG_PATH = BASE_DIR / "operations_npy" / "validate_npy.json"
+DEFAULT_CATEGORY_AUGMENTATION_CONFIG_PATH = CATEGORY_AUGMENTATION_CONFIG_PATH
 
 # Un solo bloque de resumen de pool al primer build_datasets_and_loaders de la sesión
 _POOL_SUMMARY_PRINTED = False
@@ -586,8 +1005,32 @@ class PoseExample:
     category_str: str   # por si quieres inspeccionar
     valid_mask_path: Optional[Path] = None  # si usa poses_full.npy: máscara de frames válidos (sin NaN)
     users_in_clip: int = 1  # número de usuarios en meta["users"] para este clip
+    action_label: Optional[int] = None  # categoría de acción original (persiste en modo binario)
     # Si no es None: aplicar solo estas ops deterministas (manifest validate_npy); train puede añadir on-the-fly después.
     forced_ops: Optional[List[Dict[str, Any]]] = None
+
+
+def _example_action_label(ex: PoseExample) -> int:
+    if ex.action_label is not None:
+        return int(ex.action_label)
+    return int(ex.label)
+
+
+def _copy_pose_example(
+    ex: PoseExample,
+    forced_ops: Optional[List[Dict[str, Any]]],
+) -> PoseExample:
+    return PoseExample(
+        pose_path=ex.pose_path,
+        label=ex.label,
+        track_id=ex.track_id,
+        clip_name=ex.clip_name,
+        category_str=ex.category_str,
+        valid_mask_path=ex.valid_mask_path,
+        users_in_clip=ex.users_in_clip,
+        action_label=_example_action_label(ex),
+        forced_ops=forced_ops,
+    )
 
 
 def _manifest_lookup_uids(ex: PoseExample) -> List[str]:
@@ -771,6 +1214,28 @@ def _apply_noise(poses: np.ndarray, rng: np.random.Generator, sigma_x: float, si
     return out
 
 
+def _apply_speed(poses: np.ndarray, factor: float) -> np.ndarray:
+    """
+    Perturbación temporal sobre [T, J, D]: interpola la secuencia estirando/comprimiendo el eje T.
+    factor > 1 → acción más lenta (más frames); factor < 1 → más rápida (menos frames).
+    """
+    if factor <= 0 or abs(factor - 1.0) < 1e-6:
+        return poses
+    t = poses.shape[0]
+    if t < 2:
+        return poses
+    new_t = max(2, int(round(t * factor)))
+    if new_t == t:
+        return poses
+    old_idx = np.arange(t, dtype=np.float64)
+    new_idx = np.linspace(0.0, t - 1.0, new_t)
+    flat = poses.reshape(t, -1)
+    out_flat = np.empty((new_t, flat.shape[1]), dtype=poses.dtype)
+    for col in range(flat.shape[1]):
+        out_flat[:, col] = np.interp(new_idx, old_idx, flat[:, col])
+    return out_flat.reshape(new_t, *poses.shape[1:])
+
+
 def _augment_poses_on_the_fly(
     poses: np.ndarray,
     rng: np.random.Generator,
@@ -781,7 +1246,7 @@ def _augment_poses_on_the_fly(
 ) -> np.ndarray:
     if augment_prob <= 0 or rng.random() >= augment_prob:
         return poses
-    ops = ["mirror", "rotate", "scale", "shift", "noise"]
+    ops = ["mirror", "rotate", "scale", "shift", "noise", "speed"]
     probs = np.array([max(0.0, float(op_probs.get(op, 0.0))) for op in ops], dtype=np.float64)
     if probs.sum() <= 0:
         probs = np.ones_like(probs) / len(probs)
@@ -807,6 +1272,12 @@ def _augment_poses_on_the_fly(
             lox, hix = ranges.get("noise_sigma_x", (0.0, 0.003))
             loy, hiy = ranges.get("noise_sigma_y", (0.0, 0.003))
             out = _apply_noise(out, rng, _rand_uniform(rng, lox, hix), _rand_uniform(rng, loy, hiy))
+        elif op == "speed":
+            lo, hi = ranges.get(
+                "speed_factor",
+                (AUGMENT_SPEED_FACTOR_LO, AUGMENT_SPEED_FACTOR_HI),
+            )
+            out = _apply_speed(out, _rand_uniform(rng, lo, hi))
     np.clip(out, 0.0, 1.0, out=out)
     return out
 
@@ -931,6 +1402,7 @@ def collect_examples(
                         category_str=cat_str,
                         valid_mask_path=valid_mask_path,
                         users_in_clip=int(len(users)),
+                        action_label=int(label),
                     )
                 )
 
@@ -982,6 +1454,7 @@ class PoseDataset(Dataset):
     """
     Dataset que aplica:
       - normalización espacial
+      - augment espacial/temporal (mirror, rotate, scale, shift, noise, speed)
       - concatenación de velocidades
       - resize temporal a seq_len
       - flatten de joints a un vector de features por frame
@@ -1015,11 +1488,12 @@ class PoseDataset(Dataset):
         self.augment_prob = augment_prob
         self.augment_max_ops = max(1, augment_max_ops)
         self.augment_op_probs = augment_op_probs or {
-            "mirror": 0.30,
-            "rotate": 0.28,
-            "scale": 0.16,
-            "shift": 0.16,
-            "noise": 0.10,
+            "mirror": 0.26,
+            "rotate": 0.24,
+            "scale": 0.14,
+            "shift": 0.14,
+            "noise": 0.08,
+            "speed": 0.14,
         }
         self.augment_ranges = augment_ranges or {
             "rotate_degrees": (-15.0, 15.0),
@@ -1028,6 +1502,7 @@ class PoseDataset(Dataset):
             "shift_dy": (-0.05, 0.05),
             "noise_sigma_x": (0.0, 0.006),
             "noise_sigma_y": (0.0, 0.006),
+            "speed_factor": (AUGMENT_SPEED_FACTOR_LO, AUGMENT_SPEED_FACTOR_HI),
         }
         self.augment_seed = int(augment_seed)
         self.dataset_split = dataset_split
@@ -1061,7 +1536,7 @@ class PoseDataset(Dataset):
             ) & 0xFFFFFFFF
             rng_det = np.random.default_rng(int(det_seed))
             poses = _apply_deterministic_ops(poses, forced, rng=rng_det)
-            if self.dataset_split == "train" and self.augment_on_the_fly:
+            if self.dataset_split == "train" and self.augment_on_the_fly and len(forced) == 0:
                 worker = get_worker_info()
                 base_seed = worker.seed if worker is not None else self.augment_seed
                 sample_seed = (int(base_seed) + int(idx) * 1000003) & 0xFFFFFFFF
@@ -1091,12 +1566,8 @@ class PoseDataset(Dataset):
         rng = np.random.default_rng(sample_seed)
 
         if self.dataset_split in ("val", "test"):
-            vidx = _stable_uid_hash(uid) % max(1, n_var)
-            spec = variants[vidx]
-            ops = spec.get("ops", [])
-            det_seed = (_stable_uid_hash(uid) * 1009 + vidx * 17 + _stable_str_hash(str(spec.get("name", "")))) & 0xFFFFFFFF
-            rng_det = np.random.default_rng(int(det_seed))
-            poses = _apply_deterministic_ops(poses, ops, rng=rng_det)
+            # Val/test: sin data augmentation (solo clip original normalizado).
+            pass
         else:
             # train: primero determinista (opcional), luego aleatorio
             if self.use_deterministic_in_train and n_var > 0 and rng.random() < self.train_deterministic_prob:
@@ -1915,6 +2386,7 @@ def make_binary_examples(
                 category_str=ex.category_str,
                 valid_mask_path=getattr(ex, "valid_mask_path", None),
                 users_in_clip=getattr(ex, "users_in_clip", 1),
+                action_label=_example_action_label(ex),
                 forced_ops=getattr(ex, "forced_ops", None),
             )
         )
@@ -2208,6 +2680,8 @@ def build_datasets_and_loaders(
     manifest_cache_dir: Optional[Path] = None,
     manifest_variant_set: str = MANIFEST_VARIANT_SET_DEFAULT,
     extra_manifest_views_per_clip: int = 0,
+    category_aug_config_path: Optional[Path] = None,
+    use_category_augmentation: Optional[bool] = None,
 ) -> Tuple[Dict[str, DataLoader], int, Dict[int, int], Dict[str, Any]]:
     print(f"Recolectando ejemplos desde data_result... (pose_source='{pose_source}')")
     examples = collect_examples(
@@ -2262,6 +2736,48 @@ def build_datasets_and_loaders(
     test_unique_npy = len({ex.pose_path.resolve() for ex in test_ex})
     train_rows_before_expand = len(train_ex)
 
+    aug_cfg = _load_augment_profile(augment_config_path, augment_profile)
+    if not aug_cfg:
+        aug_cfg = {
+            "steps": {"rotate": 2.0, "scale": 2.0, "shift": 0.02, "speed": 0.15},
+            "rotate": {"min": -15.0, "max": 15.0},
+            "noise": {"sigma_cap": 0.006},
+            "speed": {"min": AUGMENT_SPEED_FACTOR_LO, "max": AUGMENT_SPEED_FACTOR_HI},
+        }
+    rotate_cfg = aug_cfg.get("rotate", {}) if isinstance(aug_cfg, dict) else {}
+    noise_cfg = aug_cfg.get("noise", {}) if isinstance(aug_cfg, dict) else {}
+    speed_cfg = aug_cfg.get("speed", {}) if isinstance(aug_cfg, dict) else {}
+    aug_ranges = {
+        "rotate_degrees": (float(rotate_cfg.get("min", -15.0)), float(rotate_cfg.get("max", 15.0))),
+        "scale_percentage": (95.0, 111.0),
+        "shift_dx": (-0.06, 0.06),
+        "shift_dy": (-0.06, 0.06),
+        "noise_sigma_x": (0.0, float(noise_cfg.get("sigma_cap", 0.006))),
+        "noise_sigma_y": (0.0, float(noise_cfg.get("sigma_cap", 0.006))),
+        "speed_factor": (
+            float(speed_cfg.get("min", AUGMENT_SPEED_FACTOR_LO)),
+            float(speed_cfg.get("max", AUGMENT_SPEED_FACTOR_HI)),
+        ),
+    }
+
+    cat_aug_path = Path(category_aug_config_path or DEFAULT_CATEGORY_AUGMENTATION_CONFIG_PATH)
+    cat_aug_cfg = load_category_augmentation_config(cat_aug_path)
+    if use_category_augmentation is False:
+        cat_aug_cfg["enabled"] = False
+    elif use_category_augmentation is True:
+        cat_aug_cfg["enabled"] = True
+    if _category_augment_is_active(cat_aug_cfg):
+        print(f"[CATEGORY-AUG] Config: {cat_aug_path} | solo split train (val/test sin augmentación)")
+        train_ex = expand_examples_with_category_augmentation(
+            train_ex, cat_aug_cfg, augment_ranges=aug_ranges, seed=augment_seed
+        )
+        print(
+            f"Tras expansión por categoría (solo train) => Train filas: {len(train_ex)} | "
+            f"Val filas: {len(val_ex)} | Test filas: {len(test_ex)}"
+        )
+    else:
+        print(f"[CATEGORY-AUG] Desactivado (config {cat_aug_path}, enabled={cat_aug_cfg.get('enabled', True)})")
+
     if extra_manifest_views_per_clip > 0:
         if manifest_cache_dir is None:
             raise ValueError(
@@ -2273,30 +2789,15 @@ def build_datasets_and_loaders(
             manifest_variant_set,
             extra_manifest_views_per_clip,
         )
-        val_ex = expand_examples_with_manifest_extra_views(
-            val_ex,
-            Path(manifest_cache_dir),
-            manifest_variant_set,
-            extra_manifest_views_per_clip,
-        )
         print(
-            f"Tras expansión manifest => Train filas: {len(train_ex)} | Val filas: {len(val_ex)} | "
-            f"Test (sin expandir): {len(test_ex)}"
+            f"Tras expansión manifest (solo train) => Train filas: {len(train_ex)} | "
+            f"Val filas: {len(val_ex)} | Test (sin expandir): {len(test_ex)}"
         )
 
     label_to_idx = build_label_mapping(examples)
     num_classes = len(label_to_idx)
     print(f"Número de clases: {num_classes} | mapping: {label_to_idx}")
 
-    aug_cfg = _load_augment_profile(augment_config_path, augment_profile)
-    if not aug_cfg:
-        aug_cfg = {
-            "steps": {"rotate": 2.0, "scale": 2.0, "shift": 0.02},
-            "rotate": {"min": -15.0, "max": 15.0},
-            "noise": {"sigma_cap": 0.006},
-        }
-    rotate_cfg = aug_cfg.get("rotate", {}) if isinstance(aug_cfg, dict) else {}
-    noise_cfg = aug_cfg.get("noise", {}) if isinstance(aug_cfg, dict) else {}
     det_specs = build_deterministic_variant_specs(
         aug_cfg if isinstance(aug_cfg, dict) else {},
         max_variants=max(1, int(max_deterministic_variants)),
@@ -2339,14 +2840,6 @@ def build_datasets_and_loaders(
         use_deterministic_in_train=bool(use_deterministic_in_train),
         train_deterministic_prob=float(train_deterministic_prob),
     )
-    aug_ranges = {
-        "rotate_degrees": (float(rotate_cfg.get("min", -15.0)), float(rotate_cfg.get("max", 15.0))),
-        "scale_percentage": (95.0, 111.0),
-        "shift_dx": (-0.06, 0.06),
-        "shift_dy": (-0.06, 0.06),
-        "noise_sigma_x": (0.0, float(noise_cfg.get("sigma_cap", 0.006))),
-        "noise_sigma_y": (0.0, float(noise_cfg.get("sigma_cap", 0.006))),
-    }
     train_ds = PoseDataset(
         train_ex,
         label_to_idx,
@@ -2355,11 +2848,12 @@ def build_datasets_and_loaders(
         augment_prob=augment_prob,
         augment_max_ops=augment_max_ops,
         augment_op_probs={
-            "mirror": 0.30,
-            "rotate": 0.28,
-            "scale": 0.16,
-            "shift": 0.16,
-            "noise": 0.10,
+            "mirror": 0.26,
+            "rotate": 0.24,
+            "scale": 0.14,
+            "shift": 0.14,
+            "noise": 0.08,
+            "speed": 0.14,
         },
         augment_ranges=aug_ranges,
         augment_seed=augment_seed,
@@ -2459,6 +2953,8 @@ def build_datasets_and_loaders(
         "manifest_variant_set": manifest_variant_set,
         "manifest_uids_with_cache": manifest_hits,
         "extra_manifest_views_per_clip": int(extra_manifest_views_per_clip),
+        "category_augmentation_config": str(cat_aug_path),
+        "category_augmentation_enabled": bool(_category_augment_is_active(cat_aug_cfg)),
         "training_pool_stats": {
             "train_unique_npy": int(train_unique_npy),
             "train_rows": int(len(train_ex)),
@@ -2474,10 +2970,10 @@ def build_datasets_and_loaders(
             "manifest_uids_loaded": int(manifest_hits),
         },
         "augment_policy": {
-            "train": "deterministic_grid (opcional) + random on-the-fly (opcional)",
-            "val": "solo determinista (rejilla por UID estable)",
-            "test": "solo determinista (rejilla por UID estable)",
-            "note": "Val/test no usan muestreo aleatorio en rangos; si hay manifest_cache por UID, se usan variantes validate_npy; si no, rejilla global.",
+            "train": "category/manifest expand (solo train) + deterministic_grid (opcional) + random on-the-fly (opcional)",
+            "val": "sin augmentación (clip original)",
+            "test": "sin augmentación (clip original)",
+            "note": "Val/test no reciben expansión por categoría ni variantes deterministas/aleatorias.",
         },
     }
     return loaders, input_dim, label_to_idx, split_manifest
@@ -2669,6 +3165,8 @@ def run_experiment(
     manifest_cache_dir: Optional[Path] = None,
     manifest_variant_set: str = MANIFEST_VARIANT_SET_DEFAULT,
     extra_manifest_views_per_clip: int = 0,
+    category_aug_config_path: Optional[Path] = None,
+    use_category_augmentation: Optional[bool] = None,
 ) -> Dict[str, Any]:
     t_exp0 = time.perf_counter()
     print("\n" + "=" * 80)
@@ -2709,6 +3207,8 @@ def run_experiment(
         manifest_cache_dir=manifest_cache_dir,
         manifest_variant_set=manifest_variant_set,
         extra_manifest_views_per_clip=extra_manifest_views_per_clip,
+        category_aug_config_path=category_aug_config_path,
+        use_category_augmentation=use_category_augmentation,
     )
     num_classes = len(label_to_idx)
 
@@ -3101,6 +3601,20 @@ def parse_args() -> argparse.Namespace:
             f"Default {EXTRA_MANIFEST_VIEWS_PER_CLIP_DEFAULT}."
         ),
     )
+    parser.add_argument(
+        "--category-aug-config",
+        type=str,
+        default=str(DEFAULT_CATEGORY_AUGMENTATION_CONFIG_PATH),
+        help=(
+            "JSON con variantes augmentadas por categoría de acción "
+            f"(default {DEFAULT_CATEGORY_AUGMENTATION_CONFIG_PATH.name})."
+        ),
+    )
+    parser.add_argument(
+        "--no-category-augmentation",
+        action="store_true",
+        help="Desactiva la expansión por categoría aunque el JSON tenga counts > 0.",
+    )
     return parser.parse_args()
 
 
@@ -3244,6 +3758,8 @@ def main():
                 manifest_cache_dir=mcache,
                 manifest_variant_set=args.manifest_variant_set,
                 extra_manifest_views_per_clip=int(args.extra_manifest_views_per_clip),
+                category_aug_config_path=Path(args.category_aug_config),
+                use_category_augmentation=(False if args.no_category_augmentation else None),
             )
             results.append(res)
             wall_total_s += float(res.get("wall_time_s", 0.0))

@@ -70,7 +70,8 @@
         "rotate": 3.0,
         "scale": 3.0,
         "shift": 0.03,
-        "noise": 0.003
+        "noise": 0.003,
+        "speed": 0.15
       },
       "rotate": {
         "min": -15.0,
@@ -78,6 +79,10 @@
       },
       "noise": {
         "sigma_cap": 0.009
+      },
+      "speed": {
+        "min": 0.85,
+        "max": 1.15
       }
     }
   }
