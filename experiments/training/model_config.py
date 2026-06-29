@@ -34,11 +34,10 @@ DATA_RESULT_ROOT = Path("/home/debian/Proyectos/GuardIA/ResultadosExperimentos/d
 SPLIT_RATIO_TRAIN, SPLIT_RATIO_VAL, SPLIT_RATIO_TEST = suggest_split_ratios(1500)
 
 # Filtros de calidad por usuario/recorte (collect_examples, preflight, batch_build_manifest_cache).
-# Conservadores: descartan clips muy cortos, pocas keypoints visibles o demasiada oclusión.
-# Nota: no se usa meta["passes_filters"] del extractor; solo estos umbrales y reglas en train_model_operations.
-MIN_CLIP_SECONDS = 3.0
-MIN_VALID_FRAMES = 12
-MIN_VALID_PCT = 20.0
+# 0 = desactivado (no descartar por duración / frames / % válidos).
+MIN_CLIP_SECONDS = 0.0
+MIN_VALID_FRAMES = 0
+MIN_VALID_PCT = 0.0
 MAX_OCCLUSION_RATIO = 90.0
 
 # Semilla (split, augment, PoseDataset).

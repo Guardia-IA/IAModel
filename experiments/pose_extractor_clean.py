@@ -85,8 +85,11 @@ CRITICAL_KPS = [7, 8, 9, 10]           # Muñecas y codos (estadística de oclus
 MIN_COVERAGE_RATIO = 0.8               # Mínimo % de la duración con buena calidad (80%)
 DEFAULT_FPS = 12                       # FPS por defecto si no se puede leer del vídeo
 
-# Filtro de duración mínima por usuario (en segundos)
-MIN_USER_SECONDS = 4.0                 # Usuarios con menos de esto se ignoran
+# Filtro de duración mínima por usuario (en segundos). 0 = desactivado.
+MIN_USER_SECONDS = 0.0
+
+# Solo procesar clips con exactamente un track/persona detectada; si hay más, se omite la fila CSV.
+SINGLE_USER_ONLY = True
 
 # Filtro de visibilidad corporal: no guardar usuarios que solo muestren mano, cabeza, etc.
 # Un frame cuenta como "cuerpo visible" si al menos BODY_VISIBLE_MIN_KPS keypoints están
@@ -814,6 +817,13 @@ def process_single_csv(
                 })
                 continue
 
+            if SINGLE_USER_ONLY and len(temp_person_data) > 1:
+                print(
+                    f"[OMITIDO] Clip '{clip_name}' | Fila CSV: {fila_csv} | "
+                    f"multiusuario detectado (n={len(temp_person_data)} tracks) — se salta la fila"
+                )
+                continue
+
             data_dir = Path(DATA_RESULT_BASE) / category / clip_name
             data_dir.mkdir(parents=True, exist_ok=True)
 
@@ -827,7 +837,7 @@ def process_single_csv(
 
                 # Duración del usuario en segundos (para filtrar personas de paso rápido / tracks rotos)
                 user_seconds = total_frames / fps if fps > 0 else 0.0
-                if user_seconds < MIN_USER_SECONDS:
+                if MIN_USER_SECONDS > 0 and user_seconds < MIN_USER_SECONDS:
                     print(
                         f"[DESCARTADO usuario] Clip '{clip_name}' user_{tid} | "
                         f"duración={user_seconds:.2f}s < {MIN_USER_SECONDS}s"

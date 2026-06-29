@@ -1238,14 +1238,14 @@ def _user_quality_ok(
         valid_pct = 100.0 * (valid_frames / total_frames)
 
     clip_duration = _to_float(meta.get("clip_duration"), default=0.0)
-    if clip_duration > 0 and clip_duration < min_clip_seconds:
+    if min_clip_seconds > 0 and clip_duration > 0 and clip_duration < min_clip_seconds:
         return False
 
     if pose_len < MIN_SEQ_LEN:
         return False
-    if valid_frames < min_valid_frames:
+    if min_valid_frames > 0 and valid_frames < min_valid_frames:
         return False
-    if valid_pct < min_valid_pct:
+    if min_valid_pct > 0 and valid_pct < min_valid_pct:
         return False
     if occlusion_ratio > max_occlusion_ratio:
         return False
