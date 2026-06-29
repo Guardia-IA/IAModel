@@ -16,9 +16,12 @@ Salida:
 Antes de generar el CSV ejecuta un preflight (salvo --no-preflight):
   - carpeta del clip existe
   - clip_buffer.mp4 (o --clip-filename) existe y tiene duración legible
-  - merged.npy presente (aviso; error con --require-merged)
+  - merged.npy presente (sin él = sin personas → se omite la fila)
   - category_segments válido y tiempos coherentes con el vídeo
   - clasificación en rango [0, max_clas] (security.py)
+
+Por defecto, al generar el CSV se omiten las filas con errores de preflight
+y se escriben las válidas. Usa --strict para abortar si hay cualquier error.
 
 Uso:
   python parse_category_segments.py entrada.csv --base-path /ruta/videos
@@ -350,7 +353,6 @@ def run_preflight(
     plans: list[RowPlan],
     base_path: Path,
     *,
-    require_merged: bool = False,
     max_clas: int = DEFAULT_MAX_CLAS,
     min_clas: int = DEFAULT_MIN_CLAS,
     time_margin_sec: float = 1.0,
@@ -400,25 +402,14 @@ def run_preflight(
                 )
             )
 
-        if require_merged:
-            if not plan.merged_file.is_file():
-                issues.append(
-                    _issue(
-                        plan.row_num,
-                        row_id,
-                        "error",
-                        "missing_merged_npy",
-                        f"No existe {plan.merged_file}",
-                    )
-                )
-        elif not plan.merged_file.is_file():
+        if not plan.merged_file.is_file():
             issues.append(
                 _issue(
                     plan.row_num,
                     row_id,
-                    "warn",
+                    "error",
                     "missing_merged_npy",
-                    f"No existe {plan.merged_file} (no bloquea pose_extractor)",
+                    f"Sin {MERGED_FILENAME} (sin personas detectadas): {plan.merged_file}",
                 )
             )
 
@@ -543,46 +534,88 @@ def run_preflight(
     )
 
 
+def _issues_by_row_id(issues: list[PreflightIssue]) -> dict[str, set[str]]:
+    out: dict[str, set[str]] = {}
+    for issue in issues:
+        out.setdefault(issue.row_id, set()).add(issue.code)
+    return out
+
+
+def _issue_codes_for_row(report: PreflightReport, row_num: int) -> list[str]:
+    return sorted({i.code for i in report.errors if i.row_num == row_num})
+
+
 def _print_preflight(report: PreflightReport, *, clip_filename: str, quiet: bool) -> None:
-    if quiet:
-        return
+    failed_by_id = _issues_by_row_id(report.errors)
 
-    print(f"\n{BOLD}{'=' * 72}")
-    print("PREFLIGHT — comprobaciones antes de pose_extractor_clean")
-    print(f"{'=' * 72}{RESET}")
-    print(f"  Vídeo esperado por clip: {clip_filename}")
-    print(f"  Datos opcionales:        {MERGED_FILENAME}")
-    print(f"  Clasificación válida:    [{DEFAULT_MIN_CLAS}, {DEFAULT_MAX_CLAS}]")
-    print(f"  Filas CSV entrada:       {report.input_rows}")
-    print(f"  Filas CSV salida prev.:  {report.planned_output_rows}")
-    print(f"  Base-path:               {report.base_path}")
+    if not quiet:
+        print(f"\n{BOLD}{'=' * 72}")
+        print("PREFLIGHT — comprobaciones antes de pose_extractor_clean")
+        print(f"{'=' * 72}{RESET}")
+        print(f"  Vídeo esperado por clip: {clip_filename}")
+        print(f"  merged.npy obligatorio:  sí (sin él = sin personas, se omite)")
+        print(f"  Clasificación válida:    [{DEFAULT_MIN_CLAS}, {DEFAULT_MAX_CLAS}]")
+        print(f"  Filas CSV entrada:       {report.input_rows}")
+        print(f"  Filas CSV salida prev.:  {report.planned_output_rows}")
+        print(f"  Base-path:               {report.base_path}")
 
-    err_codes = Counter(i.code for i in report.errors)
-    warn_codes = Counter(i.code for i in report.warnings)
+        err_codes = Counter(i.code for i in report.errors)
 
-    if report.errors:
-        print(f"\n{RED}Errores ({len(report.errors)}):{RESET}")
-        for issue in report.errors[:50]:
-            print(f"  [{issue.code}] fila {issue.row_num} id={issue.row_id[:8]}… — {issue.message}")
-        if len(report.errors) > 50:
-            print(f"  … y {len(report.errors) - 50} más")
-        print(f"\n  Resumen errores: {dict(err_codes)}")
+        if report.errors:
+            print(f"\n{RED}Errores ({len(report.errors)}):{RESET}")
+            for issue in report.errors[:50]:
+                print(
+                    f"  [{issue.code}] fila {issue.row_num} id={issue.row_id} — {issue.message}"
+                )
+            if len(report.errors) > 50:
+                print(f"  … y {len(report.errors) - 50} mensajes más")
+            print(f"\n  Resumen errores: {dict(err_codes)}")
 
-    if report.warnings:
-        print(f"\n{YELLOW}Avisos ({len(report.warnings)}):{RESET}")
-        for issue in report.warnings[:20]:
-            print(f"  [{issue.code}] fila {issue.row_num} — {issue.message}")
-        if len(report.warnings) > 20:
-            print(f"  … y {len(report.warnings) - 20} más")
-        if warn_codes:
-            print(f"  Resumen avisos: {dict(warn_codes)}")
+        if report.warnings:
+            print(f"\n{YELLOW}Avisos ({len(report.warnings)}):{RESET}")
+            for issue in report.warnings[:20]:
+                print(
+                    f"  [{issue.code}] fila {issue.row_num} id={issue.row_id} — {issue.message}"
+                )
+            if len(report.warnings) > 20:
+                print(f"  … y {len(report.warnings) - 20} más")
+
+    if failed_by_id:
+        print(f"\n{RED}Clips con error — id completo ({len(failed_by_id)}):{RESET}")
+        for row_id in sorted(failed_by_id):
+            codes = ", ".join(sorted(failed_by_id[row_id]))
+            print(f"  {row_id}  [{codes}]")
 
     if report.ok:
-        print(f"\n{GREEN}[OK] Preflight superado: listo para generar CSV y pasar a pose_extractor_clean.{RESET}")
+        if not quiet:
+            print(f"\n{GREEN}[OK] Preflight superado: listo para generar CSV y pasar a pose_extractor_clean.{RESET}")
     else:
         print(
-            f"\n{RED}[X] Preflight fallido: corrige los errores antes de ejecutar pose_extractor_clean.{RESET}"
+            f"\n{RED}[X] Preflight: {len(failed_by_id)} clip(s) con error, "
+            f"{len(report.warnings)} aviso(s).{RESET}"
         )
+
+
+def _print_skipped_clips_summary(
+    skipped: list[dict[str, Any]],
+    *,
+    title: str,
+) -> None:
+    if not skipped:
+        return
+    print(f"\n{YELLOW}{title} ({len(skipped)} clip(s)):{RESET}")
+    code_counts: Counter[str] = Counter()
+    for item in skipped:
+        for code in item["codes"]:
+            code_counts[code] += 1
+    if code_counts:
+        parts = ", ".join(f"{code}: {n}" for code, n in code_counts.most_common())
+        print(f"  Motivos: {parts}")
+    for item in skipped:
+        codes = ", ".join(item["codes"])
+        reason = item.get("reason")
+        extra = f" — {reason}" if reason else ""
+        print(f"  {item['id']}  fila {item['row_num']}  [{codes}]{extra}")
 
 
 def parse_category_segments_csv(
@@ -593,12 +626,11 @@ def parse_category_segments_csv(
     clip_filename: str = DEFAULT_CLIP_FILENAME,
     margin_sec: float = 1.0,
     time_margin_sec: float = 1.0,
-    require_merged: bool = False,
     max_clas: int = DEFAULT_MAX_CLAS,
     run_preflight_check: bool = True,
     preflight_only: bool = False,
-    allow_preflight_errors: bool = False,
-    skip_invalid_rows: bool = False,
+    strict: bool = False,
+    skip_invalid_rows: bool = True,
     quiet: bool = False,
 ) -> Path | None:
     input_csv = Path(input_csv)
@@ -622,43 +654,56 @@ def parse_category_segments_csv(
         report = run_preflight(
             plans,
             base,
-            require_merged=require_merged,
             max_clas=max_clas,
             time_margin_sec=time_margin_sec,
         )
         _print_preflight(report, clip_filename=clip_filename, quiet=quiet)
 
-        if not report.ok and not allow_preflight_errors:
-            if preflight_only:
-                raise RuntimeError(
-                    f"Preflight fallido con {len(report.errors)} error(es)."
-                )
+        if preflight_only and not report.ok:
+            raise RuntimeError(
+                f"Preflight fallido con {len(report.errors)} error(es)."
+            )
+        if not preflight_only and strict and not report.ok:
             raise RuntimeError(
                 f"Preflight fallido con {len(report.errors)} error(es). "
-                "Usa --preflight-only para solo revisar o corrige los datos."
+                "Corrige los datos o ejecuta sin --strict para omitir filas con error."
             )
 
     if preflight_only:
         return None
 
     rows_out: list[dict[str, str | int]] = []
-    skipped = 0
+    skipped_parse = 0
+    skipped_preflight = 0
+    skipped_details: list[dict[str, Any]] = []
     err_rows = {e.row_num for e in report.errors} if report else set()
 
     for plan in plans:
         if plan.skip_reason:
-            skipped += 1
+            skipped_parse += 1
             if skip_invalid_rows:
+                skipped_details.append(
+                    {
+                        "id": plan.row.get("id", "?"),
+                        "row_num": plan.row_num,
+                        "codes": ["row_invalid"],
+                        "reason": plan.skip_reason,
+                    }
+                )
                 continue
-        if plan.skip_reason and not skip_invalid_rows:
-            continue
-        if plan.skip_reason:
             continue
 
-        if report and not report.ok and allow_preflight_errors:
-            if plan.row_num in err_rows:
-                skipped += 1
-                continue
+        if report and plan.row_num in err_rows:
+            skipped_preflight += 1
+            skipped_details.append(
+                {
+                    "id": plan.row.get("id", "?"),
+                    "row_num": plan.row_num,
+                    "codes": _issue_codes_for_row(report, plan.row_num),
+                    "reason": None,
+                }
+            )
+            continue
 
         if not quiet and not run_preflight_check:
             print(f"\n--- Fila {plan.row_num} ---")
@@ -682,10 +727,24 @@ def parse_category_segments_csv(
 
     if not quiet:
         print(f"\n{BOLD}{'=' * 50}{RESET}")
-        print(f"Filas entrada:   {len(rows_in)}")
-        print(f"Filas omitidas:  {skipped}")
-        print(f"Filas escritas:  {len(rows_out)}")
-        print(f"CSV generado:    {output_csv}")
+        print(f"Filas entrada:              {len(rows_in)}")
+        print(f"Omitidas (parse inválido):  {skipped_parse}")
+        print(f"Omitidas (preflight error): {skipped_preflight}")
+        print(f"Filas CSV escritas:         {len(rows_out)}")
+        print(f"CSV generado:               {output_csv}")
+
+    _print_skipped_clips_summary(
+        skipped_details,
+        title="Clips NO incluidos en el CSV (id completo)",
+    )
+
+    if not quiet and not rows_out:
+        print(f"{RED}[WARN] CSV vacío: ninguna fila pasó el preflight.{RESET}")
+    elif quiet and skipped_details:
+        print(
+            f"{YELLOW}Resumen: {len(skipped_details)} clip(s) omitido(s), "
+            f"{len(rows_out)} fila(s) en CSV.{RESET}"
+        )
 
     return output_csv
 
@@ -732,11 +791,6 @@ def main() -> int:
         help=f"Clasificación máxima válida (default {DEFAULT_MAX_CLAS})",
     )
     parser.add_argument(
-        "--require-merged",
-        action="store_true",
-        help=f"Exigir {MERGED_FILENAME} en cada carpeta (error si falta)",
-    )
-    parser.add_argument(
         "--preflight-only",
         action="store_true",
         help="Solo ejecutar preflight, no escribir CSV de salida",
@@ -747,14 +801,14 @@ def main() -> int:
         help="Saltar preflight (no recomendado)",
     )
     parser.add_argument(
-        "--allow-preflight-errors",
+        "--strict",
         action="store_true",
-        help="Generar CSV omitiendo filas con errores de preflight",
+        help="Abortar sin escribir CSV si el preflight tiene errores (default: omitir filas con error)",
     )
     parser.add_argument(
-        "--skip-invalid-rows",
+        "--include-invalid-rows",
         action="store_true",
-        help="Omitir filas con category_segments/category_id inválidos al escribir CSV",
+        help="Incluir filas con category_id/segments inválidos al escribir CSV (no recomendado)",
     )
     parser.add_argument(
         "--quiet",
@@ -772,12 +826,11 @@ def main() -> int:
             clip_filename=str(args.clip_filename),
             margin_sec=float(args.margin_sec),
             time_margin_sec=float(args.time_margin_sec),
-            require_merged=bool(args.require_merged),
             max_clas=int(args.max_clas),
             run_preflight_check=not args.no_preflight,
             preflight_only=bool(args.preflight_only),
-            allow_preflight_errors=bool(args.allow_preflight_errors),
-            skip_invalid_rows=bool(args.skip_invalid_rows),
+            strict=bool(args.strict),
+            skip_invalid_rows=not args.include_invalid_rows,
             quiet=args.quiet,
         )
     except (FileNotFoundError, ValueError, RuntimeError) as exc:
