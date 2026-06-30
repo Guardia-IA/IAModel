@@ -4255,7 +4255,6 @@ def main():
             f"Extra manifest views / clip (train+val) => {args.extra_manifest_views_per_clip} "
             "(0 = sin expansión explícita por filas)"
         )
-        training_plan_path = training_plan
         bs_thr = float(args.binary_softmax_threshold)
         bs_margin = float(args.binary_logit_margin)
         if training_plan_path is not None and Path(training_plan_path).is_file():

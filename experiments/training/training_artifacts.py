@@ -78,7 +78,7 @@ def resolve_artifacts(
 
 
 def print_artifact_banner(artifacts: Dict[str, Path], title: str = "Artefactos") -> None:
-    print(f"\n=== {title} ({artifacts.get('task', '?')}) ===")
+    print(f"\n=== {title} ===")
     for key in ("training_plan", "category_aug_config", "models_dir", "splits_dir", "reports_dir"):
         if key in artifacts:
             print(f"  {key}: {artifacts[key]}")
