@@ -85,6 +85,12 @@ PREFLIGHT_NEGATIVE_TO_ROBBERY_RATIO = 4.0
 PREFLIGHT_ROBBERY_DOMINANCE_THRESHOLD = 0.25
 PREFLIGHT_ROBBERY_RARE_THRESHOLD = 0.08
 
+# Plan de entrenamiento (preflight_train_plan.py → training_plan.json).
+TRAINING_PLAN_PATH = Path(__file__).parent / "training_plan.json"
+# Eval binaria: comparar softmax-argmax vs umbral en P(robo) vs margen en logits crudos.
+DEFAULT_BINARY_SOFTMAX_THRESHOLD = 0.8
+DEFAULT_BINARY_LOGIT_MARGIN = 0.0
+
 
 EXPERIMENTS: List[Dict[str, Any]] = [
     # ============================

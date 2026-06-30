@@ -48,6 +48,9 @@ try:
         PREFLIGHT_NEGATIVE_TO_ROBBERY_RATIO,
         PREFLIGHT_ROBBERY_DOMINANCE_THRESHOLD,
         PREFLIGHT_ROBBERY_RARE_THRESHOLD,
+        DEFAULT_BINARY_SOFTMAX_THRESHOLD,
+        DEFAULT_BINARY_LOGIT_MARGIN,
+        TRAINING_PLAN_PATH,
     )
 except ImportError:
     from model_config import (  # type: ignore[attr-defined]
@@ -77,6 +80,9 @@ except ImportError:
         PREFLIGHT_NEGATIVE_TO_ROBBERY_RATIO,
         PREFLIGHT_ROBBERY_DOMINANCE_THRESHOLD,
         PREFLIGHT_ROBBERY_RARE_THRESHOLD,
+        DEFAULT_BINARY_SOFTMAX_THRESHOLD,
+        DEFAULT_BINARY_LOGIT_MARGIN,
+        TRAINING_PLAN_PATH,
     )
 
 
@@ -2475,6 +2481,201 @@ def split_examples(
     return train, val, test
 
 
+def verify_split_uid_disjoint(split_uids: Dict[str, List[str]]) -> None:
+    """Garantiza que ningún UID aparece en más de un split (train/val/test)."""
+    seen: Dict[str, str] = {}
+    for split_name in ("train", "val", "test"):
+        for uid in split_uids.get(split_name, []):
+            u = str(uid)
+            if u in seen:
+                raise ValueError(
+                    f"Fuga de split: UID {u!r} en {seen[u]} y {split_name}"
+                )
+            seen[u] = split_name
+
+
+def unique_uids_from_examples(examples: List[PoseExample]) -> List[str]:
+    return sorted({_example_uid(ex) for ex in examples})
+
+
+def split_uids_from_example_lists(
+    train_ex: List[PoseExample],
+    val_ex: List[PoseExample],
+    test_ex: List[PoseExample],
+) -> Dict[str, List[str]]:
+    split_uids = {
+        "train": unique_uids_from_examples(train_ex),
+        "val": unique_uids_from_examples(val_ex),
+        "test": unique_uids_from_examples(test_ex),
+    }
+    verify_split_uid_disjoint(split_uids)
+    return split_uids
+
+
+def split_examples_by_uid_manifest(
+    examples: List[PoseExample],
+    split_uids: Dict[str, List[str]],
+) -> Tuple[List[PoseExample], List[PoseExample], List[PoseExample]]:
+    """
+    Reparte ejemplos según UID fijado en el plan (clips reales, antes de augment).
+    Ignora ejemplos cuyo UID no está en el plan.
+    """
+    verify_split_uid_disjoint(split_uids)
+    train_set = set(split_uids.get("train", []))
+    val_set = set(split_uids.get("val", []))
+    test_set = set(split_uids.get("test", []))
+    train: List[PoseExample] = []
+    val: List[PoseExample] = []
+    test: List[PoseExample] = []
+    for ex in examples:
+        uid = _example_uid(ex)
+        if uid in train_set:
+            train.append(ex)
+        elif uid in val_set:
+            val.append(ex)
+        elif uid in test_set:
+            test.append(ex)
+    return train, val, test
+
+
+def split_examples_stratified_by_uid(
+    examples: List[PoseExample],
+    seed: int = SEED,
+    train_ratio: float = TRAIN_RATIO,
+    val_ratio: float = VAL_RATIO,
+    stratify_key=None,
+) -> Tuple[List[PoseExample], List[PoseExample], List[PoseExample]]:
+    """
+    Split determinista a nivel UID (clip): todos los ejemplos del mismo clip van al mismo split.
+    Estratifica por categoría de carpeta para repartir mejor val/test por clase.
+    """
+    if stratify_key is None:
+        stratify_key = _example_folder_category
+    tr = float(max(0.0, min(1.0, train_ratio)))
+    vr = float(max(0.0, min(1.0, val_ratio)))
+    if tr + vr > 1.0:
+        raise ValueError(f"train_ratio+val_ratio debe ser <= 1.0 (got {tr}+{vr})")
+
+    uid_to_exs: Dict[str, List[PoseExample]] = {}
+    uid_to_cat: Dict[str, int] = {}
+    for ex in examples:
+        uid = _example_uid(ex)
+        uid_to_exs.setdefault(uid, []).append(ex)
+        uid_to_cat[uid] = int(stratify_key(ex))
+
+    by_cat: Dict[int, List[str]] = {}
+    for uid, cat in uid_to_cat.items():
+        by_cat.setdefault(cat, []).append(uid)
+
+    rng = random.Random(seed)
+    train_uids: List[str] = []
+    val_uids: List[str] = []
+    test_uids: List[str] = []
+    for _cat, uids in sorted(by_cat.items(), key=lambda x: int(x[0])):
+        ordered = sorted(uids)
+        rng.shuffle(ordered)
+        n = len(ordered)
+        n_train = int(n * tr)
+        n_val = int(n * vr)
+        train_uids.extend(ordered[:n_train])
+        val_uids.extend(ordered[n_train : n_train + n_val])
+        test_uids.extend(ordered[n_train + n_val :])
+
+    def _collect(uids: List[str]) -> List[PoseExample]:
+        out: List[PoseExample] = []
+        for uid in uids:
+            out.extend(uid_to_exs[uid])
+        return out
+
+    train = _collect(train_uids)
+    val = _collect(val_uids)
+    test = _collect(test_uids)
+    split_uids_from_example_lists(train, val, test)
+    return train, val, test
+
+
+def assert_no_uid_leak_between_splits(
+    train_ex: List[PoseExample],
+    val_ex: List[PoseExample],
+    test_ex: List[PoseExample],
+) -> None:
+    train_uids = {_example_uid(ex) for ex in train_ex}
+    val_uids = {_example_uid(ex) for ex in val_ex}
+    test_uids = {_example_uid(ex) for ex in test_ex}
+    leak_tv = train_uids & val_uids
+    leak_tt = train_uids & test_uids
+    leak_vt = val_uids & test_uids
+    if leak_tv or leak_tt or leak_vt:
+        raise ValueError(
+            "Fuga de UID entre splits: "
+            f"train∩val={len(leak_tv)} train∩test={len(leak_tt)} val∩test={len(leak_vt)}"
+        )
+
+
+def load_training_plan_json(path: str | Path) -> Dict[str, Any]:
+    path = Path(path)
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    if "split_uids" not in data:
+        raise ValueError(f"training_plan inválido (falta split_uids): {path}")
+    verify_split_uid_disjoint(data["split_uids"])
+    return data
+
+
+def build_plan_stats_by_category(
+    train_ex: List[PoseExample],
+    val_ex: List[PoseExample],
+    test_ex: List[PoseExample],
+    category_aug_cfg: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Clips reales vs filas sintéticas (augment) por categoría de carpeta."""
+    include_identity = bool(category_aug_cfg.get("include_identity", True))
+    train_counts = count_examples_by_folder_category(train_ex)
+    val_counts = count_examples_by_folder_category(val_ex)
+    test_counts = count_examples_by_folder_category(test_ex)
+    rows_detail = summarize_category_aug_on_train(train_counts, category_aug_cfg)
+
+    by_cat: Dict[str, Dict[str, int]] = {}
+    cats = sorted(
+        set(train_counts) | set(val_counts) | set(test_counts),
+        key=lambda x: int(x),
+    )
+    total_real_train = 0
+    total_synthetic_train = 0
+    total_rows_train = 0
+    for cat in cats:
+        clips = int(train_counts.get(cat, 0))
+        rows = int(rows_detail.get(cat, {}).get("train_rows", clips))
+        synthetic = max(0, rows - clips)
+        by_cat[str(cat)] = {
+            "clips_real_train": clips,
+            "clips_real_val": int(val_counts.get(cat, 0)),
+            "clips_real_test": int(test_counts.get(cat, 0)),
+            "aug_per_clip": int(rows_detail.get(cat, {}).get("aug_per_clip", 0)),
+            "rows_synthetic_train": synthetic,
+            "rows_total_train": rows,
+        }
+        total_real_train += clips
+        total_synthetic_train += synthetic
+        total_rows_train += rows
+
+    return {
+        "by_category": by_cat,
+        "totals": {
+            "clips_real_train": total_real_train,
+            "clips_real_val": sum(val_counts.values()),
+            "clips_real_test": sum(test_counts.values()),
+            "rows_synthetic_train": total_synthetic_train,
+            "rows_total_train": total_rows_train,
+            "include_identity_in_rows": include_identity,
+        },
+    }
+
+
+def max_category_augment_ops_available() -> int:
+    return len(CATEGORY_AUGMENT_RECIPE_BANK)
+
+
 def build_label_mapping(examples: List[PoseExample]) -> Dict[int, int]:
     labels = sorted({ex.label for ex in examples})
     return {lab: i for i, lab in enumerate(labels)}
@@ -2668,18 +2869,72 @@ def evaluate(model, loader, criterion, device) -> Tuple[float, float]:
 
 
 @torch.no_grad()
+def _binary_metrics_from_predictions(
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    pos_label: int = 1,
+) -> Dict[str, float]:
+    tp = int(((y_true == pos_label) & (y_pred == pos_label)).sum())
+    fn = int(((y_true == pos_label) & (y_pred != pos_label)).sum())
+    fp = int(((y_true != pos_label) & (y_pred == pos_label)).sum())
+    tn = int(((y_true != pos_label) & (y_pred != pos_label)).sum())
+    n_pos = int((y_true == pos_label).sum())
+    n_neg = int((y_true != pos_label).sum())
+    n = max(len(y_true), 1)
+    acc = (tp + tn) / n
+    recall = tp / max(n_pos, 1)
+    precision = tp / max(tp + fp, 1)
+    fp_rate = fp / max(n_neg, 1)
+    return {
+        "accuracy_pct": float(100.0 * acc),
+        "recall_robbery_pct": float(100.0 * recall),
+        "precision_robbery_pct": float(100.0 * precision),
+        "false_positive_rate_pct": float(100.0 * fp_rate),
+        "tp": tp,
+        "fp": fp,
+        "fn": fn,
+        "tn": tn,
+        "support_pos": n_pos,
+        "support_neg": n_neg,
+    }
+
+
+def format_binary_metrics_line(binary_metrics: Dict[str, Any], prefix: str = "") -> str:
+    parts = []
+    for key, label in (
+        ("softmax_argmax", "argmax"),
+        ("softmax_threshold", "softmax@thr"),
+        ("logit_margin", "logit@margin"),
+    ):
+        block = binary_metrics.get(key)
+        if not block:
+            continue
+        parts.append(
+            f"{label}: acc={block['accuracy_pct']:.1f}% "
+            f"rec_robo={block['recall_robbery_pct']:.1f}% "
+            f"FP={block['false_positive_rate_pct']:.1f}%"
+        )
+    return (prefix + " | ".join(parts)) if parts else ""
+
+
+@torch.no_grad()
 def evaluate_with_metrics(
     model,
     loader,
     criterion,
     device,
     num_classes: int,
+    task: str = "multiclass",
+    binary_softmax_threshold: float = DEFAULT_BINARY_SOFTMAX_THRESHOLD,
+    binary_logit_margin: float = DEFAULT_BINARY_LOGIT_MARGIN,
 ) -> Tuple[float, float, Dict[str, Any]]:
     """
     Evalúa en un loader y devuelve:
       - pérdida media
-      - accuracy
-      - métricas detalladas: matriz de confusión, precision/recall/F1 por clase, macro/weighted F1 y top-3 accuracy.
+      - accuracy (softmax argmax)
+      - métricas detalladas: matriz de confusión, precision/recall/F1 por clase,
+        macro/weighted F1, top-3 accuracy, % acierto por clase (multiclass),
+        y comparativa softmax-argmax / softmax-umbral / logits (binario).
     """
     model.eval()
     total_loss = 0.0
@@ -2688,6 +2943,8 @@ def evaluate_with_metrics(
 
     conf_mat = [[0 for _ in range(num_classes)] for _ in range(num_classes)]
     top3_correct = 0
+    all_logits: List[torch.Tensor] = []
+    all_labels: List[torch.Tensor] = []
 
     for x, y in loader:
         x = x.to(device)
@@ -2700,15 +2957,15 @@ def evaluate_with_metrics(
 
         preds = logits.argmax(dim=1)
         correct += (preds == y).sum().item()
+        all_logits.append(logits.detach().cpu())
+        all_labels.append(y.detach().cpu())
 
-        # Matriz de confusión
         for yt, yp in zip(y.tolist(), preds.tolist()):
             if 0 <= yt < num_classes and 0 <= yp < num_classes:
                 conf_mat[yt][yp] += 1
 
-        # Top-3 accuracy
         if logits.size(1) >= 3:
-            top3 = logits.topk(3, dim=1).indices  # [B, 3]
+            top3 = logits.topk(3, dim=1).indices
             for yt, topk in zip(y.tolist(), top3.tolist()):
                 if yt in topk:
                     top3_correct += 1
@@ -2716,7 +2973,6 @@ def evaluate_with_metrics(
     avg_loss = total_loss / max(total, 1)
     acc = correct / max(total, 1)
 
-    # Métricas derivadas de la matriz de confusión
     per_class = {}
     supports = []
     f1s = []
@@ -2739,6 +2995,7 @@ def evaluate_with_metrics(
             "recall": float(rec),
             "f1": float(f1),
             "support": int(support),
+            "accuracy_pct": float(100.0 * tp / support) if support > 0 else None,
         }
 
         supports.append(support)
@@ -2756,13 +3013,39 @@ def evaluate_with_metrics(
 
     top3_acc = top3_correct / max(total, 1) if total > 0 else 0.0
 
-    metrics = {
+    metrics: Dict[str, Any] = {
         "confusion_matrix": conf_mat,
         "per_class": per_class,
         "macro_f1": macro_f1,
         "weighted_f1": weighted_f1,
         "top3_acc": float(top3_acc),
     }
+
+    if num_classes == 2 and all_logits:
+        logits_cat = torch.cat(all_logits, dim=0)
+        y_np = torch.cat(all_labels, dim=0).numpy()
+        probs_pos = F.softmax(logits_cat, dim=1)[:, 1].numpy()
+        margin = (logits_cat[:, 1] - logits_cat[:, 0]).numpy()
+        preds_argmax = logits_cat.argmax(dim=1).numpy()
+        preds_softmax_thr = (probs_pos >= float(binary_softmax_threshold)).astype(np.int64)
+        preds_logit_thr = (margin >= float(binary_logit_margin)).astype(np.int64)
+        metrics["binary"] = {
+            "softmax_threshold_value": float(binary_softmax_threshold),
+            "logit_margin_value": float(binary_logit_margin),
+            "softmax_argmax": _binary_metrics_from_predictions(y_np, preds_argmax, pos_label=1),
+            "softmax_threshold": _binary_metrics_from_predictions(
+                y_np, preds_softmax_thr, pos_label=1
+            ),
+            "logit_margin": _binary_metrics_from_predictions(
+                y_np, preds_logit_thr, pos_label=1
+            ),
+        }
+
+    if task == "multiclass" and num_classes > 2:
+        metrics["per_class_accuracy_pct"] = {
+            str(c): per_class[c]["accuracy_pct"] for c in range(num_classes)
+        }
+
     return avg_loss, acc, metrics
 
 
@@ -2797,6 +3080,8 @@ def build_datasets_and_loaders(
     extra_manifest_views_per_clip: int = 0,
     category_aug_config_path: Optional[Path] = None,
     use_category_augmentation: Optional[bool] = None,
+    training_plan_path: Optional[Path] = None,
+    stratified_split: bool = True,
 ) -> Tuple[Dict[str, DataLoader], int, Dict[int, int], Dict[str, Any]]:
     print(f"Recolectando ejemplos desde data_result... (pose_source='{pose_source}')")
     examples = collect_examples(
@@ -2810,40 +3095,86 @@ def build_datasets_and_loaders(
     print(f"Ejemplos totales (tras filtrado): {len(examples)}")
 
     if DEBUG_MODE:
-        # Reducir drásticamente el número de ejemplos para pruebas locales rápidas
         examples = examples[:DEBUG_MAX_EXAMPLES]
         print(f"[DEBUG] Usando solo {len(examples)} ejemplos para train/val/test")
 
-    # En modo binario reetiquetamos a 0/1 manteniendo el resto del flujo igual
+    training_plan: Optional[Dict[str, Any]] = None
+    if training_plan_path is not None:
+        training_plan = load_training_plan_json(training_plan_path)
+        print(f"[TRAINING-PLAN] Cargado: {training_plan_path}")
+        plan_task = training_plan.get("task", "multiclass")
+        if plan_task != task:
+            raise ValueError(
+                f"task={task!r} no coincide con training_plan ({plan_task!r})"
+            )
+        if task == "binary" and int(training_plan.get("positive_class", positive_class)) != int(positive_class):
+            raise ValueError(
+                "positive_class del CLI no coincide con el training_plan"
+            )
+
     if task == "binary":
         print(f"[BINARIO] Usando clase positiva original: {positive_class}")
         examples = make_binary_examples(examples, positive_class=positive_class)
 
     n_ex = len(examples)
-    if (train_ratio is None) ^ (val_ratio is None):
-        raise ValueError("Indica ambos --train-ratio y --val-ratio, o ninguno para usar la heurística suggest_split_ratios(N).")
-    if train_ratio is None or val_ratio is None:
-        tr, vr, te = suggest_split_ratios(n_ex)
+    if training_plan is not None:
+        tr = float(training_plan["split_ratios"]["train"])
+        vr = float(training_plan["split_ratios"]["val"])
+        te = float(training_plan["split_ratios"]["test"])
         print(
-            f"[SPLIT] Heurística suggest_split_ratios(N={n_ex}) = "
-            f"{tr:.3f}/{vr:.3f}/{te:.3f} train/val/test (misma lógica que preflight; "
-            "o pasa --train-ratio y --val-ratio para fijar a mano)."
+            f"[SPLIT] Desde training_plan: {tr:.3f}/{vr:.3f}/{te:.3f} train/val/test"
         )
+        train_ex, val_ex, test_ex = split_examples_by_uid_manifest(
+            examples, training_plan["split_uids"]
+        )
+        plan_all = set(training_plan["split_uids"].get("train", []))
+        plan_all |= set(training_plan["split_uids"].get("val", []))
+        plan_all |= set(training_plan["split_uids"].get("test", []))
+        loaded_uids = {_example_uid(ex) for ex in examples}
+        missing = plan_all - loaded_uids
+        extra = loaded_uids - plan_all
+        if missing:
+            print(f"[TRAINING-PLAN] Advertencia: {len(missing)} UIDs del plan no están en los datos actuales")
+        if extra:
+            print(f"[TRAINING-PLAN] {len(extra)} UIDs en datos sin asignación en plan (ignorados)")
     else:
-        tr = float(train_ratio)
-        vr = float(val_ratio)
-        if tr + vr > 1.0:
-            raise ValueError(f"train_ratio+val_ratio debe ser <= 1.0 (got {tr}+{vr})")
-        te = 1.0 - tr - vr
-        sug_tr, sug_vr, sug_te = suggest_split_ratios(n_ex)
-        print(
-            f"[SPLIT] Ratios explícitos: {tr:.3f}/{vr:.3f}/{te:.3f} train/val/test | "
-            f"heurística para N={n_ex} sería {sug_tr:.3f}/{sug_vr:.3f}/{sug_te:.3f}"
-        )
+        if (train_ratio is None) ^ (val_ratio is None):
+            raise ValueError("Indica ambos --train-ratio y --val-ratio, o ninguno para usar la heurística suggest_split_ratios(N).")
+        if train_ratio is None or val_ratio is None:
+            tr, vr, te = suggest_split_ratios(n_ex)
+            print(
+                f"[SPLIT] Heurística suggest_split_ratios(N={n_ex}) = "
+                f"{tr:.3f}/{vr:.3f}/{te:.3f} train/val/test (misma lógica que preflight; "
+                "o pasa --train-ratio y --val-ratio para fijar a mano)."
+            )
+        else:
+            tr = float(train_ratio)
+            vr = float(val_ratio)
+            if tr + vr > 1.0:
+                raise ValueError(f"train_ratio+val_ratio debe ser <= 1.0 (got {tr}+{vr})")
+            te = 1.0 - tr - vr
+            sug_tr, sug_vr, sug_te = suggest_split_ratios(n_ex)
+            print(
+                f"[SPLIT] Ratios explícitos: {tr:.3f}/{vr:.3f}/{te:.3f} train/val/test | "
+                f"heurística para N={n_ex} sería {sug_tr:.3f}/{sug_vr:.3f}/{sug_te:.3f}"
+            )
 
-    train_ex, val_ex, test_ex = split_examples(examples, seed=SEED, train_ratio=tr, val_ratio=vr)
+        if stratified_split:
+            train_ex, val_ex, test_ex = split_examples_stratified_by_uid(
+                examples, seed=SEED, train_ratio=tr, val_ratio=vr
+            )
+            print("[SPLIT] Estratificado por categoría de carpeta (UID único por clip)")
+        else:
+            train_ex, val_ex, test_ex = split_examples(
+                examples, seed=SEED, train_ratio=tr, val_ratio=vr
+            )
+
+    assert_no_uid_leak_between_splits(train_ex, val_ex, test_ex)
+    split_uids_clips = split_uids_from_example_lists(train_ex, val_ex, test_ex)
     print(
-        f"Split aplicado => Train: {len(train_ex)} | Val: {len(val_ex)} | Test: {len(test_ex)}"
+        f"Split aplicado => Train: {len(train_ex)} | Val: {len(val_ex)} | Test: {len(test_ex)} "
+        f"(UIDs únicos: {len(split_uids_clips['train'])}/"
+        f"{len(split_uids_clips['val'])}/{len(split_uids_clips['test'])})"
     )
 
     train_unique_npy = len({ex.pose_path.resolve() for ex in train_ex})
@@ -2876,6 +3207,8 @@ def build_datasets_and_loaders(
     }
 
     cat_aug_path = Path(category_aug_config_path or DEFAULT_CATEGORY_AUGMENTATION_CONFIG_PATH)
+    if training_plan is not None and training_plan.get("category_augmentation_config"):
+        cat_aug_path = Path(training_plan["category_augmentation_config"])
     cat_aug_cfg = load_category_augmentation_config(cat_aug_path)
     if use_category_augmentation is False:
         cat_aug_cfg["enabled"] = False
@@ -2890,6 +3223,7 @@ def build_datasets_and_loaders(
             f"Tras expansión por categoría (solo train) => Train filas: {len(train_ex)} | "
             f"Val filas: {len(val_ex)} | Test filas: {len(test_ex)}"
         )
+        assert_no_uid_leak_between_splits(train_ex, val_ex, test_ex)
     else:
         print(f"[CATEGORY-AUG] Desactivado (config {cat_aug_path}, enabled={cat_aug_cfg.get('enabled', True)})")
 
@@ -3058,9 +3392,8 @@ def build_datasets_and_loaders(
 
     loaders = {"train": train_loader, "val": val_loader, "test": test_loader}
     split_manifest = {
-        "train": [_example_uid(ex) for ex in train_ex],
-        "val": [_example_uid(ex) for ex in val_ex],
-        "test": [_example_uid(ex) for ex in test_ex],
+        "split_uids_clips": split_uids_clips,
+        "training_plan_path": str(training_plan_path) if training_plan_path else None,
         "split_ratios": {"train": tr, "val": vr, "test": te},
         "augment_profile": augment_profile,
         "deterministic_variants_count": len(det_specs),
@@ -3282,6 +3615,10 @@ def run_experiment(
     extra_manifest_views_per_clip: int = 0,
     category_aug_config_path: Optional[Path] = None,
     use_category_augmentation: Optional[bool] = None,
+    training_plan_path: Optional[Path] = None,
+    stratified_split: bool = True,
+    binary_softmax_threshold: float = DEFAULT_BINARY_SOFTMAX_THRESHOLD,
+    binary_logit_margin: float = DEFAULT_BINARY_LOGIT_MARGIN,
 ) -> Dict[str, Any]:
     t_exp0 = time.perf_counter()
     print("\n" + "=" * 80)
@@ -3324,8 +3661,16 @@ def run_experiment(
         extra_manifest_views_per_clip=extra_manifest_views_per_clip,
         category_aug_config_path=category_aug_config_path,
         use_category_augmentation=use_category_augmentation,
+        training_plan_path=training_plan_path,
+        stratified_split=stratified_split,
     )
     num_classes = len(label_to_idx)
+
+    eval_kwargs = dict(
+        task=task,
+        binary_softmax_threshold=binary_softmax_threshold,
+        binary_logit_margin=binary_logit_margin,
+    )
 
     model = build_model(cfg["arch"], input_dim, num_classes, cfg).to(device)
     criterion = nn.CrossEntropyLoss()
@@ -3356,17 +3701,41 @@ def run_experiment(
             ssl_drop_prob=ssl_drop_prob,
             supervised_weight=(0.0 if in_ssl_warmup else 1.0),
         )
-        val_loss, val_acc = evaluate(model, loaders["val"], criterion, device)
-        print(
+        val_loss, val_acc, val_metrics = evaluate_with_metrics(
+            model,
+            loaders["val"],
+            criterion,
+            device,
+            num_classes=num_classes,
+            **eval_kwargs,
+        )
+        val_msg = (
             f"[Exp {exp_id:02d}] Epoch {epoch:03d} | "
             f"train_loss={train_loss:.4f} | val_loss={val_loss:.4f} | val_acc={val_acc:.4f}"
         )
+        if task == "binary" and val_metrics.get("binary"):
+            extra = format_binary_metrics_line(val_metrics["binary"])
+            if extra:
+                val_msg += f" | {extra}"
+        elif task == "multiclass" and num_classes > 2:
+            per_acc = val_metrics.get("per_class_accuracy_pct", {})
+            if per_acc:
+                acc_parts = [
+                    f"c{k}={v:.0f}%" for k, v in sorted(per_acc.items(), key=lambda x: int(x[0]))
+                    if v is not None
+                ]
+                if acc_parts:
+                    val_msg += " | " + " ".join(acc_parts[:8])
+                    if len(acc_parts) > 8:
+                        val_msg += " ..."
+        print(val_msg)
         history.append(
             {
                 "epoch": epoch,
                 "train_loss": float(train_loss),
                 "val_loss": float(val_loss),
                 "val_acc": float(val_acc),
+                "val_metrics": val_metrics,
             }
         )
         if val_acc > best_val_acc:
@@ -3383,6 +3752,7 @@ def run_experiment(
         criterion,
         device,
         num_classes=num_classes,
+        **eval_kwargs,
     )
     # Métricas agregadas en test (clips de un único usuario)
     macro_f1 = test_metrics["macro_f1"]
@@ -3414,8 +3784,12 @@ def run_experiment(
         base_msg += (
             f" | f1_pos={f1_pos:.4f} | "
             f"rec_pos={rec_pos:.4f} | prec_pos={prec_pos:.4f} "
-            f"(clips de un único usuario, clase positiva={positive_class})"
+            f"(clase positiva={positive_class})"
         )
+    if task == "binary" and test_metrics.get("binary"):
+        extra = format_binary_metrics_line(test_metrics["binary"], prefix="test: ")
+        if extra:
+            base_msg += f" | {extra}"
     print(base_msg)
 
     save_path = models_dir / f"modelo_{exp_id:02d}.pt"
@@ -3441,6 +3815,8 @@ def run_experiment(
             "test_top3_acc": float(test_metrics["top3_acc"]),
             "test_confusion_matrix": test_metrics["confusion_matrix"],
             "test_per_class": test_metrics["per_class"],
+            "test_binary_metrics": test_metrics.get("binary"),
+            "test_per_class_accuracy_pct": test_metrics.get("per_class_accuracy_pct"),
             "history": history,
         },
         "split_manifest_path": str(split_manifest_out) if split_manifest_out is not None else None,
@@ -3486,9 +3862,7 @@ def run_experiment(
                 "max_occlusion_ratio": float(max_occlusion_ratio),
             },
             "split": {
-                "train": split_manifest["train"],
-                "val": split_manifest["val"],
-                "test": split_manifest["test"],
+                "split_uids_clips": split_manifest["split_uids_clips"],
             },
             "split_ratios": split_manifest.get("split_ratios"),
             "augment_profile": split_manifest.get("augment_profile"),
@@ -3730,6 +4104,35 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Desactiva la expansión por categoría aunque el JSON tenga counts > 0.",
     )
+    parser.add_argument(
+        "--training-plan",
+        type=str,
+        default=None,
+        help=(
+            "Ruta a training_plan.json generado por preflight_train_plan.py. "
+            "Fija split UIDs y augment; garantiza que val/test no entren en train."
+        ),
+    )
+    parser.add_argument(
+        "--no-stratified-split",
+        action="store_true",
+        help="Sin training_plan: usa split aleatorio global en lugar de estratificado por UID/categoría.",
+    )
+    parser.add_argument(
+        "--binary-softmax-threshold",
+        type=float,
+        default=DEFAULT_BINARY_SOFTMAX_THRESHOLD,
+        help=f"Umbral P(robo) en eval binaria (default {DEFAULT_BINARY_SOFTMAX_THRESHOLD}).",
+    )
+    parser.add_argument(
+        "--binary-logit-margin",
+        type=float,
+        default=DEFAULT_BINARY_LOGIT_MARGIN,
+        help=(
+            "Margen logit[1]-logit[0] para predicción binaria alternativa "
+            f"(default {DEFAULT_BINARY_LOGIT_MARGIN})."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -3821,6 +4224,19 @@ def main():
             f"Extra manifest views / clip (train+val) => {args.extra_manifest_views_per_clip} "
             "(0 = sin expansión explícita por filas)"
         )
+        training_plan = Path(args.training_plan) if args.training_plan else None
+        bs_thr = float(args.binary_softmax_threshold)
+        bs_margin = float(args.binary_logit_margin)
+        if training_plan is not None:
+            plan_eval = load_training_plan_json(training_plan).get("evaluation", {})
+            if bs_thr == DEFAULT_BINARY_SOFTMAX_THRESHOLD:
+                bs_thr = float(plan_eval.get("binary_softmax_threshold", bs_thr))
+            if bs_margin == DEFAULT_BINARY_LOGIT_MARGIN:
+                bs_margin = float(plan_eval.get("binary_logit_margin", bs_margin))
+            print(f"Training plan => {training_plan}")
+        print(
+            f"Eval binaria => softmax_thr={bs_thr}, logit_margin={bs_margin}"
+        )
 
         results = []
         wall_total_s = 0.0
@@ -3875,6 +4291,10 @@ def main():
                 extra_manifest_views_per_clip=int(args.extra_manifest_views_per_clip),
                 category_aug_config_path=Path(args.category_aug_config),
                 use_category_augmentation=(False if args.no_category_augmentation else None),
+                training_plan_path=training_plan,
+                stratified_split=(not args.no_stratified_split),
+                binary_softmax_threshold=bs_thr,
+                binary_logit_margin=bs_margin,
             )
             results.append(res)
             wall_total_s += float(res.get("wall_time_s", 0.0))
