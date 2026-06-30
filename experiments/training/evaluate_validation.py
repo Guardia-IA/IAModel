@@ -11,10 +11,12 @@ Uso:
   python evaluate_validation.py --model models-operation-single/modelo_08.pt \\
       --training-plan training_plan.json --split val --single-user-only
 
-  # Todos los modelos de la carpeta + tabla resumen F1/FP clase 6
-  python evaluate_validation.py --models-dir models-operation-single \\
-      --training-plan training_plan.json --split val --single-user-only \\
-      --summary-json reports/val_all.json --quiet
+  # Todos los modelos multiclase + tabla F1/FP por categoría
+  python evaluate_validation.py --task multiclass --models-dir models-operation-single \\
+      --split val --single-user-only --quiet
+
+  # Binario (6 vs resto) — artefactos separados, no machaca multiclase
+  python evaluate_validation.py --task binary --single-user-only --split val --quiet
 """
 from __future__ import annotations
 
@@ -87,6 +89,11 @@ except ImportError:
         _example_uid,
         SEED,
     )
+
+try:
+    from .training_artifacts import resolve_artifacts, print_artifact_banner  # type: ignore[attr-defined]
+except ImportError:
+    from training_artifacts import resolve_artifacts, print_artifact_banner  # type: ignore[attr-defined]
 
 RESET = "\033[0m"
 GREEN = "\033[92m"
@@ -616,7 +623,72 @@ def _metric_cell(per: Dict[str, Dict[str, Any]], cat: int, key: str) -> str:
     return f"{val:5.1f}"
 
 
-def print_batch_summary(results: List[Dict[str, Any]], split_name: str) -> None:
+def _binary_block(r: Dict[str, Any], mode: str = "softmax_argmax") -> Dict[str, Any]:
+    return ((r.get("metrics") or {}).get("binary") or {}).get(mode) or {}
+
+
+def _f1_pos_pct(r: Dict[str, Any], mode: str = "softmax_argmax") -> float:
+    b = _binary_block(r, mode)
+    prec = float(b.get("precision_robbery_pct", 0.0)) / 100.0
+    rec = float(b.get("recall_robbery_pct", 0.0)) / 100.0
+    if prec + rec <= 0:
+        return 0.0
+    return float(100.0 * 2 * prec * rec / (prec + rec))
+
+
+def _fp_rate_pct(r: Dict[str, Any], mode: str = "softmax_argmax") -> float:
+    return float(_binary_block(r, mode).get("false_positive_rate_pct", 999.0))
+
+
+def print_batch_summary_binary(results: List[Dict[str, Any]], split_name: str) -> None:
+    header(f"Resumen binario — {len(results)} modelos en split '{split_name}'")
+    mode = "softmax_argmax"
+
+    print(
+        f"\n{BOLD}{'Modelo':>14} | {'Arch':>10} | {'F1_pos%':>7} | {'Rec%':>6} | "
+        f"{'Prec%':>6} | {'FP%':>6} | {'Acc%':>6}{RESET}"
+    )
+    print("-" * 72)
+    for r in sorted(results, key=lambda x: -_f1_pos_pct(x, mode)):
+        b = _binary_block(r, mode)
+        name = Path(r["model_path"]).name[:14]
+        arch = str(r.get("arch", "?"))[:10]
+        print(
+            f"{name:>14} | {arch:>10} | {_f1_pos_pct(r, mode):7.2f} | "
+            f"{b.get('recall_robbery_pct', 0):6.1f} | {b.get('precision_robbery_pct', 0):6.1f} | "
+            f"{b.get('false_positive_rate_pct', 0):6.2f} | {100 * float(r.get('accuracy', 0)):6.1f}"
+        )
+
+    best_f1 = max(results, key=lambda x: (_f1_pos_pct(x, mode), float(x.get("accuracy", 0))))
+    best_fp = min(results, key=lambda x: (_fp_rate_pct(x, mode), -_f1_pos_pct(x, mode)))
+    bf = _binary_block(best_f1, mode)
+    bfp = _binary_block(best_fp, mode)
+
+    header("Mejor modelo por F1_pos (softmax argmax)")
+    print(
+        f"  {GREEN}{Path(best_f1['model_path']).name}{RESET} | "
+        f"F1_pos={_f1_pos_pct(best_f1, mode):.2f}% | "
+        f"Rec={bf.get('recall_robbery_pct', 0):.1f}% | "
+        f"Prec={bf.get('precision_robbery_pct', 0):.1f}% | "
+        f"FP={bf.get('false_positive_rate_pct', 0):.2f}%"
+    )
+
+    header("Mejor modelo por menor tasa de falsos positivos")
+    print(
+        f"  {GREEN}{Path(best_fp['model_path']).name}{RESET} | "
+        f"FP={bfp.get('false_positive_rate_pct', 0):.2f}% | "
+        f"F1_pos={_f1_pos_pct(best_fp, mode):.2f}% | "
+        f"Rec={bfp.get('recall_robbery_pct', 0):.1f}% | "
+        f"Prec={bfp.get('precision_robbery_pct', 0):.1f}%"
+    )
+    if best_f1["model_path"] != best_fp["model_path"]:
+        print(
+            f"\n  {YELLOW}Nota:{RESET} el mejor F1_pos y el menor FP no coinciden; "
+            "elige según prioridad (recall robo vs FP en tienda)."
+        )
+
+
+def print_batch_summary_multiclass(results: List[Dict[str, Any]], split_name: str) -> None:
     cats = _categories_in_results(results)
     header(f"Resumen — {len(results)} modelos en split '{split_name}'")
 
@@ -670,6 +742,16 @@ def print_batch_summary(results: List[Dict[str, Any]], split_name: str) -> None:
     )
 
 
+def print_batch_summary(results: List[Dict[str, Any]], split_name: str) -> None:
+    if not results:
+        return
+    task = str(results[0].get("task", "multiclass"))
+    if task == "binary":
+        print_batch_summary_binary(results, split_name)
+    else:
+        print_batch_summary_multiclass(results, split_name)
+
+
 def write_summary_csv(results: List[Dict[str, Any]], path: Path) -> None:
     import csv
 
@@ -677,6 +759,38 @@ def write_summary_csv(results: List[Dict[str, Any]], path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8", newline="") as f:
         w = csv.writer(f)
+        if results and str(results[0].get("task", "multiclass")) == "binary":
+            w.writerow(
+                [
+                    "model",
+                    "exp_id",
+                    "arch",
+                    "split",
+                    "accuracy_pct",
+                    "f1_pos_pct",
+                    "recall_robbery_pct",
+                    "precision_robbery_pct",
+                    "false_positive_rate_pct",
+                ]
+            )
+            mode = "softmax_argmax"
+            for r in results:
+                b = _binary_block(r, mode)
+                w.writerow(
+                    [
+                        Path(r["model_path"]).name,
+                        r.get("exp_id", ""),
+                        r.get("arch", ""),
+                        r.get("split_name", ""),
+                        round(100.0 * float(r.get("accuracy", 0.0)), 4),
+                        round(_f1_pos_pct(r, mode), 4),
+                        round(float(b.get("recall_robbery_pct", 0.0)), 4),
+                        round(float(b.get("precision_robbery_pct", 0.0)), 4),
+                        round(float(b.get("false_positive_rate_pct", 0.0)), 4),
+                    ]
+                )
+            return
+
         w.writerow(
             [
                 "model",
@@ -724,13 +838,15 @@ def write_summary_csv(results: List[Dict[str, Any]], path: Path) -> None:
 def resolve_model_paths(
     model: Optional[str],
     models_dir: Optional[str],
+    task: str,
     single_user_only: bool,
 ) -> List[Path]:
     if model:
         return [Path(model).expanduser().resolve()]
-    base = Path(models_dir).expanduser().resolve() if models_dir else (
-        MODELS_SINGLE_DIR if single_user_only else MODELS_DIR
-    )
+    if models_dir:
+        base = Path(models_dir).expanduser().resolve()
+    else:
+        base = resolve_artifacts(task, single_user_only=single_user_only)["models_dir"]
     paths = sorted(base.glob("modelo_*.pt"))
     if not paths:
         raise FileNotFoundError(f"No hay modelo_*.pt en {base}")
@@ -748,19 +864,22 @@ def parse_args() -> argparse.Namespace:
         help="Un checkpoint modelo_XX.pt (opcional si usas --models-dir).",
     )
     p.add_argument(
+        "--task",
+        choices=["multiclass", "binary"],
+        default="multiclass",
+        help="Selecciona artefactos por defecto (plan, modelos, informes) sin machacar el otro modo.",
+    )
+    p.add_argument(
         "--models-dir",
         type=str,
         default=None,
-        help=(
-            "Carpeta con modelo_*.pt para evaluar todos. "
-            "Default: models-operation-single si --single-user-only, si no models-operation."
-        ),
+        help="Carpeta modelo_*.pt (default: models-operation-single[-binary]).",
     )
     p.add_argument(
         "--training-plan",
         type=str,
         default=None,
-        help=f"training_plan.json (recomendado). Default: {TRAINING_PLAN_PATH.name} si existe.",
+        help="Plan JSON (default: training_plan.json o training_plan_binary.json según --task).",
     )
     p.add_argument(
         "--split-manifest",
@@ -815,39 +934,64 @@ def main() -> int:
         print("Indica --model o --models-dir.", file=sys.stderr)
         return 1
 
-    training_plan = Path(args.training_plan).expanduser() if args.training_plan else None
-    split_manifest = Path(args.split_manifest).expanduser() if args.split_manifest else None
-
-    if training_plan is None and split_manifest is None:
-        default_plan = Path(__file__).parent / TRAINING_PLAN_PATH.name
-        if default_plan.is_file():
-            training_plan = default_plan
-            if not args.quiet:
-                print(f"Usando training plan por defecto: {training_plan}")
-        else:
-            print(
-                "Indica --training-plan o --split-manifest (no hay training_plan.json por defecto).",
-                file=sys.stderr,
-            )
-            return 1
-
     su: Optional[bool] = None
     if args.single_user_only:
         su = True
     elif args.no_single_user_only:
         su = False
 
+    artifacts = resolve_artifacts(
+        args.task,
+        single_user_only=bool(su if su is not None else False),
+        training_plan=args.training_plan,
+        models_dir=args.models_dir,
+        reports_dir=None,
+    )
+    if not args.quiet:
+        print_artifact_banner(artifacts, title=f"Validación ({args.task})")
+
+    training_plan: Optional[Path]
+    if args.training_plan:
+        training_plan = Path(args.training_plan).expanduser()
+    elif artifacts["training_plan"].is_file():
+        training_plan = artifacts["training_plan"]
+    else:
+        training_plan = None
+
+    split_manifest = Path(args.split_manifest).expanduser() if args.split_manifest else None
+
+    if training_plan is None and split_manifest is None:
+        print(
+            "Indica --training-plan o --split-manifest, o genera el preflight para este task.",
+            file=sys.stderr,
+        )
+        return 1
+
+    default_reports = artifacts["reports_dir"]
+    summary_json: Optional[Path] = (
+        Path(args.summary_json).expanduser() if args.summary_json else None
+    )
+    summary_csv: Optional[Path] = (
+        Path(args.summary_csv).expanduser() if args.summary_csv else None
+    )
+
     try:
         model_paths = resolve_model_paths(
             args.model,
             args.models_dir,
+            task=args.task,
             single_user_only=bool(su if su is not None else args.single_user_only),
         )
     except FileNotFoundError as exc:
         print(str(exc), file=sys.stderr)
         return 1
 
-    batch_mode = len(model_paths) > 1 or (args.models_dir and not args.model)
+    batch_mode = len(model_paths) > 1 or bool(args.models_dir)
+    if summary_json is None and batch_mode:
+        summary_json = default_reports / f"{args.split}_{args.task}_summary.json"
+    if summary_csv is None and batch_mode:
+        summary_csv = default_reports / f"{args.split}_{args.task}_metrics.csv"
+
     results: List[Dict[str, Any]] = []
     errors: List[str] = []
 
@@ -880,24 +1024,48 @@ def main() -> int:
     if batch_mode and results:
         print_batch_summary(results, args.split)
 
-    if args.summary_json and results:
-        out = Path(args.summary_json)
+    if summary_json and results:
+        out = summary_json
         out.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "split": args.split,
+            "task": args.task,
             "models_evaluated": len(results),
             "errors": errors,
             "results": results,
         }
+        if results and results[0].get("task") == "binary":
+            mode = "softmax_argmax"
+            payload["best_f1_pos"] = {
+                "model": Path(
+                    max(results, key=lambda x: (_f1_pos_pct(x, mode), float(x.get("accuracy", 0))))[
+                        "model_path"
+                    ]
+                ).name,
+                "f1_pos_pct": _f1_pos_pct(
+                    max(results, key=lambda x: (_f1_pos_pct(x, mode), float(x.get("accuracy", 0)))),
+                    mode,
+                ),
+            }
+            payload["best_lowest_fp"] = {
+                "model": Path(
+                    min(results, key=lambda x: (_fp_rate_pct(x, mode), -_f1_pos_pct(x, mode)))[
+                        "model_path"
+                    ]
+                ).name,
+                "fp_rate_pct": _fp_rate_pct(
+                    min(results, key=lambda x: (_fp_rate_pct(x, mode), -_f1_pos_pct(x, mode))),
+                    mode,
+                ),
+            }
         with open(out, "w", encoding="utf-8") as f:
             json.dump(payload, f, indent=2, ensure_ascii=False)
             f.write("\n")
         print(f"\n{GREEN}Resumen JSON:{RESET} {out}")
 
-    if args.summary_csv and results:
-        csv_out = Path(args.summary_csv)
-        write_summary_csv(results, csv_out)
-        print(f"{GREEN}Resumen CSV (F1/FP todas las categorías):{RESET} {csv_out}")
+    if summary_csv and results:
+        write_summary_csv(results, summary_csv)
+        print(f"{GREEN}Resumen CSV:{RESET} {summary_csv}")
 
     if errors and not results:
         return 1

@@ -85,8 +85,13 @@ PREFLIGHT_NEGATIVE_TO_ROBBERY_RATIO = 4.0
 PREFLIGHT_ROBBERY_DOMINANCE_THRESHOLD = 0.25
 PREFLIGHT_ROBBERY_RARE_THRESHOLD = 0.08
 
-# Plan de entrenamiento (preflight_train_plan.py → training_plan.json).
-TRAINING_PLAN_PATH = Path(__file__).parent / "training_plan.json"
+# Plan de entrenamiento (preflight_train_plan.py).
+TRAINING_PLAN_PATH = Path(__file__).parent / "training_plan.json"  # alias multiclase
+TRAINING_PLAN_BINARY_PATH = Path(__file__).parent / "training_plan_binary.json"
+CATEGORY_AUGMENTATION_BINARY_PATH = Path(__file__).parent / "config_category_augmentation_binary.json"
+MODELS_BINARY_SINGLE_DIR = Path(__file__).parent / "models-operation-single-binary"
+SPLITS_BINARY_DIR = Path(__file__).parent / "splits_binary"
+REPORTS_BINARY_DIR = Path(__file__).parent / "reports_binary"
 # Eval binaria: comparar softmax-argmax vs umbral en P(robo) vs margen en logits crudos.
 DEFAULT_BINARY_SOFTMAX_THRESHOLD = 0.8
 DEFAULT_BINARY_LOGIT_MARGIN = 0.0

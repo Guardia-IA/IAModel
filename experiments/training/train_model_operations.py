@@ -52,6 +52,7 @@ try:
         DEFAULT_BINARY_LOGIT_MARGIN,
         TRAINING_PLAN_PATH,
     )
+    from .training_artifacts import resolve_artifacts, print_artifact_banner  # type: ignore[attr-defined]
 except ImportError:
     from model_config import (  # type: ignore[attr-defined]
         DATA_RESULT_ROOT,
@@ -84,9 +85,10 @@ except ImportError:
         DEFAULT_BINARY_LOGIT_MARGIN,
         TRAINING_PLAN_PATH,
     )
+    from training_artifacts import resolve_artifacts, print_artifact_banner  # type: ignore[attr-defined]
 
 
-# Semillas y splits (por defecto desde model_config; CLI puede sobrescribir en build_datasets)
+# Semillas y splits
 TRAIN_RATIO = SPLIT_RATIO_TRAIN
 VAL_RATIO = SPLIT_RATIO_VAL  # resto será test
 MIN_SEQ_LEN = 4   # descartar secuencias demasiado cortas
@@ -4093,10 +4095,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--category-aug-config",
         type=str,
-        default=str(DEFAULT_CATEGORY_AUGMENTATION_CONFIG_PATH),
+        default=None,
         help=(
-            "JSON con variantes augmentadas por categoría de acción "
-            f"(default {DEFAULT_CATEGORY_AUGMENTATION_CONFIG_PATH.name})."
+            "JSON augment por categoría. Default según --task "
+            "(config_category_augmentation.json vs _binary.json)."
         ),
     )
     parser.add_argument(
@@ -4109,9 +4111,20 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default=None,
         help=(
-            "Ruta a training_plan.json generado por preflight_train_plan.py. "
-            "Fija split UIDs y augment; garantiza que val/test no entren en train."
+            "Plan JSON (default: training_plan.json o training_plan_binary.json según --task)."
         ),
+    )
+    parser.add_argument(
+        "--models-dir",
+        type=str,
+        default=None,
+        help="Carpeta de salida modelo_*.pt (default separada por task binario/multiclase).",
+    )
+    parser.add_argument(
+        "--splits-dir",
+        type=str,
+        default=None,
+        help="Carpeta split_manifest_exp_*.json (default splits/ o splits_binary/).",
     )
     parser.add_argument(
         "--no-stratified-split",
@@ -4178,9 +4191,27 @@ def main():
             print("MODO DE DATOS: MULTIUSUARIO por defecto (todos los usuarios válidos por clip)")
         print("=" * 80 + "\n")
         print(f"Usando device: {device}")
-        models_dir = MODELS_SINGLE_DIR if args.single_user_only else MODELS_DIR
-        models_dir.mkdir(parents=True, exist_ok=True)
-        print(f"Modelos se guardarán en: {models_dir}")
+
+        artifacts = resolve_artifacts(
+            args.task,
+            single_user_only=args.single_user_only,
+            training_plan=args.training_plan,
+            category_aug_config=args.category_aug_config,
+            models_dir=args.models_dir,
+            splits_dir=args.splits_dir,
+        )
+        print_artifact_banner(artifacts, title=f"Entrenamiento ({args.task})")
+
+        models_dir = artifacts["models_dir"]
+        splits_dir = artifacts["splits_dir"]
+        category_aug_path = artifacts["category_aug_config"]
+        if args.training_plan:
+            training_plan_path: Optional[Path] = Path(args.training_plan)
+        elif artifacts["training_plan"].is_file():
+            training_plan_path = artifacts["training_plan"]
+        else:
+            training_plan_path = None
+
         print(f"Log de esta sesión: {log_path}")
         print(f"Tarea: {args.task} | positive_class={args.positive_class} | pose_source_override={args.pose_source}")
         print(f"single_user_only={args.single_user_only}")
@@ -4224,16 +4255,15 @@ def main():
             f"Extra manifest views / clip (train+val) => {args.extra_manifest_views_per_clip} "
             "(0 = sin expansión explícita por filas)"
         )
-        training_plan = Path(args.training_plan) if args.training_plan else None
+        training_plan_path = training_plan
         bs_thr = float(args.binary_softmax_threshold)
         bs_margin = float(args.binary_logit_margin)
-        if training_plan is not None:
-            plan_eval = load_training_plan_json(training_plan).get("evaluation", {})
+        if training_plan_path is not None and Path(training_plan_path).is_file():
+            plan_eval = load_training_plan_json(training_plan_path).get("evaluation", {})
             if bs_thr == DEFAULT_BINARY_SOFTMAX_THRESHOLD:
                 bs_thr = float(plan_eval.get("binary_softmax_threshold", bs_thr))
             if bs_margin == DEFAULT_BINARY_LOGIT_MARGIN:
                 bs_margin = float(plan_eval.get("binary_logit_margin", bs_margin))
-            print(f"Training plan => {training_plan}")
         print(
             f"Eval binaria => softmax_thr={bs_thr}, logit_margin={bs_margin}"
         )
@@ -4267,7 +4297,7 @@ def main():
                 augment_seed=args.augment_seed,
                 maintain_class_ratio=args.maintain_class_ratio,
                 target_neg_pos_ratio=args.target_neg_pos_ratio,
-                split_manifest_out=(SPLITS_DIR / f"split_manifest_exp_{i:02d}.json"),
+                split_manifest_out=(splits_dir / f"split_manifest_exp_{i:02d}.json"),
                 loss_type=args.loss_type,
                 focal_gamma=args.focal_gamma,
                 asym_gamma_neg=args.asym_gamma_neg,
@@ -4289,9 +4319,9 @@ def main():
                 manifest_cache_dir=mcache,
                 manifest_variant_set=args.manifest_variant_set,
                 extra_manifest_views_per_clip=int(args.extra_manifest_views_per_clip),
-                category_aug_config_path=Path(args.category_aug_config),
+                category_aug_config_path=category_aug_path,
                 use_category_augmentation=(False if args.no_category_augmentation else None),
-                training_plan_path=training_plan,
+                training_plan_path=training_plan_path,
                 stratified_split=(not args.no_stratified_split),
                 binary_softmax_threshold=bs_thr,
                 binary_logit_margin=bs_margin,

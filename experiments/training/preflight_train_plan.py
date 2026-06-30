@@ -101,6 +101,11 @@ except ImportError:
         fmt_duration,
     )
 
+try:
+    from .training_artifacts import resolve_artifacts, print_artifact_banner  # type: ignore[attr-defined]
+except ImportError:
+    from training_artifacts import resolve_artifacts, print_artifact_banner  # type: ignore[attr-defined]
+
 RESET = "\033[0m"
 GREEN = "\033[92m"
 YELLOW = "\033[93m"
@@ -468,7 +473,12 @@ def main() -> int:
     parser.add_argument("--train-ratio", type=float, default=None)
     parser.add_argument("--val-ratio", type=float, default=None)
     parser.add_argument("--data-root", type=str, default=None)
-    parser.add_argument("--category-aug-config", type=str, default=str(CATEGORY_AUGMENTATION_CONFIG_PATH))
+    parser.add_argument(
+        "--category-aug-config",
+        type=str,
+        default=None,
+        help="JSON augment por categoría (default: multiclase o binario según --task).",
+    )
     parser.add_argument("--target-samples", type=int, default=None)
     parser.add_argument(
         "--max-aug",
@@ -483,15 +493,25 @@ def main() -> int:
     parser.add_argument(
         "--write-plan",
         action="store_true",
-        help=f"Escribe training_plan.json (default: {TRAINING_PLAN_PATH.name}).",
+        help="Escribe el plan (default por task: training_plan.json o training_plan_binary.json).",
     )
-    parser.add_argument("--output-plan", type=str, default=str(TRAINING_PLAN_PATH))
+    parser.add_argument(
+        "--output-plan",
+        type=str,
+        default=None,
+        help="Ruta del plan JSON (default según --task, no machaca el otro modo).",
+    )
     parser.add_argument(
         "--write-config",
         action="store_true",
-        help="Escribe config_category_augmentation.json con la propuesta del plan.",
+        help="Escribe config augment (default por task, archivo distinto en binario).",
     )
-    parser.add_argument("--output-config", type=str, default=None)
+    parser.add_argument(
+        "--output-config",
+        type=str,
+        default=None,
+        help="Ruta config_category_augmentation_*.json (default según --task).",
+    )
     parser.add_argument(
         "--binary-softmax-threshold",
         type=float,
@@ -509,6 +529,16 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    artifacts = resolve_artifacts(
+        args.task,
+        single_user_only=args.single_user_only,
+        training_plan=args.output_plan,
+        category_aug_config=args.category_aug_config,
+        mkdir=False,
+    )
+    print_artifact_banner(artifacts, title=f"Preflight ({args.task})")
+
+    cat_aug_path = artifacts["category_aug_config"]
     data_root = Path(args.data_root) if args.data_root else None
     plan = build_training_plan(
         task=args.task,
@@ -522,7 +552,7 @@ def main() -> int:
         train_ratio=args.train_ratio,
         val_ratio=args.val_ratio,
         data_root=data_root,
-        category_aug_config=Path(args.category_aug_config),
+        category_aug_config=cat_aug_path,
         target_samples=args.target_samples,
         max_aug=args.max_aug,
         robbery_class=args.robbery_class,
@@ -541,14 +571,14 @@ def main() -> int:
         f"       python preflight_train_plan.py --task {args.task}"
         + (" --single-user-only" if args.single_user_only else "")
         + " --write-plan --write-config\n"
-        f"  {GREEN}3.{RESET} Entrena con el plan fijado:\n"
+        f"  {GREEN}3.{RESET} Entrena (artefactos separados si task=binary):\n"
         f"       python train_model_operations.py --task {args.task}"
         + (" --single-user-only" if args.single_user_only else "")
-        + f" --training-plan {args.output_plan}"
+        + f" --training-plan {artifacts['training_plan']}"
     )
 
     if args.write_config:
-        cfg_out = Path(args.output_config or args.category_aug_config)
+        cfg_out = Path(args.output_config) if args.output_config else artifacts["category_aug_config"]
         proposed = plan["proposed_category_augmentation"]
         cfg_out.parent.mkdir(parents=True, exist_ok=True)
         with open(cfg_out, "w", encoding="utf-8") as f:
@@ -558,9 +588,9 @@ def main() -> int:
         print(f"\n  {GREEN}[OK]{RESET} Config augment escrita: {cfg_out}")
 
     if args.write_plan:
-        plan_path = Path(args.output_plan)
+        plan_path = Path(args.output_plan) if args.output_plan else artifacts["training_plan"]
         write_training_plan(plan, plan_path)
-        print(f"  {GREEN}[OK]{RESET} training_plan.json escrito: {plan_path}")
+        print(f"  {GREEN}[OK]{RESET} training_plan escrito: {plan_path}")
 
     return 0
 
