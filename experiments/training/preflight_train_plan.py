@@ -243,6 +243,7 @@ def build_training_plan(
     binary_logit_margin: float = DEFAULT_BINARY_LOGIT_MARGIN,
     skip_time_estimate: bool = False,
     class_map_spec: Optional[Dict[str, Any]] = None,
+    experiment_ids: Optional[List[int]] = None,
 ) -> Dict[str, Any]:
     resolved_root = get_data_result_root(data_root)
     folder_scan = scan_data_result_folders(resolved_root)
@@ -429,9 +430,14 @@ def build_training_plan(
         plan["class_map"] = plan_class_map_block(class_map_spec)
 
     if not skip_time_estimate:
+        est_title = "7) Estimación de tiempo (todos los experimentos en model_config.py)"
+        if experiment_ids:
+            ids_str = ", ".join(str(i) for i in experiment_ids)
+            est_title = f"7) Estimación de tiempo — experimentos [{ids_str}]"
         time_summary = estimate_all_experiments(
             train_rows=int(totals["rows_total_train"]),
             val_rows=int(totals["clips_real_val"]),
+            experiment_ids=experiment_ids,
         )
         format_estimate_report(
             time_summary,
@@ -440,6 +446,7 @@ def build_training_plan(
             cyan=CYAN,
             yellow=YELLOW,
             header_fn=header,
+            title=est_title,
         )
         plan["training_time_estimate"] = {
             "train_rows_per_epoch": time_summary["train_rows_per_epoch"],

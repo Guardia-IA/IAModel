@@ -100,6 +100,7 @@ def estimate_all_experiments(
     train_rows: int,
     val_rows: int,
     experiments: Optional[List[Dict[str, Any]]] = None,
+    experiment_ids: Optional[List[int]] = None,
 ) -> Dict[str, Any]:
     exps = experiments if experiments is not None else EXPERIMENTS
     per_exp: List[Dict[str, Any]] = []
@@ -108,10 +109,20 @@ def estimate_all_experiments(
     pending = 0
     skipped = 0
 
-    sorted_pairs = sorted(
-        enumerate(exps, start=1),
-        key=lambda p: (p[1].get("arch", ""), int(p[1].get("epochs", 0))),
-    )
+    if experiment_ids is not None:
+        sorted_pairs = sorted(
+            (
+                (int(eid), exps[int(eid) - 1])
+                for eid in experiment_ids
+                if 1 <= int(eid) <= len(exps)
+            ),
+            key=lambda p: (p[1].get("arch", ""), int(p[1].get("epochs", 0))),
+        )
+    else:
+        sorted_pairs = sorted(
+            enumerate(exps, start=1),
+            key=lambda p: (p[1].get("arch", ""), int(p[1].get("epochs", 0))),
+        )
     for exp_id, cfg in sorted_pairs:
         if cfg.get("done", False):
             skipped += 1
@@ -150,9 +161,13 @@ def format_estimate_report(
     cyan: str = "",
     yellow: str = "",
     header_fn=None,
+    title: Optional[str] = None,
 ) -> None:
     if header_fn is not None:
-        header_fn("7) Estimación de tiempo (todos los experimentos en model_config.py)")
+        header_fn(
+            title
+            or "7) Estimación de tiempo (todos los experimentos en model_config.py)"
+        )
 
     train_rows = summary["train_rows_per_epoch"]
     val_rows = summary["val_rows_per_epoch"]
