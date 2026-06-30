@@ -38,6 +38,9 @@ case "$CMD" in
   eval)
     exec "$PY" evaluate_campaign.py --all --export-fp-videos "$@"
     ;;
+  export-ensemble-fp)
+    exec "$PY" export_ensemble_fp.py --split val --export-videos "$@"
+    ;;
   summary)
     exec "$PY" summarize_campaign.py "$@"
     ;;
@@ -75,6 +78,7 @@ Comandos:
   preflight     check + genera training_plan + augment por celda
   train         check-ready + entrena (--resume)
   eval          Evalúa val + export FP clips
+  export-ensemble-fp  Lista FP ensemble MEAN 06+14 @ 0.68 (val) + symlinks vídeo
   summary       CSV maestro + campaign_gaps.txt
   all           check → preflight → check-ready → train → eval → summary (primer plano)
   all-bg        Igual que all pero con nohup (para SSH — puedes desconectar)
