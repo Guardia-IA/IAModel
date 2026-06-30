@@ -30,7 +30,7 @@ if str(CAMPAIGN_DIR) not in sys.path:
 
 try:
     from campaign_paths import (
-        load_campaign_config,
+        load_merged_campaign_config,
         filter_cells,
         ensure_cell_dirs,
         training_plan_path,
@@ -263,12 +263,13 @@ def evaluate_cell(
     split: str = "val",
     export_fp: bool = False,
     max_fp_export: int = 100,
+    run_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     cell_id = cell["id"]
-    arts = ensure_cell_dirs(cell_id)
+    arts = ensure_cell_dirs(cell_id, run_id=run_id)
     models_dir = arts["models_dir"]
     reports_dir = arts["reports_dir"]
-    plan_path = training_plan_path(cell_id)
+    plan_path = training_plan_path(cell_id, run_id=run_id)
 
     if not plan_path.is_file():
         raise FileNotFoundError(f"Falta plan: {plan_path}")
@@ -461,16 +462,27 @@ def main() -> int:
     ap.add_argument("--split", type=str, default="val", choices=["val", "test"])
     ap.add_argument("--export-fp-videos", action="store_true")
     ap.add_argument("--max-fp-export", type=int, default=100)
+    ap.add_argument(
+        "--run-id",
+        type=str,
+        default=None,
+        help="Evaluar modelos bajo artifacts/runs/<run-id>/",
+    )
     args = ap.parse_args()
 
-    config = load_campaign_config(Path(args.config) if args.config else None)
+    config = load_merged_campaign_config(Path(args.config) if args.config else None)
+    run_id = str(args.run_id).strip() if args.run_id else None
     cells = filter_cells(config, None if args.all or not args.cells else args.cells)
     if not cells:
         print("Indica --all o --cells.", file=sys.stderr)
         return 1
 
     summary: List[Dict[str, Any]] = []
-    print(f"\n=== Eval campaña — {len(cells)} celdas, split={args.split} ===\n")
+    print(f"\n=== Eval campaña — {len(cells)} celdas, split={args.split} ===")
+    if run_id:
+        print(f"Run ID: {run_id}\n")
+    else:
+        print()
     for cell in cells:
         try:
             row = evaluate_cell(
@@ -479,13 +491,14 @@ def main() -> int:
                 split=args.split,
                 export_fp=args.export_fp_videos,
                 max_fp_export=args.max_fp_export,
+                run_id=run_id,
             )
             summary.append(row)
         except Exception as exc:
             print(f"  ERROR {cell['id']}: {exc}", file=sys.stderr)
             summary.append({"cell_id": cell["id"], "error": str(exc)})
 
-    master = master_reports_dir() / f"{args.split}_eval_cells.json"
+    master = master_reports_dir(run_id) / f"{args.split}_eval_cells.json"
     with open(master, "w", encoding="utf-8") as f:
         json.dump(summary, f, indent=2, ensure_ascii=False)
         f.write("\n")

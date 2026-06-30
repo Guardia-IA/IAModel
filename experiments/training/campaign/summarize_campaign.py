@@ -21,7 +21,7 @@ if str(CAMPAIGN_DIR) not in sys.path:
     sys.path.insert(0, str(CAMPAIGN_DIR))
 
 try:
-    from campaign_paths import load_campaign_config, filter_cells, master_reports_dir, ARTIFACTS_ROOT
+    from campaign_paths import load_merged_campaign_config, filter_cells, master_reports_dir, artifacts_root
 except ImportError as exc:
     raise SystemExit(f"Import error: {exc}") from exc
 
@@ -40,19 +40,24 @@ def _float(row: Dict[str, str], key: str, default: float = 0.0) -> float:
         return default
 
 
-def consolidate(split: str = "val") -> Dict[str, Any]:
-    config = load_campaign_config()
+def consolidate(
+    split: str = "val",
+    run_id: Optional[str] = None,
+    config_path: Optional[Path] = None,
+) -> Dict[str, Any]:
+    config = load_merged_campaign_config(config_path)
     cells = filter_cells(config, None)
     target_rec = float(config.get("target_recall_pct", 60.0))
     target_fp = float(config.get("target_fp_rate_pct", 0.1))
     interactions = int(config.get("interactions_per_day", 1000))
 
+    root = artifacts_root(run_id)
     all_leader: List[Dict[str, Any]] = []
     all_ensemble: List[Dict[str, Any]] = []
 
     for cell in cells:
         cid = cell["id"]
-        reports = ARTIFACTS_ROOT / "reports" / cid
+        reports = root / "reports" / cid
         lb = reports / f"{split}_leaderboard.csv"
         ens = reports / f"{split}_ensemble_grid.csv"
         for row in _read_csv(lb):
@@ -60,7 +65,7 @@ def consolidate(split: str = "val") -> Dict[str, Any]:
         for row in _read_csv(ens):
             all_ensemble.append({**row, "cell_id": cid})
 
-    master_dir = master_reports_dir()
+    master_dir = master_reports_dir(run_id)
     leader_path = master_dir / f"campaign_leaderboard_{split}.csv"
     _write_csv(leader_path, all_leader)
 
@@ -153,8 +158,14 @@ def _write_csv(path: Path, rows: List[Dict[str, Any]]) -> None:
 def main() -> int:
     ap = argparse.ArgumentParser(description="Resumen maestro de campaña")
     ap.add_argument("--split", type=str, default="val")
+    ap.add_argument("--config", type=str, default=None)
+    ap.add_argument("--run-id", type=str, default=None, help="Resumir artifacts/runs/<run-id>/")
     args = ap.parse_args()
-    consolidate(split=args.split)
+    consolidate(
+        split=args.split,
+        run_id=str(args.run_id).strip() if args.run_id else None,
+        config_path=Path(args.config) if args.config else None,
+    )
     return 0
 
 

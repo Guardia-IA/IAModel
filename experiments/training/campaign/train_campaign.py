@@ -6,6 +6,7 @@ Uso:
   python train_campaign.py --cells bin_full
   python train_campaign.py --all
   python train_campaign.py --all --resume
+  python train_campaign.py --run-id improve_v1 --config campaign_config_improve.json --all
 """
 from __future__ import annotations
 
@@ -28,11 +29,12 @@ if str(CAMPAIGN_DIR) not in sys.path:
 
 try:
     from campaign_paths import (
-        load_campaign_config,
+        load_merged_campaign_config,
         filter_cells,
         ensure_cell_dirs,
         training_plan_path,
         category_aug_path,
+        hard_negative_manifest_path,
     )
     from model_config import EXPERIMENTS, DEFAULT_BINARY_SOFTMAX_THRESHOLD, DEFAULT_BINARY_LOGIT_MARGIN
     from train_model_operations import (
@@ -55,7 +57,22 @@ except ImportError as exc:
 
 
 def _aug_profile(config: Dict[str, Any], profile_id: str) -> Dict[str, Any]:
-    return (config.get("aug_profiles") or {})[profile_id]
+    return dict((config.get("aug_profiles") or {})[profile_id])
+
+
+def _train_opts_for_cell(cell: Dict[str, Any], config: Dict[str, Any], plan: Dict[str, Any]) -> Dict[str, Any]:
+    aug_id = plan.get("campaign", {}).get("aug_profile") or cell.get("aug_profile")
+    if not aug_id and cell.get("improve_profile"):
+        ip = (config.get("improve_profiles") or {})[cell["improve_profile"]]
+        aug_id = ip.get("base_aug_profile", "fp_hardened")
+    aug_prof = _aug_profile(config, str(aug_id))
+    train_opts = dict(aug_prof.get("train_opts") or {})
+    improve = plan.get("campaign", {}).get("improve") or {}
+    ip_id = improve.get("improve_profile") or cell.get("improve_profile")
+    if ip_id:
+        ip = (config.get("improve_profiles") or {}).get(ip_id, {})
+        train_opts.update(ip.get("train_opts") or {})
+    return train_opts
 
 
 def _model_exists(models_dir: Path, exp_id: int) -> bool:
@@ -68,19 +85,31 @@ def train_cell(
     *,
     resume: bool = False,
     exp_ids: Optional[List[int]] = None,
+    run_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     cell_id = cell["id"]
-    arts = ensure_cell_dirs(cell_id)
+    arts = ensure_cell_dirs(cell_id, run_id=run_id)
     models_dir = arts["models_dir"]
     splits_dir = arts["splits_dir"]
-    plan_path = training_plan_path(cell_id)
+    plan_path = training_plan_path(cell_id, run_id=run_id)
     if not plan_path.is_file():
         raise FileNotFoundError(f"Falta plan: {plan_path}. Ejecuta preflight_campaign.py --write-all")
 
     plan = load_training_plan_json(plan_path)
     exp_list = exp_ids or list(config.get("experiment_ids", []))
-    aug_prof = _aug_profile(config, cell["aug_profile"])
-    train_opts = dict(aug_prof.get("train_opts") or {})
+    train_opts = _train_opts_for_cell(cell, config, plan)
+
+    hn_manifest: Optional[Path] = None
+    hn_weight = 3.0
+    hn_path_str = plan.get("campaign", {}).get("hard_negative_manifest")
+    if hn_path_str and Path(hn_path_str).is_file():
+        hn_manifest = Path(hn_path_str)
+    elif hard_negative_manifest_path(cell_id, run_id=run_id).is_file():
+        hn_manifest = hard_negative_manifest_path(cell_id, run_id=run_id)
+    if hn_manifest:
+        with open(hn_manifest, "r", encoding="utf-8") as f:
+            hn_data = json.load(f)
+        hn_weight = float(hn_data.get("uid_weight", hn_weight))
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     bs_thr = float(plan.get("evaluation", {}).get("binary_softmax_threshold", DEFAULT_BINARY_SOFTMAX_THRESHOLD))
@@ -89,9 +118,14 @@ def train_cell(
     results: List[Dict[str, Any]] = []
     wall_total = 0.0
 
-    print(f"\n{'=' * 80}\nCelda {cell_id} | task={cell['task']} pose={cell['pose_source']}\n{'=' * 80}")
+    print(f"\n{'=' * 80}\nCelda {cell_id} | task={cell['task']} pose={cell['pose_source']}")
+    if run_id:
+        print(f"Run: {run_id}")
+    print(f"{'=' * 80}")
     print(f"Plan: {plan_path}")
     print(f"Modelos: {models_dir}")
+    if hn_manifest:
+        print(f"Hard negatives: {hn_manifest}")
     print(f"Experimentos: {exp_list}")
 
     for exp_id in exp_list:
@@ -119,12 +153,14 @@ def train_cell(
                 min_valid_pct=MIN_VALID_PCT,
                 max_occlusion_ratio=MAX_OCCLUSION_RATIO,
                 split_manifest_out=(splits_dir / f"split_manifest_exp_{exp_id:02d}.json"),
-                category_aug_config_path=category_aug_path(cell_id),
+                category_aug_config_path=category_aug_path(cell_id, run_id=run_id),
                 training_plan_path=plan_path,
                 loss_type=str(train_opts.get("loss_type", "ce")),
                 hard_negative_mining=bool(train_opts.get("hard_negative_mining", False)),
                 target_neg_pos_ratio=train_opts.get("target_neg_pos_ratio"),
                 maintain_class_ratio=bool(train_opts.get("maintain_class_ratio", False)),
+                hard_negative_uid_manifest=hn_manifest,
+                hard_negative_uid_weight=hn_weight,
                 augment_config_path=AUGMENT_CONFIG_PATH,
                 augment_profile=AUGMENT_PROFILE_DEFAULT,
                 augment_prob=AUGMENT_PROB,
@@ -136,19 +172,22 @@ def train_cell(
                 binary_logit_margin=bs_margin,
             )
             res["cell_id"] = cell_id
+            res["run_id"] = run_id
             results.append(res)
             wall_total += time.perf_counter() - t0
         except Exception as exc:
             print(f"[Exp {exp_id:02d}] ERROR: {exc}")
-            results.append({"exp_id": exp_id, "cell_id": cell_id, "error": str(exc)})
+            results.append({"exp_id": exp_id, "cell_id": cell_id, "run_id": run_id, "error": str(exc)})
 
     summary_path = arts["reports_dir"] / "train_summary.json"
     summary_path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "cell_id": cell_id,
+        "run_id": run_id,
         "trained_at": datetime.utcnow().isoformat() + "Z",
         "wall_seconds": wall_total,
         "experiment_ids": exp_list,
+        "hard_negative_manifest": str(hn_manifest) if hn_manifest else None,
         "results": results,
     }
     with open(summary_path, "w", encoding="utf-8") as f:
@@ -165,9 +204,16 @@ def main() -> int:
     ap.add_argument("--all", action="store_true", help="Todas las celdas del config")
     ap.add_argument("--resume", action="store_true", help="Omite modelos ya entrenados")
     ap.add_argument("--exp-ids", type=int, nargs="*", default=None, help="Override experiment_ids")
+    ap.add_argument(
+        "--run-id",
+        type=str,
+        default=None,
+        help="ID de run (artefactos en artifacts/runs/<run-id>/)",
+    )
     args = ap.parse_args()
 
-    config = load_campaign_config(Path(args.config) if args.config else None)
+    config = load_merged_campaign_config(Path(args.config) if args.config else None)
+    run_id = str(args.run_id).strip() if args.run_id else None
     if args.all or not args.cells:
         cells = filter_cells(config, None)
     else:
@@ -178,7 +224,7 @@ def main() -> int:
         return 1
 
     for cell in cells:
-        train_cell(cell, config, resume=args.resume, exp_ids=args.exp_ids)
+        train_cell(cell, config, resume=args.resume, exp_ids=args.exp_ids, run_id=run_id)
     return 0
 
 

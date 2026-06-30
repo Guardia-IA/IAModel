@@ -1,0 +1,55 @@
+{
+  "version": 1,
+  "description": "Perfiles de mejora post-campaña (artefactos bajo artifacts/runs/<run-id>/)",
+  "extends": "campaign_config.json",
+  "single_user_only": true,
+  "robbery_class": 6,
+  "experiment_ids": [6, 12, 14, 17, 49],
+  "improve_profiles": {
+    "fp_hardened_hn": {
+      "base_aug_profile": "fp_hardened",
+      "hard_negative_csv": null,
+      "hard_negative_uid_weight": 3.0,
+      "fp_category_boost": 1.5,
+      "uniform_ops_per_clip": 0,
+      "train_opts": {
+        "loss_type": "asymmetric",
+        "hard_negative_mining": true,
+        "target_neg_pos_ratio": 6.0,
+        "maintain_class_ratio": true
+      }
+    },
+    "fp_hardened_uniform4": {
+      "base_aug_profile": "fp_hardened",
+      "uniform_ops_per_clip": 4,
+      "hard_negative_csv": null,
+      "train_opts": {
+        "loss_type": "asymmetric",
+        "hard_negative_mining": true,
+        "target_neg_pos_ratio": 6.0
+      }
+    },
+    "fp_hardened_hn_uniform2": {
+      "base_aug_profile": "fp_hardened",
+      "hard_negative_csv": null,
+      "hard_negative_uid_weight": 3.0,
+      "fp_category_boost": 1.35,
+      "uniform_ops_per_clip": 2,
+      "train_opts": {
+        "loss_type": "asymmetric",
+        "hard_negative_mining": true,
+        "target_neg_pos_ratio": 6.0,
+        "maintain_class_ratio": true
+      }
+    }
+  },
+  "cells": [
+    {
+      "id": "bin_full_hardened",
+      "task": "binary",
+      "pose_source": "full",
+      "class_map_id": "full",
+      "improve_profile": "fp_hardened_hn"
+    }
+  ]
+}

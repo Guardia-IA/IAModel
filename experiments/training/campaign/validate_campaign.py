@@ -160,10 +160,10 @@ def check_campaign_imports(report: ValidationReport) -> None:
 
 def check_config(report: ValidationReport, config_path: Optional[Path]) -> Dict[str, Any]:
     try:
-        from campaign_paths import load_campaign_config, filter_cells, class_map_path
+        from campaign_paths import load_merged_campaign_config, filter_cells, class_map_path
         from model_config import EXPERIMENTS
 
-        config = load_campaign_config(config_path)
+        config = load_merged_campaign_config(config_path)
         cells = filter_cells(config, None)
         exp_ids = list(config.get("experiment_ids", []))
         errors: List[str] = []
@@ -177,8 +177,12 @@ def check_config(report: ValidationReport, config_path: Optional[Path]) -> Dict[
                 class_map_path(cell["class_map_id"])
             except FileNotFoundError as exc:
                 errors.append(str(exc))
+            imp = cell.get("improve_profile")
             prof = cell.get("aug_profile")
-            if prof not in (config.get("aug_profiles") or {}):
+            if imp:
+                if imp not in (config.get("improve_profiles") or {}):
+                    errors.append(f"celda {cell['id']}: improve_profile {imp!r} desconocido")
+            elif prof not in (config.get("aug_profiles") or {}):
                 errors.append(f"celda {cell['id']}: aug_profile {prof!r} desconocido")
         report.add(
             "campaign_config.json + class_maps",
@@ -251,6 +255,7 @@ def check_plans_and_augments(
     config: Dict[str, Any],
     *,
     require_written: bool,
+    run_id: Optional[str] = None,
 ) -> None:
     if not config:
         return
@@ -261,8 +266,8 @@ def check_plans_and_augments(
         missing: List[str] = []
         for cell in cells:
             cid = cell["id"]
-            plan_p = training_plan_path(cid)
-            aug_p = category_aug_path(cid)
+            plan_p = training_plan_path(cid, run_id=run_id)
+            aug_p = category_aug_path(cid, run_id=run_id)
             if require_written:
                 if not plan_p.is_file():
                     missing.append(f"{cid}: falta {plan_p.name}")
@@ -411,6 +416,7 @@ def run_validation(
     strict_cuda: bool = False,
     require_plans: bool = False,
     skip_smoke: bool = False,
+    run_id: Optional[str] = None,
 ) -> ValidationReport:
     report = ValidationReport()
     check_python_syntax(report)
@@ -429,7 +435,7 @@ def run_validation(
         check_preflight_smoke(report, config, data_root)
         check_model_forward_smoke(report, config)
 
-    check_plans_and_augments(report, config, require_written=require_plans)
+    check_plans_and_augments(report, config, require_written=require_plans, run_id=run_id)
     return report
 
 
@@ -460,6 +466,7 @@ def main() -> int:
     ap.add_argument("--strict", action="store_true", help="Exige CUDA (falla sin GPU)")
     ap.add_argument("--require-plans", action="store_true", help="Exige que preflight --write-all ya se ejecutó")
     ap.add_argument("--skip-smoke", action="store_true", help="Omite build_training_plan y forward smoke")
+    ap.add_argument("--run-id", type=str, default=None, help="Validar planes bajo artifacts/runs/<run-id>/")
     args = ap.parse_args()
 
     report = run_validation(
@@ -468,6 +475,7 @@ def main() -> int:
         strict_cuda=args.strict,
         require_plans=args.require_plans,
         skip_smoke=args.skip_smoke,
+        run_id=str(args.run_id).strip() if args.run_id else None,
     )
     print_report(report)
     return 0 if report.passed else 1

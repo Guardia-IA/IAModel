@@ -3084,6 +3084,8 @@ def build_datasets_and_loaders(
     use_category_augmentation: Optional[bool] = None,
     training_plan_path: Optional[Path] = None,
     stratified_split: bool = True,
+    hard_negative_uid_set: Optional[set] = None,
+    hard_negative_uid_weight: float = 3.0,
 ) -> Tuple[Dict[str, DataLoader], int, Dict[int, int], Dict[str, Any]]:
     print(f"Recolectando ejemplos desde data_result... (pose_source='{pose_source}')")
     examples = collect_examples(
@@ -3347,6 +3349,26 @@ def build_datasets_and_loaders(
         per_uid_variants=per_uid_map,
     )
 
+    def _hard_negative_uid_boost_weights(base_weights: Optional[List[float]] = None) -> Optional[List[float]]:
+        if not hard_negative_uid_set:
+            return base_weights
+        hn = hard_negative_uid_set
+        mult = float(max(1.0, hard_negative_uid_weight))
+        if base_weights is None:
+            weights = [1.0] * len(train_ex)
+        else:
+            weights = list(base_weights)
+        boosted = 0
+        for i, ex in enumerate(train_ex):
+            uids = _manifest_lookup_uids(ex)
+            if any(u in hn for u in uids):
+                weights[i] *= mult
+                boosted += 1
+        print(
+            f"[HARD-NEG-UID] sampler boost | uids={len(hn)} filas_boost={boosted} weight×{mult:.2f}"
+        )
+        return weights
+
     if balanced and task == "binary":
         # WeightedRandomSampler para reducir desbalance (en binario: labels 0/1)
         train_labels = [ex.label for ex in train_ex]
@@ -3355,6 +3377,7 @@ def build_datasets_and_loaders(
         if count0 > 0 and count1 > 0:
             class_weights = {0: 1.0 / count0, 1: 1.0 / count1}
             sample_weights = [class_weights[v] for v in train_labels]
+            sample_weights = _hard_negative_uid_boost_weights(sample_weights) or sample_weights
             sampler = WeightedRandomSampler(
                 sample_weights,
                 num_samples=len(sample_weights),
@@ -3369,7 +3392,22 @@ def build_datasets_and_loaders(
             )
             print(f"[BALANCED-TRAIN] binary sampler activo | count0={count0} count1={count1}")
         else:
-            train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=num_workers)
+            hn_weights = _hard_negative_uid_boost_weights()
+            if hn_weights:
+                sampler = WeightedRandomSampler(
+                    hn_weights, num_samples=len(hn_weights), replacement=True
+                )
+                train_loader = DataLoader(
+                    train_ds,
+                    batch_size=batch_size,
+                    sampler=sampler,
+                    shuffle=False,
+                    num_workers=num_workers,
+                )
+            else:
+                train_loader = DataLoader(
+                    train_ds, batch_size=batch_size, shuffle=True, num_workers=num_workers
+                )
             print(f"[BALANCED-TRAIN] binary sampler ignorado (count0={count0}, count1={count1})")
     elif maintain_class_ratio and task == "binary":
         train_labels = [ex.label for ex in train_ex]
@@ -3381,6 +3419,7 @@ def build_datasets_and_loaders(
             p_pos = 1.0 / (1.0 + ratio)
             class_weights = {0: p_neg / count0, 1: p_pos / count1}
             sample_weights = [class_weights[v] for v in train_labels]
+            sample_weights = _hard_negative_uid_boost_weights(sample_weights) or sample_weights
             sampler = WeightedRandomSampler(sample_weights, num_samples=len(sample_weights), replacement=True)
             train_loader = DataLoader(
                 train_ds,
@@ -3394,10 +3433,38 @@ def build_datasets_and_loaders(
                 f"count0={count0} count1={count1} target_neg_pos_ratio={ratio:.3f}"
             )
         else:
-            train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=num_workers)
+            hn_weights = _hard_negative_uid_boost_weights()
+            if hn_weights:
+                sampler = WeightedRandomSampler(
+                    hn_weights, num_samples=len(hn_weights), replacement=True
+                )
+                train_loader = DataLoader(
+                    train_ds,
+                    batch_size=batch_size,
+                    sampler=sampler,
+                    shuffle=False,
+                    num_workers=num_workers,
+                )
+            else:
+                train_loader = DataLoader(
+                    train_ds, batch_size=batch_size, shuffle=True, num_workers=num_workers
+                )
             print(f"[RATIO-TRAIN] sampler ignorado (count0={count0}, count1={count1})")
     else:
-        train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=num_workers)
+        hn_weights = _hard_negative_uid_boost_weights()
+        if hn_weights:
+            sampler = WeightedRandomSampler(
+                hn_weights, num_samples=len(hn_weights), replacement=True
+            )
+            train_loader = DataLoader(
+                train_ds,
+                batch_size=batch_size,
+                sampler=sampler,
+                shuffle=False,
+                num_workers=num_workers,
+            )
+        else:
+            train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=num_workers)
     val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=num_workers)
     test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=False, num_workers=num_workers)
 
@@ -3633,6 +3700,8 @@ def run_experiment(
     stratified_split: bool = True,
     binary_softmax_threshold: float = DEFAULT_BINARY_SOFTMAX_THRESHOLD,
     binary_logit_margin: float = DEFAULT_BINARY_LOGIT_MARGIN,
+    hard_negative_uid_manifest: Optional[Path] = None,
+    hard_negative_uid_weight: float = 3.0,
 ) -> Dict[str, Any]:
     t_exp0 = time.perf_counter()
     print("\n" + "=" * 80)
@@ -3644,6 +3713,18 @@ def run_experiment(
     lr = cfg.get("lr", 1e-3)
     epochs = cfg.get("epochs", 20)
     pose_source = pose_source_override or cfg.get("pose_source", "filtered")
+
+    hard_negative_uid_set: Optional[set] = None
+    hn_weight = float(hard_negative_uid_weight)
+    if hard_negative_uid_manifest is not None:
+        with open(hard_negative_uid_manifest, "r", encoding="utf-8") as f:
+            hn_data = json.load(f)
+        hard_negative_uid_set = {str(u) for u in hn_data.get("uids", [])}
+        hn_weight = float(hn_data.get("uid_weight", hn_weight))
+        print(
+            f"[HARD-NEG-UID] manifest={hard_negative_uid_manifest} | "
+            f"uids={len(hard_negative_uid_set)} weight={hn_weight:.2f}"
+        )
 
     loaders, input_dim, label_to_idx, split_manifest = build_datasets_and_loaders(
         seq_len=seq_len,
@@ -3677,6 +3758,8 @@ def run_experiment(
         use_category_augmentation=use_category_augmentation,
         training_plan_path=training_plan_path,
         stratified_split=stratified_split,
+        hard_negative_uid_set=hard_negative_uid_set,
+        hard_negative_uid_weight=hn_weight,
     )
     num_classes = len(label_to_idx)
 
