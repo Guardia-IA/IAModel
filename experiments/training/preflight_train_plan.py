@@ -88,6 +88,19 @@ except ImportError:
         make_binary_examples,
     )
 
+try:
+    from .training_time_estimate import (  # type: ignore[attr-defined]
+        estimate_all_experiments,
+        format_estimate_report,
+        fmt_duration,
+    )
+except ImportError:
+    from training_time_estimate import (  # type: ignore[attr-defined]
+        estimate_all_experiments,
+        format_estimate_report,
+        fmt_duration,
+    )
+
 RESET = "\033[0m"
 GREEN = "\033[92m"
 YELLOW = "\033[93m"
@@ -223,6 +236,7 @@ def build_training_plan(
     negative_to_robbery_ratio: float = PREFLIGHT_NEGATIVE_TO_ROBBERY_RATIO,
     binary_softmax_threshold: float = DEFAULT_BINARY_SOFTMAX_THRESHOLD,
     binary_logit_margin: float = DEFAULT_BINARY_LOGIT_MARGIN,
+    skip_time_estimate: bool = False,
 ) -> Dict[str, Any]:
     resolved_root = get_data_result_root(data_root)
     folder_scan = scan_data_result_folders(resolved_root)
@@ -389,6 +403,45 @@ def build_training_plan(
             "rows_synthetic_train": int(totals["rows_synthetic_train"]),
         },
     }
+
+    if not skip_time_estimate:
+        time_summary = estimate_all_experiments(
+            train_rows=int(totals["rows_total_train"]),
+            val_rows=int(totals["clips_real_val"]),
+        )
+        format_estimate_report(
+            time_summary,
+            bold=BOLD,
+            reset=RESET,
+            cyan=CYAN,
+            yellow=YELLOW,
+            header_fn=header,
+        )
+        plan["training_time_estimate"] = {
+            "train_rows_per_epoch": time_summary["train_rows_per_epoch"],
+            "val_rows_per_epoch": time_summary["val_rows_per_epoch"],
+            "experiments_pending": time_summary["experiments_pending"],
+            "experiments_skipped_done": time_summary["experiments_skipped_done"],
+            "cuda_available": time_summary["cuda_available"],
+            "total_gpu_seconds": time_summary["total_gpu_seconds"],
+            "total_cpu_seconds": time_summary["total_cpu_seconds"],
+            "primary_device": time_summary["primary_device"],
+            "primary_total_seconds": time_summary["primary_total_seconds"],
+            "primary_total_human": fmt_duration(time_summary["primary_total_seconds"]),
+            "per_experiment": [
+                {
+                    "exp_id": item["exp_id"],
+                    "arch": item["arch"],
+                    "epochs": item["epochs"],
+                    "batch_size": item["batch_size"],
+                    "seq_len": item["seq_len"],
+                    "gpu_minutes": round(item["gpu_seconds"] / 60.0, 2),
+                    "cpu_minutes": round(item["cpu_seconds"] / 60.0, 2),
+                }
+                for item in time_summary["per_experiment"]
+            ],
+        }
+
     return plan
 
 
@@ -449,6 +502,11 @@ def main() -> int:
         type=float,
         default=DEFAULT_BINARY_LOGIT_MARGIN,
     )
+    parser.add_argument(
+        "--skip-time-estimate",
+        action="store_true",
+        help="Omite la estimación de tiempo de todos los experimentos en model_config.py.",
+    )
     args = parser.parse_args()
 
     data_root = Path(args.data_root) if args.data_root else None
@@ -473,9 +531,10 @@ def main() -> int:
         negative_to_robbery_ratio=args.negative_to_robbery_ratio,
         binary_softmax_threshold=args.binary_softmax_threshold,
         binary_logit_margin=args.binary_logit_margin,
+        skip_time_estimate=args.skip_time_estimate,
     )
 
-    header("6) Siguiente paso")
+    header("8) Siguiente paso")
     print(
         f"  {GREEN}1.{RESET} Revisa balance y augment arriba.\n"
         f"  {GREEN}2.{RESET} Genera artefactos:\n"
