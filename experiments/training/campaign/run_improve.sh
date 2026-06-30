@@ -47,11 +47,11 @@ case "$CMD" in
     exec "$PY" validate_campaign.py "${validate_args[@]}" "$@"
     ;;
   preflight)
-    "$PY" validate_campaign.py "${validate_args[@]}" "$@" || exit 1
+    "$PY" validate_campaign.py "${validate_args[@]}" || exit 1
     exec "$PY" preflight_campaign.py --write-all "${preflight_args[@]}" "$@"
     ;;
   train)
-    "$PY" validate_campaign.py --require-plans "${validate_args[@]}" "$@" || exit 1
+    "$PY" validate_campaign.py --require-plans "${validate_args[@]}" || exit 1
     exec "$PY" train_campaign.py --all --resume "${run_args[@]}" "$@"
     ;;
   eval)
@@ -61,12 +61,12 @@ case "$CMD" in
     exec "$PY" summarize_campaign.py "${run_args[@]}" "$@"
     ;;
   all)
-    "$PY" validate_campaign.py "${validate_args[@]}" "$@" || exit 1
-    "$PY" preflight_campaign.py --write-all "${preflight_args[@]}" "$@"
-    "$PY" validate_campaign.py --require-plans "${validate_args[@]}" "$@" || exit 1
+    "$PY" validate_campaign.py "${validate_args[@]}" || exit 1
+    "$PY" preflight_campaign.py --write-all "${preflight_args[@]}"
+    "$PY" validate_campaign.py --require-plans "${validate_args[@]}" || exit 1
     "$PY" train_campaign.py --all --resume "${run_args[@]}" "$@"
-    "$PY" evaluate_campaign.py --all --export-fp-videos "${run_args[@]}" "$@"
-    "$PY" summarize_campaign.py "${run_args[@]}" "$@"
+    "$PY" evaluate_campaign.py --all --export-fp-videos "${run_args[@]}"
+    "$PY" summarize_campaign.py "${run_args[@]}"
     ;;
   all-bg|nohup)
     TS="$(date +%Y%m%d_%H%M%S)"
