@@ -33,7 +33,7 @@ try:
         class_map_path,
     )
     from class_map_utils import load_class_map, adjust_augment_for_fp_hardened
-    from preflight_train_plan import build_training_plan, write_training_plan, header, BOLD, RESET, CYAN
+    from preflight_train_plan import build_training_plan, write_training_plan, header, BOLD, RESET, CYAN, YELLOW
     from model_config import ROBBERY_CLASS, PREFLIGHT_NEGATIVE_TO_ROBBERY_RATIO
     from training_time_estimate import fmt_duration
 except ImportError as exc:
@@ -165,6 +165,11 @@ def main() -> int:
         action="store_true",
         help="Omite la estimación de tiempo (más rápido, sin sección 7).",
     )
+    ap.add_argument(
+        "--skip-validate",
+        action="store_true",
+        help="No ejecuta validate_campaign al final.",
+    )
     args = ap.parse_args()
 
     config = load_campaign_config(Path(args.config) if args.config else None)
@@ -197,6 +202,22 @@ def main() -> int:
 
     if not args.skip_time_estimate:
         print_campaign_time_rollup(summary, config)
+
+    if not getattr(args, "skip_validate", False):
+        try:
+            from validate_campaign import run_validation, print_report
+
+            print(f"\n{BOLD}=== Validación post-preflight ==={RESET}\n")
+            vreport = run_validation(
+                config_path=Path(args.config) if args.config else None,
+                data_root=data_root,
+                require_plans=bool(args.write_all),
+            )
+            print_report(vreport)
+            if not vreport.passed:
+                return 1
+        except ImportError as exc:
+            print(f"  {YELLOW}[!] validate_campaign no disponible: {exc}{RESET}")
 
     master = CAMPAIGN_DIR / "artifacts" / "preflight_summary.json"
     master.parent.mkdir(parents=True, exist_ok=True)
