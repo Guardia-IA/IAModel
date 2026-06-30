@@ -226,6 +226,8 @@ def run_ensemble_export(
         selected = [r for r in all_rows if r["outcome"] == "FP"]
     elif outcomes == "errors":
         selected = [r for r in all_rows if r["outcome"] in ("FP", "FN")]
+    elif outcomes == "alarms":
+        selected = [r for r in all_rows if int(r["pred_label"]) == 1]
     else:
         selected = all_rows
 
@@ -340,9 +342,9 @@ def main() -> int:
     ap.add_argument("--no-single-user-only", action="store_true")
     ap.add_argument(
         "--outcomes",
-        choices=["fp", "errors", "all"],
+        choices=["fp", "errors", "alarms", "all"],
         default="fp",
-        help="Qué filas exportar (default: solo FP)",
+        help="fp=solo FP | alarms=TP+FP (detectados robo) | all=todo el split",
     )
     ap.add_argument("--export-videos", action="store_true", help="Symlink clip.mp4 en fp_clips/")
     ap.add_argument("--copy-videos", action="store_true", help="Copiar vídeos en lugar de symlink")
