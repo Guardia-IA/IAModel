@@ -27,7 +27,7 @@ def suggest_split_ratios(n_examples: int) -> Tuple[float, float, float]:
 
 # Carpeta data_result (salida de pose_extractor_clean: data_result/{cat}/{clip}/meta.json).
 # También puedes usar GUADIA_DATA_RESULT_ROOT o --data-root en preflight/train.
-DATA_RESULT_ROOT = Path("/home/debian/Proyectos/GuardIA/ResultadosExperimentos/data_result")
+DATA_RESULT_ROOT = Path("/home/angel/DatosEntrenamiento/datos_1/data/data_result")
 
 # Referencia para código que aún lee constantes (p. ej. CLI explícito o tests): banda "típica" 200≤N<2000.
 # El entrenamiento por defecto usa suggest_split_ratios(N real) vía train_model_operations, no estos valores fijos.
