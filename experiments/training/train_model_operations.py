@@ -3096,10 +3096,6 @@ def build_datasets_and_loaders(
     )
     print(f"Ejemplos totales (tras filtrado): {len(examples)}")
 
-    if DEBUG_MODE:
-        examples = examples[:DEBUG_MAX_EXAMPLES]
-        print(f"[DEBUG] Usando solo {len(examples)} ejemplos para train/val/test")
-
     training_plan: Optional[Dict[str, Any]] = None
     if training_plan_path is not None:
         training_plan = load_training_plan_json(training_plan_path)
@@ -3113,6 +3109,22 @@ def build_datasets_and_loaders(
             raise ValueError(
                 "positive_class del CLI no coincide con el training_plan"
             )
+
+    if training_plan is not None and training_plan.get("class_map"):
+        try:
+            from .class_map_utils import apply_class_map_spec
+        except ImportError:
+            from class_map_utils import apply_class_map_spec  # type: ignore
+        n_before = len(examples)
+        examples = apply_class_map_spec(examples, training_plan["class_map"])
+        print(
+            f"[CLASS-MAP] {training_plan['class_map'].get('id')}: "
+            f"{n_before} → {len(examples)} ejemplos"
+        )
+
+    if DEBUG_MODE:
+        examples = examples[:DEBUG_MAX_EXAMPLES]
+        print(f"[DEBUG] Usando solo {len(examples)} ejemplos para train/val/test")
 
     if task == "binary":
         print(f"[BINARIO] Usando clase positiva original: {positive_class}")

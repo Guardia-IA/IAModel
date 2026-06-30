@@ -1,0 +1,14 @@
+{
+  "id": "merge_rare",
+  "description": "Fusiona categorías raras 8–13 en clase 99 (other)",
+  "exclude": [],
+  "remap": {
+    "8": 99,
+    "9": 99,
+    "10": 99,
+    "11": 99,
+    "12": 99,
+    "13": 99
+  },
+  "robbery_class": 6
+}

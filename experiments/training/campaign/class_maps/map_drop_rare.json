@@ -1,0 +1,7 @@
+{
+  "id": "drop_rare",
+  "description": "Excluye categorías casi vacías o ruidosas del entrenamiento (11, 13, 8, 10, 12)",
+  "exclude": [8, 10, 11, 12, 13],
+  "remap": {},
+  "robbery_class": 6
+}

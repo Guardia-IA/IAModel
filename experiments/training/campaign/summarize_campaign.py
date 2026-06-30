@@ -1,0 +1,162 @@
+#!/usr/bin/env python3
+"""
+Consolida CSVs de la campaña en un leaderboard maestro y recomendaciones.
+
+Uso:
+  python summarize_campaign.py
+"""
+from __future__ import annotations
+
+import argparse
+import csv
+import sys
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+CAMPAIGN_DIR = Path(__file__).resolve().parent
+TRAINING_DIR = CAMPAIGN_DIR.parent
+if str(TRAINING_DIR) not in sys.path:
+    sys.path.insert(0, str(TRAINING_DIR))
+if str(CAMPAIGN_DIR) not in sys.path:
+    sys.path.insert(0, str(CAMPAIGN_DIR))
+
+try:
+    from campaign_paths import load_campaign_config, filter_cells, master_reports_dir, ARTIFACTS_ROOT
+except ImportError as exc:
+    raise SystemExit(f"Import error: {exc}") from exc
+
+
+def _read_csv(path: Path) -> List[Dict[str, str]]:
+    if not path.is_file():
+        return []
+    with open(path, "r", encoding="utf-8") as f:
+        return list(csv.DictReader(f))
+
+
+def _float(row: Dict[str, str], key: str, default: float = 0.0) -> float:
+    try:
+        return float(row.get(key, default) or default)
+    except (TypeError, ValueError):
+        return default
+
+
+def consolidate(split: str = "val") -> Dict[str, Any]:
+    config = load_campaign_config()
+    cells = filter_cells(config, None)
+    target_rec = float(config.get("target_recall_pct", 60.0))
+    target_fp = float(config.get("target_fp_rate_pct", 0.1))
+    interactions = int(config.get("interactions_per_day", 1000))
+
+    all_leader: List[Dict[str, Any]] = []
+    all_ensemble: List[Dict[str, Any]] = []
+
+    for cell in cells:
+        cid = cell["id"]
+        reports = ARTIFACTS_ROOT / "reports" / cid
+        lb = reports / f"{split}_leaderboard.csv"
+        ens = reports / f"{split}_ensemble_grid.csv"
+        for row in _read_csv(lb):
+            all_leader.append({**row, "cell_id": cid})
+        for row in _read_csv(ens):
+            all_ensemble.append({**row, "cell_id": cid})
+
+    master_dir = master_reports_dir()
+    leader_path = master_dir / f"campaign_leaderboard_{split}.csv"
+    _write_csv(leader_path, all_leader)
+
+    ens_path = master_dir / f"campaign_ensemble_{split}.csv"
+    _write_csv(ens_path, all_ensemble)
+
+    best_configs: List[Dict[str, Any]] = []
+    for row in all_leader:
+        rec = _float(row, "recall_pct")
+        fp = _float(row, "fp_rate_pct")
+        f1 = _float(row, "f1_pct")
+        if rec >= target_rec and fp <= target_fp:
+            best_configs.append({**row, "alarms_per_day": round(fp / 100.0 * interactions, 4)})
+
+    best_configs.sort(key=lambda r: (r.get("fp_rate_pct", 999), -r.get("f1_pct", 0)))
+    best_path = master_dir / f"campaign_best_configs_{split}.csv"
+    _write_csv(best_path, best_configs)
+
+    gaps_lines: List[str] = []
+    if not all_leader:
+        gaps_lines.append("No hay resultados de evaluación. Ejecuta evaluate_campaign.py --all")
+    else:
+        meets = [r for r in all_leader if _float(r, "recall_pct") >= target_rec]
+        if not meets:
+            gaps_lines.append(f"Ninguna config alcanza recall ≥ {target_rec}% en {split}.")
+        low_fp = [r for r in meets if _float(r, "fp_rate_pct") <= target_fp]
+        if meets and not low_fp:
+            best_fp = min(meets, key=lambda r: _float(r, "fp_rate_pct"))
+            gaps_lines.append(
+                f"Recall OK pero FP alto. Mejor compromiso: {best_fp.get('cell_id')} / "
+                f"{best_fp.get('model')} FP={best_fp.get('fp_rate_pct')}% — prueba umbral alto o ensemble AND."
+            )
+        if low_fp:
+            top = low_fp[0]
+            gaps_lines.append(
+                f"Candidato operativo: {top.get('cell_id')} {top.get('model')} "
+                f"F1={top.get('f1_pct')}% FP={top.get('fp_rate_pct')}% "
+                f"(~{float(top.get('fp_rate_pct', 0)) / 100 * interactions:.2f} alarmas/día)"
+            )
+
+    next_steps = [
+        "1. Revisar fp_clips/ por posibles mal etiquetados.",
+        "2. Comparar bin_full vs bin_filtered en FP a recall≥60%.",
+        "3. Si FP sigue alto: ensemble AND + umbral conformal (post_training_binary_tools).",
+        "4. Solo usar split test con la config ganadora (no tunear en test).",
+    ]
+
+    gaps_path = master_dir / f"campaign_gaps_{split}.txt"
+    gaps_path.write_text("\n".join(gaps_lines) + "\n", encoding="utf-8")
+    next_path = master_dir / "campaign_next_steps.txt"
+    next_path.write_text("\n".join(next_steps) + "\n", encoding="utf-8")
+
+    summary_txt = master_dir / f"campaign_summary_{split}.txt"
+    with open(summary_txt, "w", encoding="utf-8") as f:
+        f.write(f"Campaña — split {split}\n")
+        f.write(f"Filas leaderboard: {len(all_leader)}\n")
+        f.write(f"Configs recall≥{target_rec}% y FP≤{target_fp}%: {len(best_configs)}\n")
+        f.write(f"Leaderboard: {leader_path}\n")
+        f.write(f"Best configs: {best_path}\n")
+        for line in gaps_lines:
+            f.write(line + "\n")
+
+    print(f"Leaderboard maestro: {leader_path}")
+    print(f"Mejores configs: {best_path} ({len(best_configs)} filas)")
+    print(f"Gaps: {gaps_path}")
+    return {
+        "leaderboard": str(leader_path),
+        "best_configs": str(best_path),
+        "gaps": str(gaps_path),
+        "n_best": len(best_configs),
+    }
+
+
+def _write_csv(path: Path, rows: List[Dict[str, Any]]) -> None:
+    if not rows:
+        path.write_text("", encoding="utf-8")
+        return
+    keys: List[str] = []
+    for r in rows:
+        for k in r.keys():
+            if k not in keys:
+                keys.append(k)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=keys, extrasaction="ignore")
+        w.writeheader()
+        w.writerows(rows)
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description="Resumen maestro de campaña")
+    ap.add_argument("--split", type=str, default="val")
+    args = ap.parse_args()
+    consolidate(split=args.split)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

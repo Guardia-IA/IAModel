@@ -242,6 +242,7 @@ def build_training_plan(
     binary_softmax_threshold: float = DEFAULT_BINARY_SOFTMAX_THRESHOLD,
     binary_logit_margin: float = DEFAULT_BINARY_LOGIT_MARGIN,
     skip_time_estimate: bool = False,
+    class_map_spec: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     resolved_root = get_data_result_root(data_root)
     folder_scan = scan_data_result_folders(resolved_root)
@@ -260,6 +261,17 @@ def build_training_plan(
         max_occlusion_ratio=float(max_occlusion_ratio),
         data_root=resolved_root,
     )
+    if class_map_spec:
+        try:
+            from .class_map_utils import apply_class_map_spec, plan_class_map_block
+        except ImportError:
+            from class_map_utils import apply_class_map_spec, plan_class_map_block  # type: ignore
+        n_before = len(examples)
+        examples = apply_class_map_spec(examples, class_map_spec)
+        print(
+            f"  Class map {class_map_spec.get('id')}: "
+            f"{n_before} → {len(examples)} ejemplos tras exclude/remap"
+        )
     global_counts = count_examples_by_folder_category(examples)
     n_total = len(examples)
     print(f"  Ejemplos válidos: {CYAN}{n_total}{RESET} | categorías: {len(global_counts)}")
@@ -362,6 +374,7 @@ def build_training_plan(
         "seed": SEED,
         "task": task,
         "positive_class": int(positive_class),
+        "campaign_class_map_id": (class_map_spec or {}).get("id"),
         "data_root": str(resolved_root),
         "pose_source": pose_source,
         "single_user_only": bool(single_user_only),
@@ -408,6 +421,12 @@ def build_training_plan(
             "rows_synthetic_train": int(totals["rows_synthetic_train"]),
         },
     }
+    if class_map_spec:
+        try:
+            from .class_map_utils import plan_class_map_block
+        except ImportError:
+            from class_map_utils import plan_class_map_block  # type: ignore
+        plan["class_map"] = plan_class_map_block(class_map_spec)
 
     if not skip_time_estimate:
         time_summary = estimate_all_experiments(

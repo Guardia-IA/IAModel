@@ -1,0 +1,97 @@
+{
+  "version": 1,
+  "description": "Batería de experimentos: multiclase/binario × full/filtered × class maps × augment",
+  "single_user_only": true,
+  "robbery_class": 6,
+  "interactions_per_day": 1000,
+  "target_recall_pct": 60.0,
+  "target_fp_rate_pct": 0.01,
+  "experiment_ids": [6, 12, 13, 14, 17, 49],
+  "threshold_sweep": {
+    "softmax_min": 0.5,
+    "softmax_max": 0.98,
+    "softmax_step": 0.02,
+    "logit_margin_min": -0.5,
+    "logit_margin_max": 2.0,
+    "logit_margin_step": 0.25
+  },
+  "ensemble": {
+    "rules": ["and", "mean", "cascade"],
+    "max_triplets": 20,
+    "cascade_low": 0.4,
+    "cascade_high": 0.55
+  },
+  "aug_profiles": {
+    "baseline": {
+      "negative_to_robbery_ratio": 4.0,
+      "fp_hardened": false
+    },
+    "fp_hardened": {
+      "negative_to_robbery_ratio": 6.0,
+      "fp_hardened": true,
+      "train_opts": {
+        "loss_type": "asymmetric",
+        "hard_negative_mining": true,
+        "target_neg_pos_ratio": 6.0
+      }
+    }
+  },
+  "cells": [
+    {
+      "id": "mc_full",
+      "task": "multiclass",
+      "pose_source": "full",
+      "class_map_id": "full",
+      "aug_profile": "baseline"
+    },
+    {
+      "id": "mc_full_merge",
+      "task": "multiclass",
+      "pose_source": "full",
+      "class_map_id": "merge_rare",
+      "aug_profile": "baseline"
+    },
+    {
+      "id": "mc_filtered",
+      "task": "multiclass",
+      "pose_source": "filtered",
+      "class_map_id": "full",
+      "aug_profile": "baseline"
+    },
+    {
+      "id": "mc_filtered_merge",
+      "task": "multiclass",
+      "pose_source": "filtered",
+      "class_map_id": "merge_rare",
+      "aug_profile": "baseline"
+    },
+    {
+      "id": "bin_full",
+      "task": "binary",
+      "pose_source": "full",
+      "class_map_id": "full",
+      "aug_profile": "baseline"
+    },
+    {
+      "id": "bin_full_hardened",
+      "task": "binary",
+      "pose_source": "full",
+      "class_map_id": "full",
+      "aug_profile": "fp_hardened"
+    },
+    {
+      "id": "bin_filtered",
+      "task": "binary",
+      "pose_source": "filtered",
+      "class_map_id": "full",
+      "aug_profile": "baseline"
+    },
+    {
+      "id": "bin_filtered_hardened",
+      "task": "binary",
+      "pose_source": "filtered",
+      "class_map_id": "full",
+      "aug_profile": "fp_hardened"
+    }
+  ]
+}
