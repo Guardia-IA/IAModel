@@ -40,7 +40,7 @@ try:
     from campaign_paths import ensure_cell_dirs, training_plan_path, load_campaign_config
     from evaluate_validation import load_split_uids, build_split_examples
     from evaluate_campaign import collect_binary_predictions, _binary_metrics
-    from export_fp_artifacts import export_fp_from_records
+    from export_fp_artifacts import export_fp_from_records, example_export_paths
 except ImportError as exc:
     raise SystemExit(f"Import error (¿entorno con torch?): {exc}") from exc
 
@@ -184,7 +184,7 @@ def run_ensemble_export(
     metrics = _binary_metrics(y_true, y_pred)
 
     all_rows: List[Dict[str, Any]] = []
-    for i, base in enumerate(base_records):
+    for i, (base, ex) in enumerate(zip(base_records, examples)):
         yt = int(y_true[i])
         yp = int(y_pred[i])
         if yp == 1 and yt == 0:
@@ -196,17 +196,26 @@ def run_ensemble_export(
         else:
             outcome = "TN"
 
+        paths = example_export_paths(ex)
         row: Dict[str, Any] = {
-            "uid": base["uid"],
-            "folder_category": base["folder_category"],
+            "uid": paths["uid"],
+            "uid_absolute": paths["uid_absolute"],
+            "clip_name": paths["clip_name"],
+            "category_str": paths["category_str"],
+            "folder_category": paths["folder_category"],
             "true_label": yt,
             "pred_label": yp,
             "outcome": outcome,
             "p_mean": round(float(p_mean[i]), 6),
             "threshold": threshold,
             "rule": rule,
-            "clip_path": base["clip_path"],
-            "pose_path": base["pose_path"],
+            "clip_video_path": paths["clip_video_path"],
+            "clip_video_exists": paths["clip_video_exists"],
+            "clip_dir": paths["clip_dir"],
+            "meta_json_path": paths["meta_json_path"],
+            "user_dir": paths["user_dir"],
+            "pose_path": paths["pose_path"],
+            "clip_path": paths["clip_video_path"] or paths["clip_dir"],
         }
         for label, probs in zip(model_labels, prob_rows):
             key = label.replace(".pt", "")
@@ -225,7 +234,26 @@ def run_ensemble_export(
     model_tag = "|".join(m.replace(".pt", "") for m in model_labels)
     csv_path = reports_dir / f"{split}_ensemble_fp_{rule}_{model_tag}_t{threshold:.2f}.csv".replace("|", "+")
 
-    fieldnames: List[str] = []
+    fieldnames: List[str] = [
+        "outcome",
+        "folder_category",
+        "category_str",
+        "clip_name",
+        "clip_video_path",
+        "clip_dir",
+        "meta_json_path",
+        "user_dir",
+        "pose_path",
+        "uid",
+        "uid_absolute",
+        "p_mean",
+        "threshold",
+        "rule",
+        "true_label",
+        "pred_label",
+        "clip_video_exists",
+        "clip_path",
+    ]
     for r in all_rows:
         for k in r.keys():
             if k not in fieldnames:
@@ -235,6 +263,14 @@ def run_ensemble_export(
         w = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
         w.writeheader()
         w.writerows(selected)
+
+    # Lista plana de vídeos (ruta completa por línea)
+    video_list_path = csv_path.with_suffix(".videos.txt")
+    with open(video_list_path, "w", encoding="utf-8") as f:
+        for r in selected:
+            video = r.get("clip_video_path") or r.get("clip_dir") or ""
+            if video:
+                f.write(f"{video}\n")
 
     summary_path = reports_dir / f"{split}_ensemble_fp_summary.json"
     summary = {
@@ -249,7 +285,8 @@ def run_ensemble_export(
         "pool_info": pool_info,
         "exported_rows": len(selected),
         "outcomes_filter": outcomes,
-        "csv_path": str(csv_path),
+        "csv_path": str(csv_path.resolve()),
+        "video_list_path": str(video_list_path.resolve()),
     }
     with open(summary_path, "w", encoding="utf-8") as f:
         json.dump(summary, f, indent=2, ensure_ascii=False)
@@ -274,6 +311,7 @@ def run_ensemble_export(
 
     return {
         "csv_path": csv_path,
+        "video_list_path": video_list_path,
         "summary_path": summary_path,
         "metrics": metrics,
         "selected": selected,
@@ -344,19 +382,24 @@ def main() -> int:
         f"F1={m['f1_pct']:.1f}% Rec={m['recall_pct']:.1f}% FP={m['fp_rate_pct']:.2f}%"
     )
     print(f"\nExportado ({args.outcomes}): {len(result['selected'])} filas")
-    print(f"CSV: {result['csv_path']}")
-    print(f"Resumen JSON: {result['summary_path']}")
+    print(f"CSV: {result['csv_path'].resolve()}")
+    print(f"Lista vídeos (ruta completa/línea): {result['video_list_path'].resolve()}")
+    print(f"Resumen JSON: {result['summary_path'].resolve()}")
     if result["fp_export_dir"]:
-        print(f"Vídeos FP: {result['fp_export_dir']}")
+        print(f"Vídeos FP: {result['fp_export_dir'].resolve()}")
 
     if result["selected"] and args.outcomes == "fp":
-        print("\n--- Falsos positivos ---")
+        print("\n--- Falsos positivos (ruta completa al vídeo) ---")
         for r in sorted(result["selected"], key=lambda x: -float(x["p_mean"])):
+            video = r.get("clip_video_path") or r.get("clip_dir") or "?"
             probs = " ".join(f"{k}={v}" for k, v in r.items() if k.startswith("p_modelo"))
             print(
-                f"  cat={r['folder_category']:2} p_mean={r['p_mean']:.3f}  "
-                f"{probs}  uid={r['uid'][:60]}"
+                f"\n  cat={r['folder_category']} clip={r.get('clip_name','?')} "
+                f"p_mean={r['p_mean']:.3f} {probs}"
             )
+            print(f"  vídeo: {video}")
+            print(f"  carpeta: {r.get('clip_dir', '')}")
+            print(f"  uid: {r.get('uid', '')}")
 
     return 0
 

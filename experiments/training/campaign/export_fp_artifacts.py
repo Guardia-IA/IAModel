@@ -15,17 +15,57 @@ if str(TRAINING_DIR) not in sys.path:
     sys.path.insert(0, str(TRAINING_DIR))
 
 try:
-    from train_model_operations import PoseExample
+    from train_model_operations import PoseExample, _example_uid, _example_folder_category
 except ImportError:
     PoseExample = Any  # type: ignore[misc,assignment]
 
+    def _example_uid(ex: Any) -> str:  # type: ignore[misc]
+        return str(getattr(ex, "pose_path", "unknown"))
+
+    def _example_folder_category(ex: Any) -> int:  # type: ignore[misc]
+        return int(getattr(ex, "label", 0))
+
+
+def example_export_paths(ex: PoseExample) -> Dict[str, str]:
+    """
+    Rutas absolutas para localizar el clip y el vídeo en disco.
+    Estructura típica: data_result/{cat}/{clip}/user_X/poses_full.npy
+    """
+    pose_path = Path(ex.pose_path).resolve()
+    user_dir = pose_path.parent
+    clip_dir = user_dir.parent
+    clip_video = clip_dir / "clip.mp4"
+    meta_json = clip_dir / "meta.json"
+    valid_mask_s = ""
+    vm = getattr(ex, "valid_mask_path", None)
+    if vm is not None and Path(vm).is_file():
+        valid_mask_s = str(Path(vm).resolve())
+    elif (user_dir / "valid_mask.npy").is_file():
+        valid_mask_s = str((user_dir / "valid_mask.npy").resolve())
+
+    video_path = clip_video.resolve() if clip_video.is_file() else None
+    return {
+        "uid": _example_uid(ex),
+        "uid_absolute": str(pose_path),
+        "clip_name": str(getattr(ex, "clip_name", clip_dir.name)),
+        "category_str": str(getattr(ex, "category_str", "")),
+        "folder_category": str(_example_folder_category(ex)),
+        "clip_dir": str(clip_dir.resolve()),
+        "clip_video_path": str(video_path) if video_path else "",
+        "clip_video_exists": "1" if video_path else "0",
+        "meta_json_path": str(meta_json.resolve()) if meta_json.is_file() else "",
+        "pose_path": str(pose_path),
+        "user_dir": str(user_dir.resolve()),
+        "valid_mask_path": valid_mask_s,
+    }
+
 
 def clip_path_from_example(ex: PoseExample) -> str:
-    clip_dir = ex.pose_path.parent.parent
-    clip_video = clip_dir / "clip.mp4"
-    if clip_video.is_file():
-        return str(clip_video.resolve())
-    return str(clip_dir.resolve())
+    """Ruta al vídeo si existe; si no, carpeta del clip (absoluta)."""
+    paths = example_export_paths(ex)
+    if paths["clip_video_path"]:
+        return paths["clip_video_path"]
+    return paths["clip_dir"]
 
 
 def export_fp_from_records(
@@ -46,8 +86,9 @@ def export_fp_from_records(
 
     for rec in records:
         uid = str(rec.get("uid", "unknown"))
-        clip_path = Path(str(rec.get("clip_path", "")))
-        out_sub = dest_dir / uid.replace("/", "_")[:120]
+        clip_video = str(rec.get("clip_video_path") or rec.get("clip_path") or "")
+        clip_path = Path(clip_video) if clip_video else Path(str(rec.get("clip_dir", "")))
+        out_sub = dest_dir / uid.replace("/", "_").replace("\\", "_")[:120]
         out_sub.mkdir(parents=True, exist_ok=True)
 
         meta_path = out_sub / "fp_meta.json"
@@ -67,8 +108,10 @@ def export_fp_from_records(
         exported.append({
             "uid": uid,
             "folder_category": rec.get("folder_category"),
-            "prob_pos": rec.get("prob_pos"),
-            "clip_path": str(clip_path),
+            "clip_name": rec.get("clip_name"),
+            "prob_pos": rec.get("prob_pos") or rec.get("p_mean"),
+            "clip_video_path": clip_video or str(clip_path),
+            "clip_dir": rec.get("clip_dir"),
             "export_dir": str(out_sub),
             "model": rec.get("model_path"),
         })
@@ -81,7 +124,12 @@ def export_fp_from_records(
     playlist = dest_dir / "fp_playlist.txt"
     with open(playlist, "w", encoding="utf-8") as f:
         for item in exported:
-            f.write(f"{item['clip_path']}\tcat={item.get('folder_category')}\tp={item.get('prob_pos')}\n")
+            f.write(
+                f"{item['clip_video_path']}\t"
+                f"cat={item.get('folder_category')}\t"
+                f"clip={item.get('clip_name')}\t"
+                f"p={item.get('prob_pos')}\n"
+            )
 
     return index_path
 

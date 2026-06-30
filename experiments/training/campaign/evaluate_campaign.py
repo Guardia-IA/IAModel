@@ -50,7 +50,7 @@ try:
         _example_folder_category,
         SEED,
     )
-    from export_fp_artifacts import export_fp_from_records, clip_path_from_example
+    from export_fp_artifacts import export_fp_from_records, clip_path_from_example, example_export_paths
 except ImportError as exc:
     raise SystemExit(f"Import error (¿entorno con torch?): {exc}") from exc
 
@@ -132,14 +132,21 @@ def collect_binary_predictions(
             yt = int(y[i].item())
             uid = _example_uid(ex)
             folder_cat = int(_example_folder_category(ex))
+            path_info = example_export_paths(ex)
             rec = {
                 "uid": uid,
                 "true_label": yt,
                 "folder_category": folder_cat,
                 "prob_pos": float(p_pos[i]),
                 "logit_margin": float(margin[i]),
-                "pose_path": str(ex.pose_path),
-                "clip_path": clip_path_from_example(ex),
+                "pose_path": path_info["pose_path"],
+                "clip_path": path_info["clip_video_path"] or path_info["clip_dir"],
+                "clip_video_path": path_info["clip_video_path"],
+                "clip_dir": path_info["clip_dir"],
+                "clip_name": path_info["clip_name"],
+                "category_str": path_info["category_str"],
+                "meta_json_path": path_info["meta_json_path"],
+                "user_dir": path_info["user_dir"],
                 "model_path": str(model_path),
             }
             records.append(rec)

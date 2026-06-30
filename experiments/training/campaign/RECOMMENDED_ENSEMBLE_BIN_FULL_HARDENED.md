@@ -185,6 +185,8 @@ python export_ensemble_fp.py --split val --export-videos
 
 Genera:
 - `artifacts/reports/bin_full_hardened/val_ensemble_fp_mean_modelo_06+modelo_14_t0.68.csv`
+  - Columnas clave: **`clip_video_path`** (ruta absoluta al .mp4), `clip_dir`, `meta_json_path`, `clip_name`, `uid`
+- `artifacts/reports/bin_full_hardened/val_ensemble_fp_mean_modelo_06+modelo_14_t0.68.videos.txt` — una ruta de vídeo por línea
 - `artifacts/reports/bin_full_hardened/val_ensemble_fp_summary.json`
 - opcional: symlinks en `artifacts/fp_clips/bin_full_hardened/ensemble_mean_t0.68/`
 
