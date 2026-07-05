@@ -5,7 +5,8 @@ Botón para alternar entre "vídeo + esqueleto" y "solo esqueleto".
 
 Uso:
     python visualize_video_pose.py video.mp4
-    python visualize_video_pose.py video.mp4 poses.npy
+    python visualize_video_pose.py video.mp4 --all-persons   # todas las personas (YOLO o npy 4D)
+    python visualize_video_pose.py video.mp4 poses.npy --all-persons
     python visualize_video_pose.py video.mp4 --npy poses.npy --model yolo11n-pose.pt
     python visualize_video_pose.py video.mp4 --extra   # detecta y pinta móvil en la mano
 
@@ -77,42 +78,63 @@ def load_pose_model(model_path: str):
     sys.exit(1)
 
 
-def get_upper_pose(results, frame_shape, choose_biggest: bool = True):
+def get_upper_poses(results, frame_shape, *, all_persons: bool = False):
     """
-    Extrae keypoints de la parte superior del cuerpo para la primera persona
-    o la de bbox más grande. Devuelve (points_xy, confs) o (None, None).
+    Extrae keypoints de la parte superior del cuerpo.
+    Devuelve lista de (points_xy, confs); vacía si no hay detecciones.
     points_xy: np array (8, 2) en coordenadas de imagen.
     """
     if not results or len(results) == 0:
-        return None, None
+        return []
     r = results[0]
     if r.keypoints is None or r.boxes is None:
-        return None, None
+        return []
     kpts = r.keypoints.xy.cpu().numpy()   # (N, 17, 2) o (N, 17, 3)
     confs = r.keypoints.conf.cpu().numpy() if r.keypoints.conf is not None else np.ones((kpts.shape[0], 17))
     boxes = r.boxes.xyxy.cpu().numpy()    # (N, 4)
 
     if kpts.shape[0] == 0:
-        return None, None
+        return []
 
-    if choose_biggest and kpts.shape[0] > 1:
-        areas = (boxes[:, 2] - boxes[:, 0]) * (boxes[:, 3] - boxes[:, 1])
-        idx = int(np.argmax(areas))
+    if all_persons:
+        indices = list(range(kpts.shape[0]))
     else:
-        idx = 0
+        areas = (boxes[:, 2] - boxes[:, 0]) * (boxes[:, 3] - boxes[:, 1])
+        indices = [int(np.argmax(areas))]
 
-    kp = kpts[idx]   # (17, 2) o (17, 3)
-    if kp.shape[-1] >= 3:
-        kp = kp[:, :2]
-    conf = confs[idx] if idx < len(confs) else np.ones(17)
-    upper_xy = kp[UPPER_KPS]   # (8, 2)
-    upper_conf = conf[UPPER_KPS]
-    return upper_xy, upper_conf
+    out = []
+    for idx in indices:
+        kp = kpts[idx]
+        if kp.shape[-1] >= 3:
+            kp = kp[:, :2]
+        conf = confs[idx] if idx < len(confs) else np.ones(17)
+        upper_xy = kp[UPPER_KPS]
+        upper_conf = conf[UPPER_KPS]
+        out.append((upper_xy, upper_conf))
+    return out
+
+
+def get_upper_pose(results, frame_shape, choose_biggest: bool = True):
+    """Compat: una sola persona (la de bbox más grande si hay varias)."""
+    poses = get_upper_poses(results, frame_shape, all_persons=False)
+    if not poses:
+        return None, None
+    return poses[0]
+
+
+# Colores por persona (línea, punto)
+PERSON_COLORS = [
+    ((0, 255, 0), (0, 255, 100)),       # verde
+    ((255, 165, 0), (255, 200, 0)),    # naranja
+    ((0, 200, 255), (100, 220, 255)),  # cyan
+    ((255, 100, 255), (255, 150, 255)),  # magenta
+    ((255, 255, 0), (255, 255, 100)),  # amarillo
+]
 
 
 def draw_upper_skeleton(draw, points_xy, confs, w: int, h: int, color_line=(0, 255, 0), color_pt=(0, 255, 100)):
     """Dibuja solo la parte superior del esqueleto. points_xy (8,2) en píxeles."""
-    if points_xy is None or len(points_xy) == 0:
+    if points_xy is None or len(points_x= 0:
         return
     pts = np.asarray(points_xy, dtype=float)
     if confs is None:
@@ -200,29 +222,71 @@ def frame_to_pil(bgr_frame):
     return Image.fromarray(rgb)
 
 
-def load_npy_poses(npy_path: str):
+def load_npy_poses(npy_path: str, *, all_persons: bool = False):
     """
-    Carga poses desde .npy. Devuelve [T, 8, 2] con coords normalizadas 0-1.
-    Soporta: [T, 8, 2] (pose_extractor), [T, 2, 8, 2] (merged_demo, usa user 0), [T, 17, 2].
+    Carga poses desde .npy. Devuelve [T, U, 8, 2] con coords normalizadas 0-1 (U = personas).
+    Soporta: [T, 8, 2] (un usuario), [T, 2, 8, 2] (varios), [T, 17, 2] (COCO completo).
     """
     data = np.load(npy_path)
+
+    def _to_upper(arr: np.ndarray) -> np.ndarray:
+        if arr.shape[-2] == 8:
+            return arr[..., :2]
+        if arr.shape[-2] >= 13:
+            return arr[..., np.array(UPPER_KPS), :2]
+        return arr[..., :2]
+
     if data.ndim == 3:
-        T, J, C = data.shape
-        arr = data[:, :, :2]
-        if J == 8:
-            return arr
-        if J >= 13:
-            return arr[:, np.array(UPPER_KPS), :]
-        return arr
-    if data.ndim == 4 and data.shape[1] in (1, 2):
-        return data[:, 0, :, :2]
-    return data
+        upper = _to_upper(data)
+        return upper[:, np.newaxis, :, :]
+    if data.ndim == 4 and data.shape[1] >= 1:
+        upper = _to_upper(data)
+        if all_persons:
+            return upper
+        return upper[:, 0:1, :, :]
+    raise ValueError(f"Formato .npy no soportado: shape={data.shape}")
+
+
+def _norm_to_pixels(pts_norm: np.ndarray, w_orig: int, h_orig: int):
+    if pts_norm is None or np.any(np.isnan(pts_norm)):
+        return None, np.zeros(8)
+    points_xy = pts_norm.copy().astype(float)
+    points_xy[:, 0] *= w_orig
+    points_xy[:, 1] *= h_orig
+    return points_xy, np.ones(8)
+
+
+def _npy_frame_poses(npy_poses: np.ndarray, frame_idx: int, video_frames: int):
+    """Devuelve lista de (8,2) normalizados para un frame de vídeo."""
+    npy_len, n_users = npy_poses.shape[0], npy_poses.shape[1]
+    if npy_len <= 0:
+        return []
+
+    idx = frame_idx % max(1, video_frames or 1)
+    if video_frames and npy_len < video_frames:
+        offset = video_frames - npy_len
+        if idx < offset:
+            return []
+        j = min(max(0, idx - offset), npy_len - 1)
+    elif video_frames and npy_len > video_frames:
+        j = int(round(idx * (npy_len - 1) / max(1, video_frames - 1)))
+        j = max(0, min(j, npy_len - 1))
+    else:
+        j = min(idx, npy_len - 1)
+
+    out = []
+    for u in range(n_users):
+        pts = npy_poses[j, u]
+        if not np.any(np.isnan(pts)):
+            out.append(pts)
+    return out
 
 
 def run_app(video_path: str, model_path: str = "yolo11n-pose.pt", npy_path: str | None = None,
             detect_phone: bool = False, detect_model_path: str = "yolo11m.pt", imgsz: int = YOLO_IMGSZ,
             sample: int = 1, phone_conf: float = PHONE_CONF_THR,
-            hand_crop: bool = False, crop_ratio: float = HAND_CROP_RATIO):
+            hand_crop: bool = False, crop_ratio: float = HAND_CROP_RATIO,
+            all_persons: bool = False):
     try:
         import tkinter as tk
         from PIL import ImageTk
@@ -238,8 +302,12 @@ def run_app(video_path: str, model_path: str = "yolo11n-pose.pt", npy_path: str 
 
     npy_poses = None
     if npy_path:
-        npy_poses = load_npy_poses(npy_path)
-        print(f"Poses cargadas desde {npy_path}: shape={npy_poses.shape}")
+        npy_poses = load_npy_poses(npy_path, all_persons=all_persons)
+        n_users = npy_poses.shape[1]
+        print(
+            f"Poses cargadas desde {npy_path}: shape={npy_poses.shape} "
+            f"({n_users} persona(s)/frame)"
+        )
 
     model = load_pose_model(model_path) if npy_poses is None else None
 
@@ -310,54 +378,27 @@ def run_app(video_path: str, model_path: str = "yolo11n-pose.pt", npy_path: str 
 
         h_orig, w_orig = frame.shape[:2]
 
+        skeletons: list[tuple] = []
         if npy_poses is not None:
-            npy_len = len(npy_poses)
-            if npy_len > 0:
-                idx = current_frame[0] % max(1, video_frames or 1)
-                if video_frames and npy_len < video_frames:
-                    # Hay más frames de vídeo que poses: suponer que faltan al inicio
-                    # (la persona no se detectó hasta entrar en plano). No mostrar esqueleto
-                    # en los primeros frames; alinear poses con el tramo final del vídeo.
-                    offset = video_frames - npy_len
-                    if idx < offset:
-                        pts_norm = None  # Aún no hay poses (persona no detectada)
-                    else:
-                        j = idx - offset
-                        j = max(0, min(j, npy_len - 1))
-                        pts_norm = npy_poses[j]
-                elif video_frames and npy_len > video_frames:
-                    j = int(round(idx * (npy_len - 1) / max(1, video_frames - 1)))
-                    j = max(0, min(j, npy_len - 1))
-                    pts_norm = npy_poses[j]
-                else:
-                    j = min(idx, npy_len - 1)
-                    pts_norm = npy_poses[j]
-                if pts_norm is not None and not np.any(np.isnan(pts_norm)):
-                    points_xy = pts_norm.copy()
-                    points_xy[:, 0] = pts_norm[:, 0] * w_orig
-                    points_xy[:, 1] = pts_norm[:, 1] * h_orig
-                    confs = np.ones(8)
-                else:
-                    points_xy, confs = None, np.zeros(8)
-            else:
-                points_xy, confs = None, np.zeros(8)
+            for pts_norm in _npy_frame_poses(npy_poses, current_frame[0], video_frames):
+                px, cf = _norm_to_pixels(pts_norm, w_orig, h_orig)
+                if px is not None:
+                    skeletons.append((px, cf))
         else:
-            # Ultralytics hace letterbox interno a imgsz y devuelve keypoints en
-            # coordenadas del frame original, así que no hace falta reescalar a mano.
             results = model(frame, imgsz=imgsz, verbose=False)
-            points_xy, confs = get_upper_pose(results, frame.shape)
-            if confs is None:
-                confs = np.zeros(8)
+            for px, cf in get_upper_poses(results, frame.shape, all_persons=all_persons):
+                skeletons.append((px, cf if cf is not None else np.ones(8)))
 
-        # Detección de móvil en la mano (--extra). Solo cada `sample` frames; entre
-        # detecciones se reutiliza el último resultado para no inferir en todos los frames.
+        # Detección de móvil: muñecas de todas las personas visibles
         phone_boxes = last_phone_boxes[0]
         if detect_model is not None and current_frame[0] % sample == 0:
             det_kwargs = {"imgsz": imgsz, "verbose": False}
             if phone_cls_id is not None:
                 det_kwargs["classes"] = [phone_cls_id]
             wrists = []
-            if points_xy is not None and confs is not None:
+            for points_xy, confs in skeletons:
+                if points_xy is None or confs is None:
+                    continue
                 for wi in WRIST_IDXS:
                     if wi < len(confs) and confs[wi] >= MIN_CONF:
                         wrists.append((points_xy[wi][0], points_xy[wi][1]))
@@ -391,8 +432,11 @@ def run_app(video_path: str, model_path: str = "yolo11n-pose.pt", npy_path: str 
             img = Image.new("RGB", (w_orig, h_orig), (0, 0, 0))
 
         draw = ImageDraw.Draw(img)
-        if points_xy is not None:
-            draw_upper_skeleton(draw, points_xy, confs, w_orig, h_orig)
+        for pi, (points_xy, confs) in enumerate(skeletons):
+            line_c, pt_c = PERSON_COLORS[pi % len(PERSON_COLORS)]
+            draw_upper_skeleton(draw, points_xy, confs, w_orig, h_orig, line_c, pt_c)
+        if all_persons and len(skeletons) > 1:
+            draw.text((8, 8), f"{len(skeletons)} personas", fill=(255, 255, 255))
         for cr in last_crop_regions[0]:
             draw.rectangle([int(cr[0]), int(cr[1]), int(cr[2]), int(cr[3])], outline=(120, 120, 120), width=1)
         for box, in_hand in phone_boxes:
@@ -405,11 +449,13 @@ def run_app(video_path: str, model_path: str = "yolo11n-pose.pt", npy_path: str 
 
         current_frame[0] += 1
         src = "npy" if npy_poses is not None else "yolo"
+        n_sk = len(skeletons)
+        sk_info = f" | personas: {n_sk}" if all_persons or n_sk > 1 else ""
         phone_info = ""
         if detect_model is not None:
             n_hand = sum(1 for _b, ih in phone_boxes if ih)
             phone_info = f" | móviles: {len(phone_boxes)} (en mano: {n_hand})"
-        status.config(text=f"Frame {current_frame[0]} | {src}{phone_info} | {'vídeo+esqueleto' if show_video.get() else 'solo esqueleto'} | Esp=pausa Q=salir")
+        status.config(text=f"Frame {current_frame[0]} | {src}{sk_info}{phone_info} | {'vídeo+esqueleto' if show_video.get() else 'solo esqueleto'} | Esp=pausa Q=salir")
         root.after(delay_ms, update)
 
     root.after(0, update)
@@ -429,6 +475,12 @@ def main():
     parser.add_argument("--phone-conf", dest="phone_conf", type=float, default=PHONE_CONF_THR, help=f"Confianza mínima para detectar móvil (default: {PHONE_CONF_THR}). Baja el valor si no lo detecta")
     parser.add_argument("--hand-crop", dest="hand_crop", action="store_true", help="Detectar el móvil sobre un recorte alrededor de las muñecas (mejor para objetos pequeños)")
     parser.add_argument("--crop-ratio", dest="crop_ratio", type=float, default=HAND_CROP_RATIO, help=f"Lado del recorte de mano como fracción de la dimensión mayor del frame (default: {HAND_CROP_RATIO})")
+    parser.add_argument(
+        "--all-persons",
+        action="store_true",
+        help="Dibuja todas las personas (YOLO: todas las detecciones; npy 4D: todos los usuarios). "
+        "Por defecto solo la de bbox más grande / user_0.",
+    )
     args = parser.parse_args()
 
     npy_path = args.npy
@@ -442,7 +494,8 @@ def main():
     run_app(args.video, model_path=args.model, npy_path=npy_path,
             detect_phone=args.extra, detect_model_path=args.detect_model, imgsz=args.imgsz,
             sample=args.sample, phone_conf=args.phone_conf,
-            hand_crop=args.hand_crop, crop_ratio=args.crop_ratio)
+            hand_crop=args.hand_crop, crop_ratio=args.crop_ratio,
+            all_persons=args.all_persons)
 
 
 if __name__ == "__main__":
