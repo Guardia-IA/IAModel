@@ -160,12 +160,12 @@ def check_campaign_imports(report: ValidationReport) -> None:
 
 def check_config(report: ValidationReport, config_path: Optional[Path]) -> Dict[str, Any]:
     try:
-        from campaign_paths import load_merged_campaign_config, filter_cells, class_map_path
+        from campaign_paths import load_merged_campaign_config, filter_cells, class_map_path, resolve_experiment_ids
         from model_config import EXPERIMENTS
 
         config = load_merged_campaign_config(config_path)
         cells = filter_cells(config, None)
-        exp_ids = list(config.get("experiment_ids", []))
+        exp_ids = resolve_experiment_ids(config.get("experiment_ids") or [])
         errors: List[str] = []
         if not cells:
             errors.append("cells vacío")
@@ -299,7 +299,7 @@ def check_preflight_smoke(
     if not config:
         return
     try:
-        from campaign_paths import filter_cells, class_map_path, category_aug_path
+        from campaign_paths import filter_cells, class_map_path, category_aug_path, resolve_experiment_ids
         from class_map_utils import load_class_map
         from preflight_train_plan import build_training_plan
 
@@ -309,7 +309,7 @@ def check_preflight_smoke(
             return
         cell = cells[0]
         class_map_spec = load_class_map(class_map_path(cell["class_map_id"]))
-        exp_ids = list(config.get("experiment_ids", []))
+        exp_ids = resolve_experiment_ids(config.get("experiment_ids") or [])
         build_training_plan(
             task=cell["task"],
             pose_source=cell["pose_source"],
@@ -342,8 +342,9 @@ def check_model_forward_smoke(report: ValidationReport, config: Dict[str, Any]) 
         import torch
         from model_config import EXPERIMENTS
         from train_model_operations import build_model
+        from campaign_paths import resolve_experiment_ids
 
-        exp_ids = list(config.get("experiment_ids", [6]))
+        exp_ids = resolve_experiment_ids(config.get("experiment_ids") or [6])
         exp_id = exp_ids[0]
         cfg = dict(EXPERIMENTS[exp_id - 1])
         input_dim = 34 * 2 * 2  # orden de magnitud típico pose+velocity
