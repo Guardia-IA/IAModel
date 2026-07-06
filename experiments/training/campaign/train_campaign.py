@@ -35,6 +35,7 @@ try:
         training_plan_path,
         category_aug_path,
         hard_negative_manifest_path,
+        resolve_experiment_ids,
     )
     from model_config import EXPERIMENTS, DEFAULT_BINARY_SOFTMAX_THRESHOLD, DEFAULT_BINARY_LOGIT_MARGIN
     from train_model_operations import (
@@ -96,7 +97,10 @@ def train_cell(
         raise FileNotFoundError(f"Falta plan: {plan_path}. Ejecuta preflight_campaign.py --write-all")
 
     plan = load_training_plan_json(plan_path)
-    exp_list = exp_ids or list(config.get("experiment_ids", []))
+    if exp_ids is not None:
+        exp_list = resolve_experiment_ids(exp_ids)
+    else:
+        exp_list = resolve_experiment_ids(config.get("experiment_ids"))
     train_opts = _train_opts_for_cell(cell, config, plan)
 
     hn_manifest: Optional[Path] = None
@@ -210,9 +214,51 @@ def main() -> int:
         default=None,
         help="ID de run (artefactos en artifacts/runs/<run-id>/)",
     )
+    ap.add_argument(
+        "--learning-curve",
+        "--prediction",
+        dest="learning_curve",
+        action="store_true",
+        help="Entrena cada tamaño de la curva (run_id lc_<N>)",
+    )
+    ap.add_argument(
+        "--train-sizes",
+        nargs="+",
+        default=None,
+        metavar="N|max",
+        help="Tamaños train (entero o 'max'; sin flag → manifiesto del preflight)",
+    )
     args = ap.parse_args()
 
     config = load_merged_campaign_config(Path(args.config) if args.config else None)
+
+    if args.learning_curve:
+        from learning_curve_utils import (
+            get_learning_curve_train_sizes,
+            resolve_learning_curve_cells,
+            run_id_for_train_size,
+            experiment_ids_for_cell,
+        )
+
+        try:
+            cells = resolve_learning_curve_cells(config, args.cells)
+            train_sizes = get_learning_curve_train_sizes(
+                cli_sizes=args.train_sizes,
+                config=config,
+            )
+        except ValueError as exc:
+            print(f"[ERROR] {exc}", file=sys.stderr)
+            return 1
+
+        for cell in cells:
+            cid = cell["id"]
+            exp_ids = args.exp_ids or experiment_ids_for_cell(cell, config)
+            for n in train_sizes:
+                rid = run_id_for_train_size(n)
+                print(f"\n{'#' * 80}\n# LC train — {cid} size={n} run_id={rid}\n{'#' * 80}")
+                train_cell(cell, config, resume=args.resume, exp_ids=exp_ids, run_id=rid)
+        return 0
+
     run_id = str(args.run_id).strip() if args.run_id else None
     if args.all or not args.cells:
         cells = filter_cells(config, None)

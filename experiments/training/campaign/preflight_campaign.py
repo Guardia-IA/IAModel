@@ -36,6 +36,7 @@ try:
         class_map_path,
         artifacts_root,
         CONFIG_PATH,
+        resolve_experiment_ids,
     )
     from improve_utils import (
         load_fp_manifest_csv,
@@ -134,7 +135,12 @@ def run_preflight_cell(
         improve_meta.setdefault("hard_negative_uid_weight", 3.0)
         improve_meta.setdefault("fp_category_boost", 1.5)
     class_map_spec = load_class_map(class_map_path(cell["class_map_id"]))
-    exp_ids = experiment_ids or list(config.get("experiment_ids", []))
+    if experiment_ids is not None:
+        exp_ids = resolve_experiment_ids(experiment_ids)
+    elif config.get("experiment_ids") is not None:
+        exp_ids = resolve_experiment_ids(config.get("experiment_ids"))
+    else:
+        exp_ids = []
 
     neg_ratio = float(aug_prof.get("negative_to_robbery_ratio", PREFLIGHT_NEGATIVE_TO_ROBBERY_RATIO))
     plan = build_training_plan(
@@ -316,19 +322,102 @@ def main() -> int:
         action="store_true",
         help="No ejecuta validate_campaign al final.",
     )
+    ap.add_argument(
+        "--learning-curve",
+        "--prediction",
+        dest="learning_curve",
+        action="store_true",
+        help="Curva de aprendizaje: split maestro + planes por tamaño de train (val/test fijos)",
+    )
+    ap.add_argument(
+        "--train-sizes",
+        nargs="+",
+        default=None,
+        metavar="N|max",
+        help="Tamaños train en clips reales (p. ej. 3000 6500 max). 'max' = todos los clips train del split",
+    )
     args = ap.parse_args()
 
     config_path = Path(args.config) if args.config else None
     config = load_merged_campaign_config(config_path)
+    data_root = Path(args.data_root) if args.data_root else None
+    exp_ids = (
+        resolve_experiment_ids(config.get("experiment_ids"))
+        if config.get("experiment_ids") is not None
+        else []
+    )
+    run_id = str(args.run_id).strip() if args.run_id else None
+    hn_csv = Path(args.hard_negative_csv) if args.hard_negative_csv else None
+
+    if args.learning_curve:
+        from learning_curve_utils import (
+            parse_train_size_specs,
+            resolve_learning_curve_cells,
+            run_learning_curve_preflight_all,
+        )
+
+        try:
+            train_specs = parse_train_size_specs(args.train_sizes, config)
+            cells = resolve_learning_curve_cells(config, args.cells)
+        except ValueError as exc:
+            print(f"[ERROR] {exc}", file=sys.stderr)
+            return 1
+        if run_id:
+            print("[!] --run-id ignorado en modo --learning-curve (usa lc_<N> y _lc_master)", file=sys.stderr)
+        print(f"\n=== Preflight learning curve — {len(cells)} celdas — specs {train_specs} ===")
+        summary: List[Dict[str, Any]] = []
+        train_sizes: List[int] = []
+        try:
+            row = run_learning_curve_preflight_all(
+                cells,
+                config,
+                train_size_specs=train_specs,
+                data_root=data_root,
+                write=args.write_all,
+                skip_time_estimate=args.skip_time_estimate,
+            )
+            summary.append(row)
+            train_sizes = row.get("train_sizes") or []
+            cell_id = cells[0]["id"]
+        except Exception as exc:
+            print(f"  ERROR: {exc}", file=sys.stderr)
+            summary.append({"error": str(exc)})
+            cell_id = cells[0]["id"] if cells else "?"
+
+        if not args.skip_validate and args.write_all and summary and "error" not in summary[0]:
+            try:
+                from validate_campaign import run_validation, print_report
+
+                print(f"\n{BOLD}=== Validación post-preflight (learning curve) ==={RESET}\n")
+                cell_ids_lc = summary[0].get("cell_ids") or []
+                for rid in train_sizes:
+                    run_rid = f"lc_{rid}"
+                    vreport = run_validation(
+                        config_path=config_path,
+                        data_root=data_root,
+                        require_plans=True,
+                        run_id=run_rid,
+                        cell_ids=cell_ids_lc,
+                    )
+                    print_report(vreport)
+                    if not vreport.passed:
+                        return 1
+            except ImportError as exc:
+                print(f"  {YELLOW}[!] validate_campaign no disponible: {exc}{RESET}")
+
+        master_root = artifacts_root("_lc_master")
+        master_root.mkdir(parents=True, exist_ok=True)
+        master = master_root / "preflight_learning_curve_summary.json"
+        with open(master, "w", encoding="utf-8") as f:
+            json.dump({"train_sizes": train_sizes, "cells": summary}, f, indent=2, ensure_ascii=False)
+            f.write("\n")
+        print(f"\nResumen learning curve: {master}")
+        return 0 if summary and "error" not in summary[0] else 1
+
     cells = filter_cells(config, args.cells)
     if not cells:
         print("No hay celdas que procesar.", file=sys.stderr)
         return 1
-
-    data_root = Path(args.data_root) if args.data_root else None
-    exp_ids = list(config.get("experiment_ids", []))
-    run_id = str(args.run_id).strip() if args.run_id else None
-    hn_csv = Path(args.hard_negative_csv) if args.hard_negative_csv else None
 
     print(f"\n=== Preflight campaña — {len(cells)} celdas ===")
     if run_id:

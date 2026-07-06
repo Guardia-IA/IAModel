@@ -196,6 +196,195 @@ def sweep_logit_margins(
     return rows
 
 
+def _clip_path(rec: Dict[str, Any]) -> str:
+    return str(
+        rec.get("clip_video_path")
+        or rec.get("clip_dir")
+        or rec.get("clip_path")
+        or ""
+    )
+
+
+def write_path_list(path: Path, paths: List[str], *, header: str = "") -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        if header:
+            f.write(f"# {header}\n")
+        for p in paths:
+            if p:
+                f.write(f"{p}\n")
+    return path
+
+
+def export_error_paths(
+    records: List[Dict[str, Any]],
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    *,
+    reports_dir: Path,
+    logs_dir: Path,
+    split: str,
+    cell_id: str,
+    label: str,
+    meta: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Exporta CSV de errores y listas .txt con rutas FN/FP."""
+    fn_paths: List[str] = []
+    fp_paths: List[str] = []
+    error_rows: List[Dict[str, Any]] = []
+    safe_label = label.replace("|", "+").replace("/", "_")
+
+    for rec, yt, yp in zip(records, y_true, y_pred):
+        yt_i = int(yt)
+        yp_i = int(yp)
+        cp = _clip_path(rec)
+        if yp_i == 1 and yt_i == 0:
+            fp_paths.append(cp)
+            error_rows.append({**rec, "outcome": "FP", "pred_label": yp_i, "true_label": yt_i})
+        elif yp_i == 0 and yt_i == 1:
+            fn_paths.append(cp)
+            error_rows.append({**rec, "outcome": "FN", "pred_label": yp_i, "true_label": yt_i})
+
+    csv_path = reports_dir / f"{split}_errors_{safe_label}.csv"
+    fn_report = reports_dir / f"{split}_fn_{safe_label}.txt"
+    fp_report = reports_dir / f"{split}_fp_{safe_label}.txt"
+    fn_log = logs_dir / f"{split}_{cell_id}_fn_{safe_label}.txt"
+    fp_log = logs_dir / f"{split}_{cell_id}_fp_{safe_label}.txt"
+
+    if error_rows:
+        _write_csv(csv_path, error_rows)
+
+    hdr = f"{cell_id} {label} split={split}"
+    if meta:
+        hdr += (
+            f" F1={meta.get('f1_pct', '?')}% "
+            f"FN={len(fn_paths)} FP={len(fp_paths)}"
+        )
+
+    write_path_list(fn_report, fn_paths, header=hdr)
+    write_path_list(fp_report, fp_paths, header=hdr)
+    write_path_list(fn_log, fn_paths, header=hdr)
+    write_path_list(fp_log, fp_paths, header=hdr)
+
+    return {
+        "label": label,
+        "fn_count": len(fn_paths),
+        "fp_count": len(fp_paths),
+        "errors_csv": str(csv_path) if error_rows else None,
+        "fn_paths_txt": str(fn_report),
+        "fp_paths_txt": str(fp_report),
+        "fn_paths_log": str(fn_log),
+        "fp_paths_log": str(fp_log),
+        **(meta or {}),
+    }
+
+
+def pick_best_sweep_row(
+    sweep_rows: List[Dict[str, Any]],
+    model_name: str,
+    *,
+    decision_mode: str = "softmax_thr",
+) -> Optional[Dict[str, Any]]:
+    rows = [
+        r
+        for r in sweep_rows
+        if r.get("model") == model_name and r.get("decision_mode") == decision_mode
+    ]
+    if not rows:
+        return None
+    return max(rows, key=lambda r: float(r.get("f1_pct", 0)))
+
+
+def pick_best_ensemble_row(
+    ensemble_rows: List[Dict[str, Any]],
+    config: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    if not ensemble_rows:
+        return None
+    target_rec = float(config.get("target_recall_pct", 60.0))
+    target_fp = float(config.get("target_fp_rate_pct", 0.01))
+    meets_recall = [r for r in ensemble_rows if float(r.get("recall_pct", 0)) >= target_rec]
+    if meets_recall:
+        meets_both = [r for r in meets_recall if float(r.get("fp_rate_pct", 999)) <= target_fp]
+        pool = meets_both or meets_recall
+        return min(
+            pool,
+            key=lambda r: (
+                float(r.get("fp_rate_pct", 999)),
+                -float(r.get("f1_pct", 0)),
+            ),
+        )
+    return max(ensemble_rows, key=lambda r: float(r.get("f1_pct", 0)))
+
+
+def ensemble_predict_from_row(
+    model_probs: Dict[str, np.ndarray],
+    row: Dict[str, Any],
+    config: Dict[str, Any],
+) -> np.ndarray:
+    ens_cfg = config.get("ensemble") or {}
+    model_names = [m.strip() for m in str(row.get("models", "")).split("|") if m.strip()]
+    rule = str(row.get("decision_mode", "")).replace("ensemble_", "")
+    thr_parts = [float(t) for t in str(row.get("thresholds", "")).split("|") if t.strip()]
+    arrays = [model_probs[n] for n in model_names]
+    n = len(arrays[0])
+
+    if rule == "and":
+        mask = np.ones(n, dtype=bool)
+        for arr, thr in zip(arrays, thr_parts):
+            mask &= arr >= thr
+        return mask.astype(np.int64)
+    if rule == "mean":
+        mean_p = np.mean(np.stack(arrays, axis=0), axis=0)
+        thr = thr_parts[0] if thr_parts else 0.5
+        return (mean_p >= thr).astype(np.int64)
+    if rule == "cascade":
+        low = float(ens_cfg.get("cascade_low", 0.4))
+        high = float(ens_cfg.get("cascade_high", 0.55))
+        pred = np.zeros(n, dtype=np.int64)
+        for i in range(n):
+            if arrays[0][i] >= low and arrays[1][i] >= high:
+                pred[i] = 1
+        return pred
+    raise ValueError(f"Regla ensemble no soportada: {rule!r}")
+
+
+def write_best_ensemble_spec(
+    reports_dir: Path,
+    split: str,
+    row: Dict[str, Any],
+) -> Path:
+    rule = str(row.get("decision_mode", "")).replace("ensemble_", "")
+    thr_parts = [float(t) for t in str(row.get("thresholds", "")).split("|") if t.strip()]
+    models = [m.strip() for m in str(row.get("models", "")).split("|") if m.strip()]
+    spec = {
+        "split": split,
+        "models": models,
+        "rule": rule,
+        "threshold": thr_parts[0] if rule == "mean" and thr_parts else thr_parts,
+        "thresholds": thr_parts,
+        "decision_mode": row.get("decision_mode"),
+        "f1_pct": row.get("f1_pct"),
+        "recall_pct": row.get("recall_pct"),
+        "fp_rate_pct": row.get("fp_rate_pct"),
+        "fn": row.get("fn"),
+        "fp": row.get("fp"),
+    }
+    path = reports_dir / f"{split}_best_ensemble.json"
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(spec, f, indent=2, ensure_ascii=False)
+        f.write("\n")
+    return path
+
+
+def load_best_ensemble_spec(reports_dir: Path, split: str) -> Optional[Dict[str, Any]]:
+    path = reports_dir / f"{split}_best_ensemble.json"
+    if not path.is_file():
+        return None
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
 def ensemble_grid_binary(
     model_probs: Dict[str, np.ndarray],
     y_true: np.ndarray,
@@ -296,8 +485,13 @@ def evaluate_cell(
     sweep_rows: List[Dict[str, Any]] = []
     leaderboard_rows: List[Dict[str, Any]] = []
     model_probs: Dict[str, np.ndarray] = {}
+    model_records: Dict[str, List[Dict[str, Any]]] = {}
     y_true_ref: Optional[np.ndarray] = None
+    base_records_ref: Optional[List[Dict[str, Any]]] = None
     fp_records: List[Dict[str, Any]] = []
+    per_model_best: List[Dict[str, Any]] = []
+    error_exports: List[Dict[str, Any]] = []
+    logs_dir = arts["logs_dir"]
 
     for mp in model_paths:
         exp_name = mp.stem
@@ -346,8 +540,10 @@ def evaluate_cell(
                     mp, examples, training_plan_path=plan_path, split_name=split
                 )
                 model_probs[exp_name] = probs
+                model_records[exp_name] = records
                 if y_true_ref is None:
                     y_true_ref = y_true
+                    base_records_ref = records
 
                 for row in sweep_softmax_thresholds(y_true, probs, config.get("threshold_sweep", {})):
                     row.update({"cell_id": cell_id, "model": mp.name})
@@ -378,6 +574,7 @@ def evaluate_cell(
             per_model_reports.append({"model_path": str(mp), "error": str(exc)})
 
     ensemble_rows: List[Dict[str, Any]] = []
+    best_ensemble_info: Optional[Dict[str, Any]] = None
     if cell["task"] == "binary" and model_probs and y_true_ref is not None:
         ensemble_rows = ensemble_grid_binary(model_probs, y_true_ref, config, cell_id)
         for row in ensemble_rows:
@@ -393,6 +590,77 @@ def evaluate_cell(
                 "fp_rate_pct": row.get("fp_rate_pct", 0),
                 "accuracy_pct": "",
             })
+
+        for mp in model_paths:
+            exp_name = mp.stem
+            if exp_name not in model_probs or exp_name not in model_records:
+                continue
+            best_row = pick_best_sweep_row(sweep_rows, mp.name)
+            if best_row is None:
+                continue
+            thr = float(best_row["threshold"])
+            y_pred = (model_probs[exp_name] >= thr).astype(np.int64)
+            err = export_error_paths(
+                model_records[exp_name],
+                y_true_ref,
+                y_pred,
+                reports_dir=reports_dir,
+                logs_dir=logs_dir,
+                split=split,
+                cell_id=cell_id,
+                label=exp_name,
+                meta={
+                    "model": mp.name,
+                    "decision_mode": "softmax_thr",
+                    "threshold": thr,
+                    "f1_pct": best_row.get("f1_pct"),
+                    "recall_pct": best_row.get("recall_pct"),
+                    "fp_rate_pct": best_row.get("fp_rate_pct"),
+                },
+            )
+            per_model_best.append(err)
+            error_exports.append(err)
+
+        best_ens_row = pick_best_ensemble_row(ensemble_rows, config)
+        if best_ens_row is not None and base_records_ref is not None:
+            y_pred_ens = ensemble_predict_from_row(model_probs, best_ens_row, config)
+            ens_label = (
+                f"ensemble_{best_ens_row.get('decision_mode', '').replace('ensemble_', '')}_"
+                f"{best_ens_row.get('models', '')}_t{best_ens_row.get('thresholds', '')}"
+            ).replace("|", "+")
+            err_ens = export_error_paths(
+                base_records_ref,
+                y_true_ref,
+                y_pred_ens,
+                reports_dir=reports_dir,
+                logs_dir=logs_dir,
+                split=split,
+                cell_id=cell_id,
+                label=ens_label,
+                meta={
+                    "models": best_ens_row.get("models"),
+                    "decision_mode": best_ens_row.get("decision_mode"),
+                    "thresholds": best_ens_row.get("thresholds"),
+                    "f1_pct": best_ens_row.get("f1_pct"),
+                    "recall_pct": best_ens_row.get("recall_pct"),
+                    "fp_rate_pct": best_ens_row.get("fp_rate_pct"),
+                },
+            )
+            best_spec_path = write_best_ensemble_spec(reports_dir, split, best_ens_row)
+            best_ensemble_info = {
+                **err_ens,
+                "best_ensemble_json": str(best_spec_path),
+                "models": best_ens_row.get("models"),
+                "decision_mode": best_ens_row.get("decision_mode"),
+                "thresholds": best_ens_row.get("thresholds"),
+            }
+            error_exports.append(err_ens)
+
+    per_model_best_path = reports_dir / f"{split}_per_model_best.json"
+    if per_model_best:
+        with open(per_model_best_path, "w", encoding="utf-8") as f:
+            json.dump(per_model_best, f, indent=2, ensure_ascii=False)
+            f.write("\n")
 
     out_eval = reports_dir / f"{split}_eval_summary.json"
     payload = {
@@ -430,12 +698,37 @@ def evaluate_cell(
             )
 
     print(f"  [OK] {cell_id}: leaderboard → {leader_path}")
+    if cell["task"] == "binary" and per_model_best:
+        print(f"  [{cell_id}] Resultados por modelo (mejor umbral softmax en {split}):")
+        for pm in sorted(per_model_best, key=lambda r: -float(r.get("f1_pct") or 0)):
+            print(
+                f"    {pm.get('model', pm.get('label'))} @ {pm.get('threshold')}: "
+                f"F1={float(pm.get('f1_pct') or 0):.1f}% "
+                f"FN={pm.get('fn_count')} FP={pm.get('fp_count')}"
+            )
+            print(f"      robos no detectados → {pm.get('fn_paths_log')}")
+            print(f"      falsos positivos    → {pm.get('fp_paths_log')}")
+    if best_ensemble_info:
+        print(
+            f"  [{cell_id}] Mejor ensemble ({split}): "
+            f"{best_ensemble_info.get('decision_mode')} "
+            f"{best_ensemble_info.get('models')} @ {best_ensemble_info.get('thresholds')} — "
+            f"F1={float(best_ensemble_info.get('f1_pct') or 0):.1f}% "
+            f"FN={best_ensemble_info.get('fn_count')} FP={best_ensemble_info.get('fp_count')}"
+        )
+        print(f"      spec → {best_ensemble_info.get('best_ensemble_json')}")
+        print(f"      robos no detectados → {best_ensemble_info.get('fn_paths_log')}")
+        print(f"      falsos positivos    → {best_ensemble_info.get('fp_paths_log')}")
+
     return {
         "cell_id": cell_id,
         "leaderboard": str(leader_path),
         "sweep": str(sweep_path) if sweep_rows else None,
         "ensemble": str(ens_path) if ensemble_rows else None,
+        "best_ensemble": best_ensemble_info.get("best_ensemble_json") if best_ensemble_info else None,
+        "per_model_best": str(per_model_best_path) if per_model_best else None,
         "fp_manifest": str(fp_manifest_path) if fp_records else None,
+        "error_exports": error_exports,
     }
 
 
@@ -468,9 +761,59 @@ def main() -> int:
         default=None,
         help="Evaluar modelos bajo artifacts/runs/<run-id>/",
     )
+    ap.add_argument(
+        "--learning-curve",
+        "--prediction",
+        dest="learning_curve",
+        action="store_true",
+        help="Evalúa cada tamaño de la curva (run_id lc_<N>)",
+    )
+    ap.add_argument(
+        "--train-sizes",
+        nargs="+",
+        default=None,
+        metavar="N|max",
+        help="Tamaños train para --learning-curve (entero o 'max')",
+    )
     args = ap.parse_args()
 
     config = load_merged_campaign_config(Path(args.config) if args.config else None)
+
+    if args.learning_curve:
+        from learning_curve_utils import (
+            get_learning_curve_train_sizes,
+            resolve_learning_curve_cells,
+            run_id_for_train_size,
+        )
+
+        try:
+            cells = resolve_learning_curve_cells(config, args.cells)
+            train_sizes = get_learning_curve_train_sizes(
+                cli_sizes=args.train_sizes,
+                config=config,
+            )
+        except ValueError as exc:
+            print(f"[ERROR] {exc}", file=sys.stderr)
+            return 1
+
+        for cell in cells:
+            cid = cell["id"]
+            for n in train_sizes:
+                rid = run_id_for_train_size(n)
+                print(f"\n{'#' * 80}\n# LC eval — {cid} size={n} run_id={rid}\n{'#' * 80}")
+                try:
+                    evaluate_cell(
+                        cell,
+                        config,
+                        split=args.split,
+                        export_fp=args.export_fp_videos,
+                        max_fp_export=args.max_fp_export,
+                        run_id=rid,
+                    )
+                except Exception as exc:
+                    print(f"  ERROR {cid}: {exc}", file=sys.stderr)
+        return 0
+
     run_id = str(args.run_id).strip() if args.run_id else None
     cells = filter_cells(config, None if args.all or not args.cells else args.cells)
     if not cells:

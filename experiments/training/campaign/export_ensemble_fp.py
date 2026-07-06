@@ -1,20 +1,17 @@
 #!/usr/bin/env python3
 """
-Exporta la lista de falsos positivos (y opcionalmente FN/TP) de un ensemble binario.
+Exporta FP/FN de un ensemble binario de campaña.
 
-Pensado para la config recomendada:
-  bin_full_hardened, MEAN(modelo_06 + modelo_14) >= 0.68
+Por defecto usa el mejor ensemble detectado en evaluate_campaign.py
+({split}_best_ensemble.json). Ya no asume modelo_06+modelo_14.
 
 Uso:
   cd experiments/training/campaign
 
-  # Config recomendada (defaults)
-  python export_ensemble_fp.py --split val
+  # Tras evaluate_campaign.py (lee best_ensemble.json)
+  python export_ensemble_fp.py --split val --outcomes errors
 
-  # Con vídeos symlink
-  python export_ensemble_fp.py --split val --export-videos
-
-  # Otro ensemble
+  # Ensemble explícito
   python export_ensemble_fp.py --cell bin_full --models modelo_06 modelo_49 \\
       --rule mean --threshold 0.68 --split val
 """
@@ -39,7 +36,11 @@ if str(CAMPAIGN_DIR) not in sys.path:
 try:
     from campaign_paths import ensure_cell_dirs, training_plan_path, load_campaign_config
     from evaluate_validation import load_split_uids, build_split_examples
-    from evaluate_campaign import collect_binary_predictions, _binary_metrics
+    from evaluate_campaign import (
+        collect_binary_predictions,
+        _binary_metrics,
+        load_best_ensemble_spec,
+    )
     from export_fp_artifacts import export_fp_from_records, example_export_paths
 except ImportError as exc:
     raise SystemExit(f"Import error (¿entorno con torch?): {exc}") from exc
@@ -104,13 +105,57 @@ def _ensemble_predict(
     raise ValueError(f"Regla desconocida: {rule!r} (mean|and|or|cascade)")
 
 
+def _threshold_from_spec(spec: Dict[str, Any], rule: str) -> float:
+    thr = spec.get("threshold")
+    if isinstance(thr, list):
+        return float(thr[0])
+    if thr is not None:
+        return float(thr)
+    thrs = spec.get("thresholds")
+    if isinstance(thrs, list) and thrs:
+        return float(thrs[0])
+    if isinstance(thrs, str) and thrs.strip():
+        return float(thrs.split("|")[0])
+    return 0.5
+
+
+def resolve_ensemble_args(
+    *,
+    cell_id: str,
+    split: str,
+    model_names: Optional[Sequence[str]],
+    rule: Optional[str],
+    threshold: Optional[float],
+    run_id: Optional[str],
+) -> Tuple[List[str], str, float, Dict[str, Any]]:
+    arts = ensure_cell_dirs(cell_id, run_id=run_id)
+    spec = load_best_ensemble_spec(arts["reports_dir"], split)
+    if model_names:
+        models = list(model_names)
+        ens_rule = str(rule or (spec or {}).get("rule") or "mean")
+        ens_thr = float(threshold if threshold is not None else _threshold_from_spec(spec or {}, ens_rule))
+        return models, ens_rule, ens_thr, spec or {}
+
+    if spec is None:
+        raise FileNotFoundError(
+            f"No hay {split}_best_ensemble.json en {arts['reports_dir']}. "
+            "Ejecuta evaluate_campaign.py --all primero."
+        )
+    models = [str(m) for m in spec.get("models") or []]
+    if not models:
+        raise ValueError(f"best_ensemble.json sin modelos: {arts['reports_dir']}")
+    ens_rule = str(rule or spec.get("rule") or "mean")
+    ens_thr = float(threshold if threshold is not None else _threshold_from_spec(spec, ens_rule))
+    return models, ens_rule, ens_thr, spec
+
+
 def run_ensemble_export(
     *,
     cell_id: str,
-    model_names: Sequence[str],
+    model_names: Optional[Sequence[str]],
     split: str,
-    rule: str,
-    threshold: float,
+    rule: Optional[str],
+    threshold: Optional[float],
     cascade_low: float,
     cascade_high: float,
     single_user_only: Optional[bool],
@@ -118,10 +163,20 @@ def run_ensemble_export(
     export_videos: bool,
     use_symlink: bool,
     outcomes: str,
+    run_id: Optional[str] = None,
 ) -> Dict[str, Any]:
-    arts = ensure_cell_dirs(cell_id)
+    resolved_models, ens_rule, ens_thr, spec = resolve_ensemble_args(
+        cell_id=cell_id,
+        split=split,
+        model_names=model_names,
+        rule=rule,
+        threshold=threshold,
+        run_id=run_id,
+    )
+
+    arts = ensure_cell_dirs(cell_id, run_id=run_id)
     models_dir = arts["models_dir"]
-    plan_path = training_plan_path(cell_id)
+    plan_path = training_plan_path(cell_id, run_id=run_id)
     if not plan_path.is_file():
         raise FileNotFoundError(f"Falta plan: {plan_path}. Ejecuta preflight_campaign.py --write-all")
 
@@ -130,7 +185,7 @@ def run_ensemble_export(
     if cell is None:
         raise ValueError(f"Celda desconocida en campaign_config.json: {cell_id!r}")
 
-    model_paths = _resolve_model_paths(models_dir, model_names)
+    model_paths = _resolve_model_paths(models_dir, resolved_models)
     split_uids, split_meta = load_split_uids(split_name=split, training_plan_path=plan_path)
     split_meta["split_name"] = split
     with open(plan_path, "r", encoding="utf-8") as f:
@@ -176,15 +231,15 @@ def run_ensemble_export(
     p_mean = prob_matrix.mean(axis=0)
     y_pred = _ensemble_predict(
         prob_matrix,
-        rule,
-        threshold,
+        ens_rule,
+        ens_thr,
         cascade_low=cascade_low,
         cascade_high=cascade_high,
     )
     metrics = _binary_metrics(y_true, y_pred)
 
     all_rows: List[Dict[str, Any]] = []
-    for i, (base, ex) in enumerate(zip(base_records, examples)):
+    for i, base in enumerate(base_records):
         yt = int(y_true[i])
         yp = int(y_pred[i])
         if yp == 1 and yt == 0:
@@ -196,7 +251,7 @@ def run_ensemble_export(
         else:
             outcome = "TN"
 
-        paths = example_export_paths(ex)
+        paths = example_export_paths(examples[i])
         row: Dict[str, Any] = {
             "uid": paths["uid"],
             "uid_absolute": paths["uid_absolute"],
@@ -207,8 +262,8 @@ def run_ensemble_export(
             "pred_label": yp,
             "outcome": outcome,
             "p_mean": round(float(p_mean[i]), 6),
-            "threshold": threshold,
-            "rule": rule,
+            "threshold": ens_thr,
+            "rule": ens_rule,
             "clip_video_path": paths["clip_video_path"],
             "clip_video_exists": paths["clip_video_exists"],
             "clip_dir": paths["clip_dir"],
@@ -234,7 +289,7 @@ def run_ensemble_export(
     reports_dir = arts["reports_dir"]
     reports_dir.mkdir(parents=True, exist_ok=True)
     model_tag = "|".join(m.replace(".pt", "") for m in model_labels)
-    csv_path = reports_dir / f"{split}_ensemble_fp_{rule}_{model_tag}_t{threshold:.2f}.csv".replace("|", "+")
+    csv_path = reports_dir / f"{split}_ensemble_fp_{ens_rule}_{model_tag}_t{ens_thr:.2f}.csv".replace("|", "+")
 
     fieldnames: List[str] = [
         "outcome",
@@ -266,7 +321,17 @@ def run_ensemble_export(
         w.writeheader()
         w.writerows(selected)
 
-    # Lista plana de vídeos (ruta completa por línea)
+    fn_paths = [
+        r.get("clip_video_path") or r.get("clip_dir") or ""
+        for r in selected
+        if r.get("outcome") == "FN"
+    ]
+    fp_paths = [
+        r.get("clip_video_path") or r.get("clip_dir") or ""
+        for r in selected
+        if r.get("outcome") == "FP"
+    ]
+
     video_list_path = csv_path.with_suffix(".videos.txt")
     with open(video_list_path, "w", encoding="utf-8") as f:
         for r in selected:
@@ -274,13 +339,34 @@ def run_ensemble_export(
             if video:
                 f.write(f"{video}\n")
 
+    fn_list_path = csv_path.with_suffix(".fn.txt")
+    fp_list_path = csv_path.with_suffix(".fp.txt")
+    with open(fn_list_path, "w", encoding="utf-8") as f:
+        f.write(f"# FN robos no detectados — {ens_rule} {model_tag} @ {ens_thr}\n")
+        for p in fn_paths:
+            if p:
+                f.write(f"{p}\n")
+    with open(fp_list_path, "w", encoding="utf-8") as f:
+        f.write(f"# FP falsos positivos — {ens_rule} {model_tag} @ {ens_thr}\n")
+        for p in fp_paths:
+            if p:
+                f.write(f"{p}\n")
+
+    logs_dir = arts["logs_dir"]
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    fn_log = logs_dir / f"{split}_{cell_id}_ensemble_fn.txt"
+    fp_log = logs_dir / f"{split}_{cell_id}_ensemble_fp.txt"
+    fn_log.write_text(fn_list_path.read_text(encoding="utf-8"), encoding="utf-8")
+    fp_log.write_text(fp_list_path.read_text(encoding="utf-8"), encoding="utf-8")
+
     summary_path = reports_dir / f"{split}_ensemble_fp_summary.json"
     summary = {
         "cell_id": cell_id,
         "split": split,
         "models": [str(p) for p in model_paths],
-        "rule": rule,
-        "threshold": threshold,
+        "rule": ens_rule,
+        "threshold": ens_thr,
+        "source_spec": spec,
         "cascade_low": cascade_low,
         "cascade_high": cascade_high,
         "metrics": metrics,
@@ -289,6 +375,10 @@ def run_ensemble_export(
         "outcomes_filter": outcomes,
         "csv_path": str(csv_path.resolve()),
         "video_list_path": str(video_list_path.resolve()),
+        "fn_list_path": str(fn_list_path.resolve()),
+        "fp_list_path": str(fp_list_path.resolve()),
+        "fn_log_path": str(fn_log.resolve()),
+        "fp_log_path": str(fp_log.resolve()),
     }
     with open(summary_path, "w", encoding="utf-8") as f:
         json.dump(summary, f, indent=2, ensure_ascii=False)
@@ -296,7 +386,7 @@ def run_ensemble_export(
 
     fp_export_dir: Optional[Path] = None
     if export_videos and selected:
-        fp_export_dir = arts["fp_clips_dir"] / f"ensemble_{rule}_t{threshold:.2f}"
+        fp_export_dir = arts["fp_clips_dir"] / f"ensemble_{ens_rule}_t{ens_thr:.2f}"
         fp_records = []
         for r in selected:
             fp_records.append({
@@ -314,26 +404,33 @@ def run_ensemble_export(
     return {
         "csv_path": csv_path,
         "video_list_path": video_list_path,
+        "fn_list_path": fn_list_path,
+        "fp_list_path": fp_list_path,
+        "fn_log_path": fn_log,
+        "fp_log_path": fp_log,
         "summary_path": summary_path,
         "metrics": metrics,
         "selected": selected,
+        "models": resolved_models,
+        "rule": ens_rule,
+        "threshold": ens_thr,
         "fp_export_dir": fp_export_dir,
     }
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(
-        description="Exporta FP (y opcionalmente FN) de un ensemble binario de campaña"
+        description="Exporta FP/FN de un ensemble binario (auto desde best_ensemble.json)"
     )
     ap.add_argument("--cell", type=str, default="bin_full_hardened")
     ap.add_argument(
         "--models",
-        nargs="+",
-        default=["modelo_06", "modelo_14"],
-        help="Nombres o rutas .pt (default: modelo_06 modelo_14)",
+        nargs="*",
+        default=None,
+        help="Modelos .pt (si omites, usa {split}_best_ensemble.json de evaluate)",
     )
-    ap.add_argument("--rule", choices=["mean", "and", "or", "cascade"], default="mean")
-    ap.add_argument("--threshold", type=float, default=0.68)
+    ap.add_argument("--rule", choices=["mean", "and", "or", "cascade"], default=None)
+    ap.add_argument("--threshold", type=float, default=None)
     ap.add_argument("--cascade-low", type=float, default=0.4)
     ap.add_argument("--cascade-high", type=float, default=0.55)
     ap.add_argument("--split", choices=["val", "test"], default="val")
@@ -343,11 +440,17 @@ def main() -> int:
     ap.add_argument(
         "--outcomes",
         choices=["fp", "errors", "alarms", "all"],
-        default="fp",
-        help="fp=solo FP | alarms=TP+FP (detectados robo) | all=todo el split",
+        default="errors",
+        help="errors=FP+FN (default) | fp=solo FP | alarms=TP+FP",
     )
     ap.add_argument("--export-videos", action="store_true", help="Symlink clip.mp4 en fp_clips/")
     ap.add_argument("--copy-videos", action="store_true", help="Copiar vídeos en lugar de symlink")
+    ap.add_argument(
+        "--run-id",
+        type=str,
+        default=None,
+        help="Artefactos bajo artifacts/runs/<run-id>/",
+    )
     args = ap.parse_args()
 
     su: Optional[bool] = None
@@ -370,14 +473,17 @@ def main() -> int:
             export_videos=args.export_videos,
             use_symlink=not args.copy_videos,
             outcomes=args.outcomes,
+            run_id=str(args.run_id).strip() if args.run_id else None,
         )
     except Exception as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
 
     m = result["metrics"]
-    print(f"\n=== Ensemble {args.rule} @ {args.threshold} — split {args.split} ===")
-    print(f"Modelos: {args.models}")
+    print(
+        f"\n=== Ensemble {result['rule']} @ {result['threshold']} — split {args.split} ==="
+    )
+    print(f"Modelos: {result['models']}")
     print(f"Celda: {args.cell}")
     print(
         f"TP={m['tp']} FP={m['fp']} FN={m['fn']} TN={m['tn']} | "
@@ -385,23 +491,13 @@ def main() -> int:
     )
     print(f"\nExportado ({args.outcomes}): {len(result['selected'])} filas")
     print(f"CSV: {result['csv_path'].resolve()}")
-    print(f"Lista vídeos (ruta completa/línea): {result['video_list_path'].resolve()}")
+    print(f"FN (robos no detectados): {result['fn_list_path'].resolve()}")
+    print(f"FP (falsos positivos): {result['fp_list_path'].resolve()}")
+    print(f"Logs FN: {result['fn_log_path'].resolve()}")
+    print(f"Logs FP: {result['fp_log_path'].resolve()}")
     print(f"Resumen JSON: {result['summary_path'].resolve()}")
     if result["fp_export_dir"]:
         print(f"Vídeos FP: {result['fp_export_dir'].resolve()}")
-
-    if result["selected"] and args.outcomes == "fp":
-        print("\n--- Falsos positivos (ruta completa al vídeo) ---")
-        for r in sorted(result["selected"], key=lambda x: -float(x["p_mean"])):
-            video = r.get("clip_video_path") or r.get("clip_dir") or "?"
-            probs = " ".join(f"{k}={v}" for k, v in r.items() if k.startswith("p_modelo"))
-            print(
-                f"\n  cat={r['folder_category']} clip={r.get('clip_name','?')} "
-                f"p_mean={r['p_mean']:.3f} {probs}"
-            )
-            print(f"  vídeo: {video}")
-            print(f"  carpeta: {r.get('clip_dir', '')}")
-            print(f"  uid: {r.get('uid', '')}")
 
     return 0
 

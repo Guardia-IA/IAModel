@@ -256,13 +256,14 @@ def check_plans_and_augments(
     *,
     require_written: bool,
     run_id: Optional[str] = None,
+    cell_ids: Optional[List[str]] = None,
 ) -> None:
     if not config:
         return
     try:
         from campaign_paths import filter_cells, training_plan_path, category_aug_path
 
-        cells = filter_cells(config, None)
+        cells = filter_cells(config, cell_ids)
         missing: List[str] = []
         for cell in cells:
             cid = cell["id"]
@@ -417,6 +418,7 @@ def run_validation(
     require_plans: bool = False,
     skip_smoke: bool = False,
     run_id: Optional[str] = None,
+    cell_ids: Optional[List[str]] = None,
 ) -> ValidationReport:
     report = ValidationReport()
     check_python_syntax(report)
@@ -435,7 +437,7 @@ def run_validation(
         check_preflight_smoke(report, config, data_root)
         check_model_forward_smoke(report, config)
 
-    check_plans_and_augments(report, config, require_written=require_plans, run_id=run_id)
+    check_plans_and_augments(report, config, require_written=require_plans, run_id=run_id, cell_ids=cell_ids)
     return report
 
 
@@ -467,6 +469,7 @@ def main() -> int:
     ap.add_argument("--require-plans", action="store_true", help="Exige que preflight --write-all ya se ejecutó")
     ap.add_argument("--skip-smoke", action="store_true", help="Omite build_training_plan y forward smoke")
     ap.add_argument("--run-id", type=str, default=None, help="Validar planes bajo artifacts/runs/<run-id>/")
+    ap.add_argument("--cells", nargs="*", default=None, help="Solo validar estas celdas (planes)")
     args = ap.parse_args()
 
     report = run_validation(
@@ -476,6 +479,7 @@ def main() -> int:
         require_plans=args.require_plans,
         skip_smoke=args.skip_smoke,
         run_id=str(args.run_id).strip() if args.run_id else None,
+        cell_ids=args.cells,
     )
     print_report(report)
     return 0 if report.passed else 1

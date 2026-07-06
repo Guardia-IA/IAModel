@@ -91,6 +91,38 @@ def hard_negative_manifest_path(cell_id: str, run_id: Optional[str] = None) -> P
     return cell_artifacts(cell_id, run_id=run_id)["plans_dir"] / "hard_negative_uids.json"
 
 
+def current_run_pointer_path() -> Path:
+    return ARTIFACTS_ROOT / "runs" / ".current_run"
+
+
+def read_current_run_id() -> Optional[str]:
+    p = current_run_pointer_path()
+    if not p.is_file():
+        return None
+    rid = p.read_text(encoding="utf-8").strip()
+    return rid or None
+
+
+def write_current_run_id(run_id: str) -> Path:
+    p = current_run_pointer_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(str(run_id).strip() + "\n", encoding="utf-8")
+    return p
+
+
+def new_run_id(prefix: str = "campaign") -> str:
+    from datetime import datetime
+
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return f"{prefix}_{ts}"
+
+
+def run_logs_dir(run_id: str) -> Path:
+    d = artifacts_root(run_id) / "logs"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
 def run_meta_path(run_id: str) -> Path:
     return artifacts_root(run_id) / "run_meta.json"
 
@@ -113,6 +145,26 @@ def filter_cells(
         wanted = set(cell_ids)
         cells = [c for c in cells if c["id"] in wanted]
     return cells
+
+
+def resolve_experiment_ids(spec: Any) -> List[int]:
+    """
+    Resuelve experiment_ids del config.
+    spec puede ser lista [6, 14, ...] o la cadena \"all\" (todos los EXPERIMENTS de model_config).
+    """
+    if spec is None:
+        return []
+    if spec == "all" or (isinstance(spec, str) and spec.strip().lower() == "all"):
+        from model_config import EXPERIMENTS
+
+        return list(range(1, len(EXPERIMENTS) + 1))
+    if isinstance(spec, (list, tuple)):
+        if len(spec) == 1 and str(spec[0]).strip().lower() == "all":
+            from model_config import EXPERIMENTS
+
+            return list(range(1, len(EXPERIMENTS) + 1))
+        return [int(x) for x in spec]
+    raise ValueError(f"experiment_ids inválido: {spec!r} (usa lista de enteros o \"all\")")
 
 
 def master_reports_dir(run_id: Optional[str] = None) -> Path:

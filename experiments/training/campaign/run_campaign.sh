@@ -1,101 +1,395 @@
 #!/usr/bin/env bash
-# Orquestador de la campaña de experimentos (preflight → train → eval → summary)
+# Orquestador campaña: cada run aislado en artifacts/runs/<RUN_ID>/
+# Preflight (foreground + log) → train/eval (background + log por fase)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
+TRAINING_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+export PYTHONPATH="${TRAINING_DIR}:${SCRIPT_DIR}:${PYTHONPATH:-}"
+
+PY="${PYTHON:-python3}"
+CURRENT_RUN_FILE="${SCRIPT_DIR}/artifacts/runs/.current_run"
+RUN_ID="${RUN_ID:-}"
 
 CMD="${1:-help}"
 shift || true
 
-PY="${PYTHON:-python3}"
-LOG_DIR="${SCRIPT_DIR}/artifacts/logs"
-mkdir -p "$LOG_DIR"
+# Extra args para Python (puede incluir --run-id explícito)
+EXTRA_ARGS=("$@")
 
-run_check() {
-  # Tras preflight, exige planes escritos
-  local extra=("$@")
-  "$PY" validate_campaign.py "${extra[@]}"
+parse_run_id_from_args() {
+  local args=("$@")
+  local i=0
+  while [[ $i -lt ${#args[@]} ]]; do
+    if [[ "${args[$i]}" == "--run-id" && $((i + 1)) -lt ${#args[@]} ]]; then
+      RUN_ID="${args[$((i + 1))]}"
+      return 0
+    fi
+    i=$((i + 1))
+  done
+  return 1
 }
 
+strip_run_id_from_extra() {
+  local out=()
+  local skip=0
+  local a
+  for a in "${EXTRA_ARGS[@]}"; do
+    if [[ $skip -eq 1 ]]; then
+      skip=0
+      continue
+    fi
+    if [[ "$a" == "--run-id" ]]; then
+      skip=1
+      continue
+    fi
+    out+=("$a")
+  done
+  EXTRA_ARGS=("${out[@]}")
+}
+
+ensure_run_id() {
+  if [[ -n "$RUN_ID" ]]; then
+    return 0
+  fi
+  if [[ -f "$CURRENT_RUN_FILE" ]]; then
+    RUN_ID="$(tr -d '[:space:]' < "$CURRENT_RUN_FILE")"
+  fi
+  if [[ -z "$RUN_ID" ]]; then
+    RUN_ID="$("$PY" -c "from campaign_paths import new_run_id; print(new_run_id())")"
+    echo "$RUN_ID" > "$CURRENT_RUN_FILE"
+    echo "[!] RUN_ID auto-creado: ${RUN_ID} (usa 'new-run' antes del pipeline para uno nuevo explícito)" >&2
+  fi
+}
+
+run_root() {
+  echo "${SCRIPT_DIR}/artifacts/runs/${RUN_ID}"
+}
+
+logs_dir() {
+  mkdir -p "$(run_root)/logs"
+  echo "$(run_root)/logs"
+}
+
+write_run_meta() {
+  local phase="${1:-init}"
+  "$PY" - <<PY
+import json
+from datetime import datetime, timezone
+from campaign_paths import run_meta_path, load_campaign_config, resolve_experiment_ids
+
+run_id = ${RUN_ID@Q}
+cfg = load_campaign_config()
+meta = {
+    "run_id": run_id,
+    "phase": ${phase@Q},
+    "updated_at": datetime.now(timezone.utc).isoformat(),
+    "experiment_ids": resolve_experiment_ids(cfg.get("experiment_ids")),
+    "experiment_ids_spec": cfg.get("experiment_ids"),
+}
+path = run_meta_path(run_id)
+path.parent.mkdir(parents=True, exist_ok=True)
+with open(path, "w", encoding="utf-8") as f:
+    json.dump(meta, f, indent=2, ensure_ascii=False)
+    f.write("\n")
+print(path)
+PY
+}
+
+run_args() {
+  echo --run-id "$RUN_ID"
+}
+
+extra_py_args() {
+  if ((${#EXTRA_ARGS[@]})); then
+    printf '%s' "${EXTRA_ARGS[*]}"
+  fi
+}
+
+log_banner() {
+  local logfile="$1"
+  local title="$2"
+  {
+    echo ""
+    echo "================================================================"
+    echo "${title} — $(date -Iseconds)"
+    echo "RUN_ID=${RUN_ID}"
+    echo "================================================================"
+  } >> "$logfile"
+}
+
+run_preflight() {
+  ensure_run_id
+  mkdir -p "$(run_root)/logs"
+  echo "$RUN_ID" > "$CURRENT_RUN_FILE"
+  write_run_meta "preflight_start" >/dev/null
+
+  local logfile
+  logfile="$(logs_dir)/preflight.log"
+  log_banner "$logfile" "PREFLIGHT"
+
+  echo "Run: ${RUN_ID}"
+  echo "Artefactos: $(run_root)"
+  echo "Log preflight: ${logfile}"
+
+  {
+    echo "--- validate ---"
+    "$PY" validate_campaign.py $(run_args) "${EXTRA_ARGS[@]}"
+    echo "--- preflight --write-all ---"
+    "$PY" preflight_campaign.py --write-all $(run_args) "${EXTRA_ARGS[@]}"
+    echo "--- validate --require-plans ---"
+    "$PY" validate_campaign.py --require-plans $(run_args) "${EXTRA_ARGS[@]}"
+  } 2>&1 | tee -a "$logfile"
+
+  write_run_meta "preflight_done" >/dev/null
+  echo ""
+  echo "[OK] Preflight completado. Siguiente: ./run_campaign.sh train"
+}
+
+run_train_fg() {
+  ensure_run_id
+  local logfile
+  logfile="$(logs_dir)/train.log"
+  log_banner "$logfile" "TRAIN (foreground)"
+  echo "Log train: ${logfile}"
+  {
+    "$PY" validate_campaign.py --require-plans $(run_args) "${EXTRA_ARGS[@]}"
+    "$PY" train_campaign.py --all --resume $(run_args) "${EXTRA_ARGS[@]}"
+  } 2>&1 | tee -a "$logfile"
+  write_run_meta "train_done" >/dev/null
+}
+
+run_train_bg() {
+  ensure_run_id
+  local logfile pidfile
+  logfile="$(logs_dir)/train.log"
+  pidfile="$(logs_dir)/train.pid"
+  log_banner "$logfile" "TRAIN (background)"
+
+  if [[ -f "$pidfile" ]] && kill -0 "$(cat "$pidfile")" 2>/dev/null; then
+    echo "Train ya en curso (PID $(cat "$pidfile")). Log: ${logfile}" >&2
+    exit 1
+  fi
+
+  echo "Run: ${RUN_ID}"
+  echo "Log train: ${logfile}"
+  write_run_meta "train_start" >/dev/null
+
+  local extra
+  extra="$(extra_py_args)"
+
+  nohup bash >> "${logfile}" 2>&1 <<SCRIPT &
+set -euo pipefail
+cd "${SCRIPT_DIR}"
+${PY} validate_campaign.py --require-plans --run-id "${RUN_ID}" ${extra}
+${PY} train_campaign.py --all --resume --run-id "${RUN_ID}" ${extra}
+SCRIPT
+
+  echo $! > "$pidfile"
+  echo "[OK] Train en background PID $(cat "$pidfile")"
+  echo "  tail -f ${logfile}"
+  echo "  Cuando termine: ./run_campaign.sh eval --run-id ${RUN_ID}"
+}
+
+run_eval_fg() {
+  ensure_run_id
+  local logfile
+  logfile="$(logs_dir)/eval.log"
+  log_banner "$logfile" "EVAL (foreground)"
+  {
+    "$PY" evaluate_campaign.py --all --export-fp-videos $(run_args) "${EXTRA_ARGS[@]}"
+    "$PY" summarize_campaign.py $(run_args) "${EXTRA_ARGS[@]}"
+  } 2>&1 | tee -a "$logfile"
+  write_run_meta "eval_done" >/dev/null
+}
+
+run_eval_bg() {
+  ensure_run_id
+  local logfile pidfile train_pidfile
+  logfile="$(logs_dir)/eval.log"
+  pidfile="$(logs_dir)/eval.pid"
+  train_pidfile="$(logs_dir)/train.pid"
+
+  if [[ -f "$train_pidfile" ]] && kill -0 "$(cat "$train_pidfile")" 2>/dev/null; then
+    echo "Esperando a que termine train (PID $(cat "$train_pidfile"))..." >&2
+    while kill -0 "$(cat "$train_pidfile")" 2>/dev/null; do
+      sleep 30
+    done
+    echo "Train finalizado." >&2
+  fi
+
+  if [[ -f "$pidfile" ]] && kill -0 "$(cat "$pidfile")" 2>/dev/null; then
+    echo "Eval ya en curso (PID $(cat "$pidfile")). Log: ${logfile}" >&2
+    exit 1
+  fi
+
+  log_banner "$logfile" "EVAL (background)"
+  echo "Run: ${RUN_ID}"
+  echo "Log eval: ${logfile}"
+  write_run_meta "eval_start" >/dev/null
+
+  local extra
+  extra="$(extra_py_args)"
+
+  nohup bash >> "${logfile}" 2>&1 <<SCRIPT &
+set -euo pipefail
+cd "${SCRIPT_DIR}"
+${PY} evaluate_campaign.py --all --export-fp-videos --run-id "${RUN_ID}" ${extra}
+${PY} summarize_campaign.py --run-id "${RUN_ID}" ${extra}
+SCRIPT
+
+  echo $! > "$pidfile"
+  echo "[OK] Eval en background PID $(cat "$pidfile")"
+  echo "  tail -f ${logfile}"
+}
+
+run_all_bg() {
+  RUN_ID="$("$PY" -c "from campaign_paths import new_run_id; print(new_run_id())")"
+  echo "$RUN_ID" > "$CURRENT_RUN_FILE"
+  mkdir -p "$(run_root)/logs"
+  write_run_meta "pipeline_start" >/dev/null
+
+  local pipeline_log extra run_root_path
+  pipeline_log="$(logs_dir)/pipeline.log"
+  extra="$(extra_py_args)"
+  run_root_path="$(run_root)"
+  echo "Nuevo pipeline RUN_ID=${RUN_ID}"
+  echo "Log unificado: ${pipeline_log}"
+
+  nohup bash >> "${pipeline_log}" 2>&1 <<SCRIPT &
+set -euo pipefail
+cd "${SCRIPT_DIR}"
+export RUN_ID="${RUN_ID}"
+./run_campaign.sh preflight --run-id "${RUN_ID}" ${extra}
+./run_campaign.sh train-bg --run-id "${RUN_ID}" ${extra}
+train_pid=\$(cat "${run_root_path}/logs/train.pid")
+while kill -0 "\$train_pid" 2>/dev/null; do sleep 60; done
+./run_campaign.sh eval-bg --run-id "${RUN_ID}" ${extra}
+eval_pid=\$(cat "${run_root_path}/logs/eval.pid")
+while kill -0 "\$eval_pid" 2>/dev/null; do sleep 30; done
+echo "[FIN] Pipeline completado RUN_ID=${RUN_ID}"
+SCRIPT
+
+  echo $! > "$(logs_dir)/pipeline.pid"
+  echo "[OK] Pipeline en background PID $(cat "$(logs_dir)/pipeline.pid")"
+  echo "  tail -f ${pipeline_log}"
+}
+
+show_status() {
+  ensure_run_id
+  echo "RUN_ID actual: ${RUN_ID}"
+  echo "Carpeta: $(run_root)"
+  if [[ -f "$(run_root)/run_meta.json" ]]; then
+    echo "Meta: $(run_root)/run_meta.json"
+  fi
+  for name in preflight train eval pipeline; do
+    local pf
+    pf="$(logs_dir)/${name}.pid"
+    if [[ -f "$pf" ]] && kill -0 "$(cat "$pf")" 2>/dev/null; then
+      echo "  ${name}: RUNNING pid=$(cat "$pf") log=$(logs_dir)/${name}.log"
+    elif [[ -f "$(logs_dir)/${name}.log" ]]; then
+      echo "  ${name}: log=$(logs_dir)/${name}.log"
+    fi
+  done
+}
+
+parse_run_id_from_args "${EXTRA_ARGS[@]}" || true
+strip_run_id_from_extra
+
 case "$CMD" in
+  new-run)
+    RUN_ID="$("$PY" -c "from campaign_paths import new_run_id; print(new_run_id())")"
+    mkdir -p "${SCRIPT_DIR}/artifacts/runs"
+    echo "$RUN_ID" > "$CURRENT_RUN_FILE"
+    mkdir -p "$(run_root)/logs"
+    write_run_meta "created" >/dev/null
+    echo "Nuevo RUN_ID: ${RUN_ID}"
+    echo "Carpeta: $(run_root)"
+    echo "Siguiente: ./run_campaign.sh preflight"
+    ;;
+  status)
+    if [[ -z "$RUN_ID" ]] && [[ ! -f "$CURRENT_RUN_FILE" ]]; then
+      echo "No hay RUN_ID activo. Usa: ./run_campaign.sh new-run"
+      exit 1
+    fi
+    show_status
+    ;;
   check)
-    # Validación completa SIN exigir planes (útil antes del primer preflight)
-    exec "$PY" validate_campaign.py "$@"
+    exec "$PY" validate_campaign.py "${EXTRA_ARGS[@]}"
     ;;
   check-ready)
-    # Validación + exige training_plan.json por celda (tras preflight --write-all)
-    exec "$PY" validate_campaign.py --require-plans "$@"
+    ensure_run_id
+    exec "$PY" validate_campaign.py --require-plans $(run_args) "${EXTRA_ARGS[@]}"
     ;;
   preflight)
-    "$PY" validate_campaign.py "$@" || exit 1
-    exec "$PY" preflight_campaign.py --write-all "$@"
+    run_preflight
     ;;
-  train)
-    "$PY" validate_campaign.py --require-plans "$@" || exit 1
-    exec "$PY" train_campaign.py --all --resume "$@"
+  train|train-bg)
+    run_train_bg
     ;;
-  eval)
-    exec "$PY" evaluate_campaign.py --all --export-fp-videos "$@"
+  train-fg)
+    run_train_fg
+    ;;
+  eval|eval-bg)
+    run_eval_bg
+    ;;
+  eval-fg)
+    run_eval_fg
     ;;
   export-ensemble-fp)
-    exec "$PY" export_ensemble_fp.py --split val --export-videos "$@"
+    ensure_run_id
+    exec "$PY" export_ensemble_fp.py --split val --outcomes errors $(run_args) "${EXTRA_ARGS[@]}"
     ;;
   summary)
-    exec "$PY" summarize_campaign.py "$@"
+    ensure_run_id
+    exec "$PY" summarize_campaign.py $(run_args) "${EXTRA_ARGS[@]}"
     ;;
   all)
-    # Secuencia en primer plano (se corta si cierras SSH)
-    "$PY" validate_campaign.py "$@" || exit 1
-    "$PY" preflight_campaign.py --write-all "$@"
-    "$PY" validate_campaign.py --require-plans "$@" || exit 1
-    "$PY" train_campaign.py --all --resume "$@"
-    "$PY" evaluate_campaign.py --all --export-fp-videos "$@"
-    "$PY" summarize_campaign.py "$@"
+    run_preflight
+    run_train_fg
+    run_eval_fg
     ;;
-  all-bg|nohup)
-    # Para SSH: sobrevive al cierre de sesión. Log unificado con timestamp.
-    TS="$(date +%Y%m%d_%H%M%S)"
-    LOG="${LOG_DIR}/campaign_all_${TS}.log"
-    PID_FILE="${LOG_DIR}/campaign_all_${TS}.pid"
-    echo "Lanzando campaña en background..."
-    echo "  Log:  ${LOG}"
-    nohup "$0" all "$@" >> "${LOG}" 2>&1 &
-    echo $! > "${PID_FILE}"
-    echo "  PID:  $(cat "${PID_FILE}")"
-    echo ""
-    echo "Puedes cerrar SSH. Monitorizar con:"
-    echo "  tail -f ${LOG}"
-    echo "  ps -p \$(cat ${PID_FILE})"
+  all-bg|nohup|pipeline-bg)
+    run_all_bg
     ;;
   help|*)
     cat <<'EOF'
-Uso: ./run_campaign.sh <comando> [args]
+Uso: ./run_campaign.sh <comando> [args Python...]
+
+Cada RUN_ID aísla artefactos en artifacts/runs/<RUN_ID>/:
+  plans/ models/ reports/ logs/ run_meta.json
+
+Variables:
+  RUN_ID=campaign_20260621_120000   (opcional; si no, usa .current_run o auto-crea)
 
 Comandos:
-  check         Validación previa (imports, datos, sintaxis) — SIN exigir planes
-  check-ready   Igual que check pero exige preflight --write-all ya hecho
-  preflight     check + genera training_plan + augment por celda
-  train         check-ready + entrena (--resume)
-  eval          Evalúa val + export FP clips
-  export-ensemble-fp  Lista FP ensemble MEAN 06+14 @ 0.68 (val) + symlinks vídeo
-  summary       CSV maestro + campaign_gaps.txt
-  all           check → preflight → check-ready → train → eval → summary (primer plano)
-  all-bg        Igual que all pero con nohup (para SSH — puedes desconectar)
-  nohup         Alias de all-bg
+  new-run          Crea RUN_ID nuevo y lo deja como run activo
+  status           Muestra RUN_ID, PIDs y logs
+  check            Validación sin planes
+  preflight        Preflight + logs/preflight.log (foreground)
+  train            Entrena en BACKGROUND → logs/train.log
+  train-fg         Entrena en primer plano (con log)
+  eval             Eval + summary en BACKGROUND (espera train si sigue vivo)
+  eval-fg          Eval en primer plano
+  summary          CSV maestro del RUN_ID activo
+  export-ensemble-fp  Re-exporta FP/FN del mejor ensemble (lee best_ensemble.json)
+  all              preflight → train-fg → eval-fg (todo primer plano)
+  all-bg           Nuevo RUN_ID + preflight → train-bg → eval-bg (nohup)
 
-SSH (recomendado):
+Flujo recomendado (60 experimentos, SSH):
+  ./run_campaign.sh new-run
+  ./run_campaign.sh preflight
+  ./run_campaign.sh train          # background
+  tail -f artifacts/runs/<RUN_ID>/logs/train.log
+  ./run_campaign.sh eval           # background tras train
+
+O todo de una vez:
   ./run_campaign.sh all-bg
-  tail -f artifacts/logs/campaign_all_*.log
+  tail -f artifacts/runs/<RUN_ID>/logs/pipeline.log
 
-Solo comprobar que no fallará nada:
-  ./run_campaign.sh check
-  ./run_campaign.sh check --strict          # exige GPU
-  ./run_campaign.sh check --data-root /ruta/data_result
-
-Nota: `all` y `all-bg` NO son lo mismo.
-  - all     → se para si cierras la sesión SSH
-  - all-bg  → sigue en background (nohup incluido)
+experiment_ids en campaign_config.json: "all" (60 arquitecturas).
+Pasar --run-id explícito en cualquier fase para reutilizar carpeta.
 EOF
     ;;
 esac
