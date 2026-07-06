@@ -253,27 +253,118 @@ def run_preflight_cell(
     }
 
 
-def print_campaign_time_rollup(summary: List[Dict[str, Any]], config: Dict[str, Any]) -> None:
+def build_campaign_time_rollup(
+    summary: List[Dict[str, Any]],
+    config: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
     rows = [r for r in summary if "time_estimate_seconds" in r and "error" not in r]
     if not rows:
-        return
+        return None
     total_s = sum(float(r.get("time_estimate_seconds", 0.0)) for r in rows)
     n_cells = len(rows)
-    n_exp = int(rows[0].get("experiments_count", 0)) if rows else 0
+    n_exp = max(int(r.get("experiments_count", 0)) for r in rows)
     total_runs = n_cells * n_exp
+    device = "gpu"
+    for r in rows:
+        plan_path = Path(str(r.get("plan_path", "")))
+        if plan_path.is_file():
+            try:
+                plan = json.loads(plan_path.read_text(encoding="utf-8"))
+                te = plan.get("training_time_estimate") or {}
+                device = str(te.get("primary_device") or device)
+                break
+            except (OSError, json.JSONDecodeError):
+                pass
+    return {
+        "cells": n_cells,
+        "experiments_per_cell": n_exp,
+        "total_train_runs": total_runs,
+        "total_seconds": total_s,
+        "total_human": fmt_duration(total_s),
+        "total_hours": round(total_s / 3600.0, 2),
+        "primary_device": device,
+        "per_cell": [
+            {
+                "cell_id": r["cell_id"],
+                "train_rows": r.get("train_rows"),
+                "seconds": float(r.get("time_estimate_seconds", 0.0)),
+                "human": r.get("time_estimate_human")
+                or fmt_duration(float(r.get("time_estimate_seconds", 0.0))),
+            }
+            for r in rows
+        ],
+    }
+
+
+def print_campaign_time_rollup(
+    summary: List[Dict[str, Any]],
+    config: Dict[str, Any],
+    *,
+    run_id: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    rollup = build_campaign_time_rollup(summary, config)
+    if rollup is None:
+        print(f"\n{YELLOW}[!] Sin estimación de tiempo (celdas con error o --skip-time-estimate).{RESET}")
+        return None
+
+    total_s = float(rollup["total_seconds"])
+    n_cells = int(rollup["cells"])
+    n_exp = int(rollup["experiments_per_cell"])
+    total_runs = int(rollup["total_train_runs"])
+    device = rollup.get("primary_device", "gpu")
+
+    lines = [
+        "",
+        "=" * 72,
+        "RESUMEN TOTAL — ESTIMACIÓN DE ENTRENAMIENTO (campaña completa)",
+        "=" * 72,
+        f"Celdas: {n_cells} | experimentos/celda: {n_exp} | entrenamientos totales: {total_runs}",
+        f"Dispositivo de referencia: {device.upper()}",
+        f"TIEMPO TOTAL ESTIMADO: {rollup['total_human']} ({rollup['total_hours']} h)",
+        "",
+        f"{'Celda':<22} | {'Train rows':>10} | {'Tiempo':>12}",
+        "-" * 50,
+    ]
+    for row in rollup["per_cell"]:
+        lines.append(
+            f"{row['cell_id']:<22} | {row.get('train_rows', 0):>10} | {row['human']:>12}"
+        )
+    lines.extend(
+        [
+            "-" * 50,
+            f"SUMA TOTAL: {rollup['total_human']} ({rollup['total_hours']} h)",
+            "Nota: heurística por arquitectura/epochs; eval no incluida.",
+            "=" * 72,
+            "",
+        ]
+    )
+    text = "\n".join(lines)
 
     header("Resumen estimación — campaña completa")
-    print(f"  Celdas: {CYAN}{n_cells}{RESET} | experimentos/celda: {n_exp} | entrenamientos totales: {total_runs}")
-    print(f"  Tiempo estimado acumulado (GPU/CPU según tu máquina): {BOLD}{fmt_duration(total_s)}{RESET}")
-    print(f"  ({total_s / 3600.0:.1f} h)")
+    print(f"  Celdas: {CYAN}{n_cells}{RESET} | experimentos/celda: {n_exp} | entrenamientos: {total_runs}")
+    print(f"  Dispositivo ref.: {CYAN}{str(device).upper()}{RESET}")
+    print(
+        f"  {BOLD}TIEMPO TOTAL ESTIMADO:{RESET} "
+        f"{BOLD}{CYAN}{rollup['total_human']}{RESET} ({rollup['total_hours']} h)"
+    )
     print(f"\n  {'Celda':<22} | {'Train rows':>10} | {'Tiempo':>12}")
     print("  " + "-" * 50)
-    for r in rows:
-        hum = r.get("time_estimate_human") or fmt_duration(float(r.get("time_estimate_seconds", 0)))
+    for row in rollup["per_cell"]:
         print(
-            f"  {r['cell_id']:<22} | {r.get('train_rows', 0):>10} | {hum:>12}"
+            f"  {row['cell_id']:<22} | {row.get('train_rows', 0):>10} | {row['human']:>12}"
         )
-    print(f"{RESET}")
+    print("  " + "-" * 50)
+    print(f"  {BOLD}SUMA TOTAL:{RESET} {CYAN}{rollup['total_human']}{RESET} ({rollup['total_hours']} h)")
+    print(f"  {YELLOW}Nota: heurística train only; eval no incluida.{RESET}\n")
+
+    if run_id:
+        log_dir = artifacts_root(run_id) / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        est_log = log_dir / "preflight_time_estimate.txt"
+        est_log.write_text(text + "\n", encoding="utf-8")
+        print(f"  Estimación guardada en: {CYAN}{est_log}{RESET}\n")
+
+    return rollup
 
 
 def main() -> int:
@@ -446,8 +537,9 @@ def main() -> int:
             print(f"  ERROR {cell['id']}: {exc}", file=sys.stderr)
             summary.append({"cell_id": cell["id"], "error": str(exc)})
 
+    time_rollup: Optional[Dict[str, Any]] = None
     if not args.skip_time_estimate:
-        print_campaign_time_rollup(summary, config)
+        time_rollup = print_campaign_time_rollup(summary, config, run_id=run_id)
 
     if not getattr(args, "skip_validate", False):
         try:
@@ -466,20 +558,28 @@ def main() -> int:
         except ImportError as exc:
             print(f"  {YELLOW}[!] validate_campaign no disponible: {exc}{RESET}")
 
+    if time_rollup is None and not args.skip_time_estimate:
+        time_rollup = build_campaign_time_rollup(summary, config)
+
     master_root = artifacts_root(run_id)
     master_root.mkdir(parents=True, exist_ok=True)
     master = master_root / "preflight_summary.json"
+    total_seconds = float((time_rollup or {}).get("total_seconds", 0.0))
+    if time_rollup is None:
+        total_seconds = sum(
+            float(r.get("time_estimate_seconds", 0.0))
+            for r in summary
+            if "time_estimate_seconds" in r
+        )
     payload = {
         "run_id": run_id,
         "config": str(config_path.resolve()) if config_path else str(CONFIG_PATH),
         "experiment_ids": exp_ids,
         "hard_negative_csv": str(hn_csv.resolve()) if hn_csv else None,
         "cells": summary,
-        "campaign_time_estimate_seconds": sum(
-            float(r.get("time_estimate_seconds", 0.0))
-            for r in summary
-            if "time_estimate_seconds" in r
-        ),
+        "campaign_time_estimate_seconds": total_seconds,
+        "campaign_time_estimate_human": fmt_duration(total_seconds) if total_seconds else None,
+        "campaign_time_rollup": time_rollup,
     }
     with open(master, "w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2, ensure_ascii=False)
@@ -497,6 +597,13 @@ def main() -> int:
             json.dump(meta, f, indent=2, ensure_ascii=False)
             f.write("\n")
     print(f"\nResumen: {master}")
+    if time_rollup:
+        print(
+            f"{BOLD}Tiempo total estimado (train, {time_rollup['total_train_runs']} runs): "
+            f"{CYAN}{time_rollup['total_human']}{RESET} ({time_rollup['total_hours']} h)"
+        )
+    elif args.skip_time_estimate:
+        print(f"{YELLOW}[!] Estimación omitida (--skip-time-estimate).{RESET}")
     return 0
 
 
