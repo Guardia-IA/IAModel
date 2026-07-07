@@ -37,6 +37,24 @@
       "auto_from_eval": true
     }
   },
+  "mass_augment": {
+    "cells": [
+      "mc_full",
+      "mc_filtered",
+      "bin_full",
+      "bin_filtered"
+    ],
+    "config_path": "config_mass_augmentation.json",
+    "variants_per_clip": 15,
+    "target_train_rows": 100000,
+    "include_identity": false,
+    "max_extra_variants_per_clip": 3,
+    "synthetic_eval": {
+      "clips_per_category_pool": 40,
+      "variants_per_clip": 8,
+      "seed": 42
+    }
+  },
   "aug_profiles": {
     "baseline": {
       "negative_to_robbery_ratio": 4.0,

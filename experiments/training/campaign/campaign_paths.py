@@ -87,6 +87,10 @@ def category_aug_path(cell_id: str, run_id: Optional[str] = None) -> Path:
     return cell_artifacts(cell_id, run_id=run_id)["plans_dir"] / "config_category_augmentation.json"
 
 
+def mass_augment_config_path(cell_id: str, run_id: Optional[str] = None) -> Path:
+    return cell_artifacts(cell_id, run_id=run_id)["plans_dir"] / "config_mass_augmentation.json"
+
+
 def hard_negative_manifest_path(cell_id: str, run_id: Optional[str] = None) -> Path:
     return cell_artifacts(cell_id, run_id=run_id)["plans_dir"] / "hard_negative_uids.json"
 

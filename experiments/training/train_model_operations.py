@@ -3230,7 +3230,32 @@ def build_datasets_and_loaders(
         cat_aug_cfg["enabled"] = False
     elif use_category_augmentation is True:
         cat_aug_cfg["enabled"] = True
-    if _category_augment_is_active(cat_aug_cfg):
+    mass_aug_block = (training_plan or {}).get("mass_augmentation") or {}
+    if mass_aug_block.get("enabled"):
+        try:
+            from mass_augment import load_mass_augment_config, expand_examples_with_mass_augmentation
+        except ImportError:
+            from .mass_augment import load_mass_augment_config, expand_examples_with_mass_augmentation  # type: ignore
+        mass_cfg_path = mass_aug_block.get("config_path") or mass_aug_block.get("mass_augment_config")
+        mass_cfg = load_mass_augment_config(mass_cfg_path)
+        mass_plan = mass_aug_block.get("plan") or {}
+        print(
+            f"[MASS-AUG] Config: {mass_cfg_path} | solo split train | "
+            f"objetivo ~{mass_plan.get('projected_total_rows', '?')} filas"
+        )
+        train_ex = expand_examples_with_mass_augmentation(
+            train_ex,
+            mass_cfg,
+            mass_plan=mass_plan,
+            augment_ranges=aug_ranges,
+            seed=augment_seed,
+        )
+        print(
+            f"Tras expansión masiva (solo train) => Train filas: {len(train_ex)} | "
+            f"Val filas: {len(val_ex)} | Test filas: {len(test_ex)}"
+        )
+        assert_no_uid_leak_between_splits(train_ex, val_ex, test_ex)
+    elif _category_augment_is_active(cat_aug_cfg):
         print(f"[CATEGORY-AUG] Config: {cat_aug_path} | solo split train (val/test sin augmentación)")
         train_ex = expand_examples_with_category_augmentation(
             train_ex, cat_aug_cfg, augment_ranges=aug_ranges, seed=augment_seed

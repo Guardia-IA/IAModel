@@ -1,0 +1,33 @@
+{
+  "enabled": true,
+  "include_identity": false,
+  "use_all_recipes": true,
+  "variants_per_clip": 15,
+  "target_train_rows": 100000,
+  "max_extra_variants_per_clip": 3,
+  "apply_to_splits": ["train"],
+  "recipes": [
+    {"name": "scale_up", "ops": [{"op": "scale", "pct": 108.0}]},
+    {"name": "scale_down", "ops": [{"op": "scale", "pct": 92.0}]},
+    {"name": "noise_light_1", "ops": [{"op": "noise", "sx": 0.0025, "sy": 0.0025}]},
+    {"name": "noise_light_2", "ops": [{"op": "noise", "sx": 0.0035, "sy": 0.0035}]},
+    {"name": "rotate_left", "ops": [{"op": "rotate", "deg": -7.0}]},
+    {"name": "rotate_right", "ops": [{"op": "rotate", "deg": 7.0}]},
+    {"name": "speed_fast", "ops": [{"op": "speed", "factor": 0.88}]},
+    {"name": "speed_slow", "ops": [{"op": "speed", "factor": 1.12}]},
+    {"name": "mirror", "ops": [{"op": "mirror"}]},
+    {"name": "mirror_scale_up", "ops": [{"op": "mirror"}, {"op": "scale", "pct": 108.0}]},
+    {"name": "mirror_scale_down", "ops": [{"op": "mirror"}, {"op": "scale", "pct": 92.0}]},
+    {"name": "mirror_noise_1", "ops": [{"op": "mirror"}, {"op": "noise", "sx": 0.0025, "sy": 0.0025}]},
+    {"name": "mirror_rotate_left", "ops": [{"op": "mirror"}, {"op": "rotate", "deg": -7.0}]},
+    {"name": "mirror_rotate_right", "ops": [{"op": "mirror"}, {"op": "rotate", "deg": 7.0}]},
+    {"name": "mirror_speed_fast", "ops": [{"op": "mirror"}, {"op": "speed", "factor": 0.88}]}
+  ],
+  "synthetic_eval": {
+    "clips_per_category_pool": 40,
+    "variants_per_clip": 8,
+    "seed": 42,
+    "non_robbery_categories": "all_except_robbery"
+  },
+  "_comment": "15 variantes fijas por clip real en TRAIN. target_train_rows reparte extras en categorías minoritarias. Val/test reales sin augment; batería sintética aparte en evaluate_mass_augment.py."
+}

@@ -189,6 +189,125 @@ def analyze_size_run_leaderboard(
     }
 
 
+def _load_eval_error_rows(reports_dir: Path, split: str) -> List[Dict[str, str]]:
+    """Lee CSV de errores generados por evaluate_campaign (FN/FP con rutas)."""
+    candidates = sorted(reports_dir.glob(f"{split}_errors_*.csv"))
+    for path in candidates:
+        rows = _read_csv(path)
+        if rows:
+            return rows
+    return []
+
+
+def _enrich_binary_row_from_eval(
+    row: Dict[str, Any],
+    reports_dir: Path,
+    split: str,
+    *,
+    best_spec: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Si export-errors no corrió, usa best_ensemble.json y errors CSV de eval."""
+    if best_spec is None:
+        try:
+            from evaluate_campaign import load_best_ensemble_spec
+
+            best_spec = load_best_ensemble_spec(reports_dir, split)
+        except ImportError:
+            best_spec = None
+
+    if best_spec:
+        for key in ("f1_pct", "recall_pct", "fp_rate_pct", "fp", "fn", "tp", "tn"):
+            if row.get(key) is None and best_spec.get(key) is not None:
+                row[key] = best_spec.get(key)
+        row["best_ensemble_json"] = str(reports_dir / f"{split}_best_ensemble.json")
+
+    error_rows = _load_eval_error_rows(reports_dir, split)
+    if error_rows and not row.get("fp_by_category"):
+        fp_rows = [r for r in error_rows if r.get("outcome") == "FP"]
+        fn_rows = [r for r in error_rows if r.get("outcome") == "FN"]
+        row["fp_count"] = len(fp_rows)
+        row["fn_count"] = len(fn_rows)
+        row["fp_by_category"] = dict(
+            Counter(str(r.get("folder_category", "?")) for r in fp_rows).most_common()
+        )
+        row["fn_by_category"] = dict(
+            Counter(str(r.get("folder_category", "?")) for r in fn_rows).most_common()
+        )
+        row["fp_clips"] = [
+            {
+                "folder_category": r.get("folder_category"),
+                "clip_name": r.get("clip_name"),
+                "clip_path": r.get("clip_path") or r.get("clip_video_path"),
+                "uid": r.get("uid"),
+            }
+            for r in fp_rows[:200]
+        ]
+        row["fn_clips"] = [
+            {
+                "folder_category": r.get("folder_category"),
+                "clip_name": r.get("clip_name"),
+                "clip_path": r.get("clip_path") or r.get("clip_video_path"),
+                "uid": r.get("uid"),
+            }
+            for r in fn_rows[:200]
+        ]
+        if row.get("fp") is None:
+            row["fp"] = len(fp_rows)
+        if row.get("fn") is None:
+            row["fn"] = len(fn_rows)
+
+    if not row.get("fp_by_category"):
+        fp_manifest = reports_dir / f"{split}_fp_manifest.csv"
+        fp_rows = _read_csv(fp_manifest)
+        if fp_rows:
+            row["fp_by_category"] = dict(
+                Counter(
+                    str(r.get("folder_category", r.get("category_str", "?")))
+                    for r in fp_rows
+                ).most_common()
+            )
+            if row.get("fp_count") in (None, 0):
+                row["fp_count"] = len(fp_rows)
+
+    return row
+
+
+def _ensemble_params_from_eval(
+    reports_dir: Path,
+    split: str,
+    config: Dict[str, Any],
+    cell_id: str,
+    run_id: str,
+) -> tuple[str, List[str], float]:
+    ens = resolve_ensemble_settings(config, cell_id, run_id=run_id)
+    try:
+        from evaluate_campaign import load_best_ensemble_spec
+
+        spec = load_best_ensemble_spec(reports_dir, split)
+    except ImportError:
+        spec = None
+
+    if spec:
+        models = [str(m) for m in (spec.get("models") or ens["models"])]
+        rule = str(spec.get("rule") or ens["rule"])
+        thr = spec.get("threshold")
+        if isinstance(thr, list) and thr:
+            threshold = float(thr[0])
+        elif thr is not None:
+            threshold = float(thr)
+        else:
+            thrs = spec.get("thresholds")
+            if isinstance(thrs, str) and thrs.strip():
+                threshold = float(str(thrs).split("|")[0])
+            elif isinstance(thrs, list) and thrs:
+                threshold = float(thrs[0])
+            else:
+                threshold = float(ens["threshold"])
+        return rule, models, threshold
+
+    return str(ens["rule"]), list(ens["models"]), float(ens["threshold"])
+
+
 def analyze_size_run_for_cell(
     *,
     train_size: int,
@@ -198,19 +317,28 @@ def analyze_size_run_for_cell(
     config: Dict[str, Any],
 ) -> Dict[str, Any]:
     cell_id = cell["id"]
+    reports_dir = artifacts_root(run_id) / "reports" / cell_id
     if str(cell.get("task")) == "binary":
-        ens = resolve_ensemble_settings(config, cell_id, run_id=run_id)
+        rule, models, threshold = _ensemble_params_from_eval(
+            reports_dir, split, config, cell_id, run_id
+        )
         row = analyze_size_run(
             train_size=train_size,
             run_id=run_id,
             cell_id=cell_id,
             split=split,
-            rule=ens["rule"],
-            models=ens["models"],
-            threshold=ens["threshold"],
+            rule=rule,
+            models=models,
+            threshold=threshold,
         )
         row["task"] = "binary"
-        return row
+        try:
+            from evaluate_campaign import load_best_ensemble_spec
+
+            spec = load_best_ensemble_spec(reports_dir, split)
+        except ImportError:
+            spec = None
+        return _enrich_binary_row_from_eval(row, reports_dir, split, best_spec=spec)
     row = analyze_size_run_leaderboard(
         train_size=train_size,
         run_id=run_id,
@@ -362,7 +490,12 @@ def print_report(payload: Dict[str, Any]) -> None:
         for r in block.get("sizes") or []:
             fp_cat = r.get("fp_by_category") or {}
             top = sorted(fp_cat.items(), key=lambda x: -x[1])[:5]
-            top_str = ", ".join(f"cat{cat}={cnt}" for cat, cnt in top) if top else "(ninguno)"
+            if top:
+                top_str = ", ".join(f"cat{cat}={cnt}" for cat, cnt in top)
+            elif r.get("fp_count") == 0 or r.get("fp") == 0:
+                top_str = "(0 FP en val)"
+            else:
+                top_str = "(sin desglose; revisa comparison_csv o reports/)"
             print(f"  {cid} train={r['train_size']}: {top_str}")
 
     outs = payload.get("outputs") or {}

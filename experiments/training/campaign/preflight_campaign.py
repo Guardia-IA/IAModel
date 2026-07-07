@@ -551,6 +551,7 @@ def main() -> int:
                 data_root=data_root,
                 require_plans=bool(args.write_all),
                 run_id=run_id,
+                cell_ids=[c["id"] for c in cells],
             )
             print_report(vreport)
             if not vreport.passed:
