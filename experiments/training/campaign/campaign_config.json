@@ -42,7 +42,9 @@
       "mc_full",
       "mc_filtered",
       "bin_full",
-      "bin_filtered"
+      "bin_filtered",
+      "bin_full_hardened",
+      "bin_filtered_hardened"
     ],
     "config_path": "config_mass_augmentation.json",
     "variants_per_clip": 15,
@@ -50,6 +52,21 @@
     "cap_at_target": false,
     "include_identity": false,
     "max_extra_variants_per_clip": 3,
+    "keep_all_robbery_in_train": true,
+    "hard_negative_category_boost": {
+      "2": 2.5,
+      "3": 2.0,
+      "14": 2.5
+    },
+    "robbery_category_extra_variants": 2,
+    "synthetic_gate_max_ratio": 2.0,
+    "deploy_targets": {
+      "f1_pct": 70.0,
+      "recall_pct": 60.0,
+      "fp_rate_pct": 0.01
+    },
+    "primary_selection": "best_operational",
+    "apply_temperature_calibration": true,
     "synthetic_eval": {
       "clips_per_category_pool": 40,
       "variants_per_clip": 8,

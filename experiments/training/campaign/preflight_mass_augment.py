@@ -59,11 +59,23 @@ try:
         apply_mass_plan_to_training_plan,
     )
     from training_time_estimate import estimate_all_experiments, fmt_duration
+    from mass_augment_support import (
+        verify_mass_augment_split,
+        estimate_mass_augment_storage,
+        estimate_mass_augment_eval_seconds,
+    )
 except ImportError as exc:
     raise SystemExit(f"Import error: {exc}") from exc
 
 
-DEFAULT_MASS_CELLS = ("mc_full", "mc_filtered", "bin_full", "bin_filtered")
+DEFAULT_MASS_CELLS = (
+    "mc_full",
+    "mc_filtered",
+    "bin_full",
+    "bin_filtered",
+    "bin_full_hardened",
+    "bin_filtered_hardened",
+)
 
 
 def resolve_mass_cells(config: Dict[str, Any], cell_ids: Optional[List[str]]) -> List[Dict[str, Any]]:
@@ -80,7 +92,19 @@ def load_mass_config(config: Dict[str, Any], override: Optional[Path] = None) ->
     if not path.is_file():
         path = Path(rel)
     cfg = load_mass_augment_config(path)
-    for key in ("variants_per_clip", "target_train_rows", "include_identity", "max_extra_variants_per_clip", "cap_at_target"):
+    for key in (
+        "variants_per_clip",
+        "target_train_rows",
+        "include_identity",
+        "max_extra_variants_per_clip",
+        "cap_at_target",
+        "hard_negative_category_boost",
+        "robbery_category_extra_variants",
+        "keep_all_robbery_in_train",
+        "synthetic_gate_max_ratio",
+        "deploy_targets",
+        "robbery_class",
+    ):
         if key in ma and ma[key] is not None:
             cfg[key] = ma[key]
     if ma.get("synthetic_eval"):
@@ -159,6 +183,47 @@ def print_mass_augment_final_summary(
     total_hours = round(total_seconds / 3600.0, 2)
     n_cells = len(ok_rows)
 
+    syn_cfg = mass_cfg.get("synthetic_eval") or {}
+    clips_x = int(syn_cfg.get("clips_per_category_pool", 40))
+    variants_y = int(syn_cfg.get("variants_per_clip", 8))
+    avg_val = int(sum(int(r.get("val_clips") or 0) for r in ok_rows) / max(n_cells, 1))
+
+    eval_est = estimate_mass_augment_eval_seconds(
+        n_experiments=experiments_count,
+        n_cells=n_cells,
+        val_rows=avg_val,
+        clips_x=clips_x,
+        variants_y=variants_y,
+    )
+    eval_seconds = float(eval_est["seconds"])
+    eval_per_cell = float(eval_est["per_cell_seconds"])
+
+    storage = estimate_mass_augment_storage(
+        n_experiments=experiments_count,
+        n_cells=n_cells,
+        train_rows_per_cell=int(total_rows / max(n_cells, 1)),
+    )
+
+    pipeline_seconds = total_seconds + eval_seconds
+    pipeline_human = fmt_duration(pipeline_seconds)
+
+    header("VERIFICACIÓN SPLIT (train / val / test)")
+    if ok_rows and ok_rows[0].get("split_verification"):
+        sv = ok_rows[0]["split_verification"]
+        print(
+            f"  UIDs disjuntos: {GREEN}{'OK' if sv.get('passed_disjoint') else 'FAIL'}{RESET} | "
+            f"train={sv.get('uids_train')} val={sv.get('uids_val')} test={sv.get('uids_test')}"
+        )
+        print(
+            f"  Clips por split: train={sv.get('clips_train')} val={sv.get('clips_val')} "
+            f"test={sv.get('clips_test')} | mass_aug solo en train"
+        )
+    for row in ok_rows:
+        sv = row.get("split_verification") or {}
+        if sv.get("issues"):
+            for iss in sv["issues"]:
+                print(f"  {YELLOW}[!] {row['cell_id']}: {iss}{RESET}")
+
     header("RESUMEN FINAL — augmentación masiva")
     print(f"  Recetas config: {CYAN}{recipes_n}{RESET} | variantes/clip: {CYAN}{variants_cfg}{RESET}")
     print(
@@ -178,8 +243,20 @@ def print_mass_augment_final_summary(
     print("  " + "-" * 74)
     print(
         f"  {BOLD}SUMA TOTAL:{RESET} {GREEN}{total_clips:,}{RESET} clips reales → "
-        f"{GREEN}{total_synthetic:,}{RESET} filas augmentadas/época | "
-        f"{BOLD}tiempo train:{RESET} {CYAN}{total_human}{RESET} ({total_hours} h)"
+        f"{GREEN}{total_synthetic:,}{RESET} filas augmentadas/época"
+    )
+    print(
+        f"  {BOLD}Tiempo train:{RESET} {CYAN}{total_human}{RESET} ({total_hours} h) | "
+        f"{BOLD}eval estimada/celda:{RESET} {CYAN}{fmt_duration(eval_per_cell)}{RESET} | "
+        f"{BOLD}eval total:{RESET} {CYAN}{fmt_duration(eval_seconds)}{RESET}"
+    )
+    print(
+        f"  {BOLD}Pipeline train+eval:{RESET} {CYAN}{pipeline_human}{RESET} "
+        f"({round(pipeline_seconds / 3600.0, 2)} h)"
+    )
+    print(
+        f"  {BOLD}Disco estimado:{RESET} {CYAN}{storage['total_gb']} GB{RESET} "
+        f"(recomendado libre ≥ {storage['recommended_free_gb']} GB)"
     )
     print(f"  Experimentos/celda: {experiments_count} | entrenamientos totales: {experiments_count * n_cells}")
     if ok_rows:
@@ -210,7 +287,10 @@ def print_mass_augment_final_summary(
         )
     lines.extend(
         [
-            f"TOTAL: {total_clips:,} clips | {total_synthetic:,} filas augmentadas | {total_human} ({total_hours} h)",
+            f"TOTAL train: {total_clips:,} clips | {total_synthetic:,} filas augmentadas | {total_human} ({total_hours} h)",
+            f"Eval estimada total: {fmt_duration(eval_seconds)} ({eval_est['hours']} h)",
+            f"Pipeline train+eval: {pipeline_human} ({round(pipeline_seconds / 3600.0, 2)} h)",
+            f"Disco estimado: {storage['total_gb']} GB (libre recomendado {storage['recommended_free_gb']} GB)",
             "=" * 78,
         ]
     )
@@ -224,9 +304,15 @@ def print_mass_augment_final_summary(
         "total_train_clips": total_clips,
         "total_augmented_rows": total_synthetic,
         "total_train_rows_per_epoch": total_rows,
-        "total_seconds": total_seconds,
-        "total_human": total_human,
-        "total_hours": total_hours,
+        "train_seconds": total_seconds,
+        "train_human": total_human,
+        "train_hours": total_hours,
+        "eval_seconds_total": eval_seconds,
+        "eval_human_total": fmt_duration(eval_seconds),
+        "pipeline_seconds": pipeline_seconds,
+        "pipeline_human": pipeline_human,
+        "storage_estimate": storage,
+        "eval_estimate": eval_est,
         "per_cell": ok_rows,
     }
 
@@ -269,8 +355,25 @@ def run_mass_preflight_cell(
         for k, v in (plan.get("split_stats_by_category", {}).get("train") or {}).items()
     }
     mass_plan = compute_mass_augment_plan(train_counts, mass_cfg)
+    if aug_profile_id == "fp_hardened":
+        from class_map_utils import adjust_augment_for_fp_hardened
+
+        cv = {int(k): int(v) for k, v in (mass_plan.get("category_variants") or {}).items()}
+        adjusted = adjust_augment_for_fp_hardened(
+            cv,
+            robbery_class=int(config.get("robbery_class", ROBBERY_CLASS)),
+            boost_factor=1.35,
+        )
+        mass_plan["category_variants"] = {str(k): int(v) for k, v in adjusted.items()}
+        reb = 0
+        for cat, n in train_counts.items():
+            mult = int(adjusted.get(int(cat), mass_plan.get("variants_per_clip", 15)))
+            reb += int(n) * mult
+        mass_plan["projected_total_rows"] = reb
+        mass_plan["fp_hardened_variant_adjustment"] = True
     cat_cfg = mass_aug_to_category_config(mass_cfg, mass_plan)
     apply_mass_plan_to_training_plan(plan, mass_plan, cat_cfg)
+    split_verification = verify_mass_augment_split(plan)
 
     plan_path = training_plan_path(cell_id, run_id=run_id)
     mass_cfg_path = mass_augment_config_path(cell_id, run_id=run_id)
@@ -281,6 +384,10 @@ def run_mass_preflight_cell(
         "config_path": str(mass_cfg_path.resolve()),
         "plan": mass_plan,
         "recipes_count": len(mass_cfg.get("recipes") or []),
+        "apply_to_splits": mass_cfg.get("apply_to_splits") or ["train"],
+        "keep_all_robbery_in_train": bool(mass_cfg.get("keep_all_robbery_in_train", True)),
+        "hard_negative_category_boost": mass_cfg.get("hard_negative_category_boost"),
+        "deploy_targets": mass_cfg.get("deploy_targets"),
     }
     plan["proposed_category_augmentation"] = cat_cfg
     plan["category_augmentation_config"] = str(cat_cfg_path.resolve())
@@ -353,6 +460,7 @@ def run_mass_preflight_cell(
         "variants_per_clip": int(mass_plan.get("variants_per_clip") or 0),
         "recipes_count": len(mass_cfg.get("recipes") or []),
         "mass_augment": mass_plan,
+        "split_verification": split_verification,
         "experiments_count": len(exp_ids),
         "time_estimate_seconds": cell_seconds,
         "time_estimate_human": time_human,

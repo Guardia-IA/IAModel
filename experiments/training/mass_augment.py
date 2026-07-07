@@ -86,12 +86,19 @@ def compute_mass_augment_plan(
         deficit = max(0, target_rows - base_rows)
 
     if deficit > 0 and train_counts:
-        weights = {c: 1.0 / max(int(v), 1) for c, v in train_counts.items()}
+        hn_boost = cfg.get("hard_negative_category_boost") or {}
+        weights: Dict[int, float] = {}
+        for cat, v in train_counts.items():
+            w = 1.0 / max(int(v), 1)
+            boost = hn_boost.get(str(int(cat)), hn_boost.get(int(cat), 1.0))
+            weights[int(cat)] = w * float(boost)
         w_sum = sum(weights.values()) or 1.0
         assigned = 0
         for cat in train_counts:
-            share = int(deficit * weights[cat] / w_sum)
-            cap = int(train_counts[cat]) * max_extra
+            share = int(deficit * weights[int(cat)] / w_sum)
+            cat_boost = float(hn_boost.get(str(int(cat)), hn_boost.get(int(cat), 1.0)))
+            cap_mult = max_extra * max(1.0, cat_boost)
+            cap = int(train_counts[cat]) * int(cap_mult)
             extra_by_cat[int(cat)] = min(share, cap)
             assigned += extra_by_cat[int(cat)]
         remainder = deficit - assigned
@@ -108,8 +115,13 @@ def compute_mass_augment_plan(
                 break
 
     category_variants: Dict[str, int] = {}
+    robbery_class = int(cfg.get("robbery_class", 6))
+    rob_extra = int(cfg.get("robbery_category_extra_variants", 0))
     for cat, n in train_counts.items():
-        category_variants[str(int(cat))] = variants_per_clip + extra_by_cat.get(int(cat), 0)
+        extra = extra_by_cat.get(int(cat), 0)
+        if int(cat) == robbery_class and rob_extra > 0:
+            extra += rob_extra
+        category_variants[str(int(cat))] = variants_per_clip + extra
 
     projected_total = 0
     for cat, n in train_counts.items():
@@ -335,7 +347,9 @@ def _predict_examples(
     arch_cfg: Dict[str, Any],
     device: Any,
     batch_size: int = 64,
-) -> Tuple[List[int], List[int]]:
+    threshold: float = 0.5,
+    temperature: float = 1.0,
+) -> Tuple[List[int], List[int], List[float]]:
     import torch
     from torch.utils.data import DataLoader
 
@@ -363,16 +377,24 @@ def _predict_examples(
 
     y_true: List[int] = []
     y_pred: List[int] = []
+    y_prob: List[float] = []
     ex_iter = iter(examples)
     pos_class = int(arch_cfg.get("positive_class", ROBBERY_CLASS))
     with torch.no_grad():
         for x, _y in loader:
             x = x.to(device)
-            logits = model(x)
+            logits = model(x) / float(max(1e-6, temperature))
             if task == "binary":
                 probs = torch.softmax(logits, dim=1)[:, 1]
-                preds = (probs >= 0.5).long().cpu().tolist()
+                preds = (probs >= threshold).long().cpu().tolist()
+                prob_list = probs.cpu().tolist()
             else:
+                probs_pos = torch.softmax(logits, dim=1)
+                if num_classes == 2:
+                    prob_list = probs_pos[:, 1].cpu().tolist()
+                else:
+                    idx_pos = label_to_idx.get(pos_class, 1)
+                    prob_list = probs_pos[:, int(idx_pos)].cpu().tolist()
                 preds = logits.argmax(dim=1).cpu().tolist()
             for i in range(len(preds)):
                 ex = next(ex_iter)
@@ -384,7 +406,8 @@ def _predict_examples(
                     y_true.append(true_cat)
                     pred_label = int(idx_to_label.get(int(preds[i]), int(preds[i])))
                     y_pred.append(pred_label)
-    return y_true, y_pred
+                y_prob.append(float(prob_list[i]))
+    return y_true, y_pred, y_prob
 
 
 def synthetic_eval_metrics(
@@ -438,6 +461,8 @@ def run_synthetic_battery_for_model(
     arch_cfg: Dict[str, Any],
     robbery_class: int = ROBBERY_CLASS,
     device: Any = None,
+    threshold: float = 0.5,
+    temperature: float = 1.0,
 ) -> Dict[str, Any]:
     import torch
 
@@ -462,18 +487,110 @@ def run_synthetic_battery_for_model(
     arch["positive_class"] = robbery_class
     seq_len = int(arch.get("seq_len", 64))
 
-    neg_true, neg_pred = _predict_examples(
+    neg_true, neg_pred, _ = _predict_examples(
         model_path, syn_neg, label_to_idx=label_to_idx, task=task,
-        seq_len=seq_len, arch_cfg=arch, device=device,
+        seq_len=seq_len, arch_cfg=arch, device=device, threshold=threshold, temperature=temperature,
     )
-    pos_true, pos_pred = _predict_examples(
+    pos_true, pos_pred, _ = _predict_examples(
         model_path, syn_pos, label_to_idx=label_to_idx, task=task,
-        seq_len=seq_len, arch_cfg=arch, device=device,
+        seq_len=seq_len, arch_cfg=arch, device=device, threshold=threshold, temperature=temperature,
     )
 
     return {
         "clips_x": clips_x,
         "variants_y": variants_y,
+        "threshold": threshold,
+        "temperature": temperature,
+        "synthetic_negatives": synthetic_eval_metrics(
+            neg_true, neg_pred, task=task, robbery_class=robbery_class,
+        ),
+        "synthetic_robbery": synthetic_eval_metrics(
+            pos_true, pos_pred, task=task, robbery_class=robbery_class,
+        ),
+        "n_synthetic_neg_rows": len(syn_neg),
+        "n_synthetic_pos_rows": len(syn_pos),
+    }
+
+
+def run_synthetic_battery_for_ensemble(
+    model_paths: List[Path],
+    *,
+    val_examples: List[PoseExample],
+    cfg: Dict[str, Any],
+    task: str,
+    rule: str = "mean",
+    thresholds: Any = 0.5,
+    robbery_class: int = ROBBERY_CLASS,
+    device: Any = None,
+) -> Dict[str, Any]:
+    """Batería sintética con ensemble (mean/and/cascade simplificado)."""
+    import torch
+
+    if not model_paths:
+        return {"available": False, "error": "Sin modelos ensemble"}
+
+    syn_cfg = cfg.get("synthetic_eval") or {}
+    clips_x = int(syn_cfg.get("clips_per_category_pool", 40))
+    variants_y = int(syn_cfg.get("variants_per_clip", 8))
+    seed = int(syn_cfg.get("seed", SEED))
+
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    syn_neg, syn_pos = build_synthetic_eval_examples(
+        val_examples, cfg=cfg, robbery_class=robbery_class,
+        clips_x=clips_x, variants_y=variants_y, seed=seed,
+    )
+
+    if isinstance(thresholds, (list, tuple)):
+        thr_list = [float(t) for t in thresholds]
+    elif isinstance(thresholds, str) and thresholds.strip():
+        thr_list = [float(t) for t in thresholds.split("|") if t.strip()]
+    else:
+        thr_list = [float(thresholds or 0.5)]
+
+    def _ensemble_predict(examples: List[PoseExample]) -> Tuple[List[int], List[int]]:
+        prob_stack: List[List[float]] = []
+        y_true_ref: List[int] = []
+        for mp in model_paths:
+            ckpt = torch.load(mp, map_location=device, weights_only=False)
+            label_to_idx = ckpt["label_to_idx"]
+            arch_cfg = dict(ckpt.get("config") or {})
+            arch_cfg["seq_len"] = int(ckpt.get("seq_len", 64))
+            arch_cfg["positive_class"] = robbery_class
+            yt, _, probs = _predict_examples(
+                mp, examples, label_to_idx=label_to_idx, task=task,
+                seq_len=int(arch_cfg["seq_len"]), arch_cfg=arch_cfg, device=device,
+                threshold=0.5,
+            )
+            if not y_true_ref:
+                y_true_ref = yt
+            prob_stack.append(probs)
+
+        n = len(y_true_ref)
+        preds: List[int] = []
+        for i in range(n):
+            vals = [float(p[i]) for p in prob_stack]
+            if rule == "and":
+                thrs = thr_list * len(vals) if len(thr_list) < len(vals) else thr_list[: len(vals)]
+                preds.append(1 if all(v >= t for v, t in zip(vals, thrs)) else 0)
+            elif rule == "cascade" and len(vals) >= 2:
+                low, high = 0.4, 0.55
+                preds.append(1 if vals[0] >= low and vals[1] >= high else 0)
+            else:
+                thr = thr_list[0] if thr_list else 0.5
+                mean_p = sum(vals) / max(len(vals), 1)
+                preds.append(1 if mean_p >= thr else 0)
+        return y_true_ref, preds
+
+    neg_true, neg_pred = _ensemble_predict(syn_neg)
+    pos_true, pos_pred = _ensemble_predict(syn_pos)
+
+    return {
+        "clips_x": clips_x,
+        "variants_y": variants_y,
+        "rule": rule,
+        "thresholds": thr_list,
         "synthetic_negatives": synthetic_eval_metrics(
             neg_true, neg_pred, task=task, robbery_class=robbery_class,
         ),

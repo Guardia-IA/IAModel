@@ -203,7 +203,7 @@ run_eval_bg() {
 set -euo pipefail
 cd "${SCRIPT_DIR}"
 ${PY} evaluate_mass_augment.py --all --run-id "${RUN_ID}" ${extra}
-${PY} summarize_campaign.py --run-id "${RUN_ID}" ${extra}
+${PY} summarize_mass_augment.py --run-id "${RUN_ID}" ${extra}
 SCRIPT
 
   echo $! > "$pidfile"
@@ -259,7 +259,7 @@ case "$CMD" in
     mkdir -p "$(run_root)/logs"
     write_run_meta "created" >/dev/null
     echo "Nuevo RUN_ID: ${RUN_ID}"
-    echo "Siguiente: ./run_mass_augment.sh preflight --cells mc_full mc_filtered bin_full bin_filtered"
+    echo "Siguiente: ver help — ./run_mass_augment.sh help"
     ;;
   status)
     show_status
@@ -277,6 +277,10 @@ case "$CMD" in
   eval|eval-bg)
     run_eval_bg
     ;;
+  summary)
+    ensure_run_id
+    exec "$PY" summarize_mass_augment.py $(run_args) "${EXTRA_ARGS[@]}"
+    ;;
   all-bg|pipeline-bg)
     run_all_bg
     ;;
@@ -284,26 +288,47 @@ case "$CMD" in
     cat <<'EOF'
 Uso: ./run_mass_augment.sh <comando> [args Python...]
 
-Pipeline augmentación masiva (~100k filas train, val/test reales):
-  artifacts/runs/<RUN_ID>/plans/<cell>/config_mass_augmentation.json
+6 celdas: mc_full mc_filtered bin_full bin_filtered bin_full_hardened bin_filtered_hardened
+
+=== PIPELINE COMPLETO (copiar/pegar) ===
+
+cd experiments/training/campaign
+
+# 1) Nuevo run
+./run_mass_augment.sh new-run
+
+# 2) Preflight (split + ~100k filas + tiempo train/eval + disco)
+./run_mass_augment.sh preflight --cells mc_full mc_filtered bin_full bin_filtered bin_full_hardened bin_filtered_hardened
+
+# 3) Revisar resumen
+tail -80 artifacts/runs/$(cat artifacts/runs/.current_mass_run)/logs/preflight.log
+
+# 4) Entrenar (background, ~muchas horas)
+./run_mass_augment.sh train-bg --cells mc_full mc_filtered bin_full bin_filtered bin_full_hardened bin_filtered_hardened
+
+# 5) Monitorizar train
+tail -f artifacts/runs/$(cat artifacts/runs/.current_mass_run)/logs/train.log
+
+# 6) Evaluar (real + sintético + CSVs) tras terminar train
+./run_mass_augment.sh eval-bg --cells mc_full mc_filtered bin_full bin_filtered bin_full_hardened bin_filtered_hardened --export-fp-videos
+
+# 7) Monitorizar eval
+tail -f artifacts/runs/$(cat artifacts/runs/.current_mass_run)/logs/eval.log
+
+# 8) Resumen analítico
+./run_mass_augment.sh summary --split val
+
+# === Todo en background ===
+./run_mass_augment.sh all-bg --cells mc_full mc_filtered bin_full bin_filtered bin_full_hardened bin_filtered_hardened
+
+CSVs clave (reports/_master/):
+  val_mass_augment_real_vs_synthetic.csv     comparar con ayer
+  val_mass_augment_deploy_candidates.csv       best_operational / ensemble
+  val_fp_by_category_all_cells.csv           FP por categoría
+  val_mass_augment_synthetic_gate_all_cells.csv  gate overfit augment
 
 Comandos:
-  new-run       RUN_ID con prefijo mass_
-  preflight     preflight_mass_augment.py --write-all (+ estimación tiempo)
-  train-bg      train_campaign.py --all (usa mass_augmentation del plan)
-  eval-bg       evaluate_mass_augment.py --all (real + sintético)
-  all-bg        preflight → train → eval en background
-  check-ready   validate --require-plans
-
-Flujo recomendado (4 celdas: mc_full, mc_filtered, bin_full, bin_filtered):
-  ./run_mass_augment.sh new-run
-  ./run_mass_augment.sh preflight --cells mc_full mc_filtered bin_full bin_filtered
-  ./run_mass_augment.sh train-bg --cells mc_full mc_filtered bin_full bin_filtered
-  tail -f artifacts/runs/<RUN_ID>/logs/train.log
-  ./run_mass_augment.sh eval-bg --cells mc_full mc_filtered bin_full bin_filtered
-
-Config recetas: experiments/training/config_mass_augmentation.json
-Bloque campaña: campaign_config.json → mass_augment
+  new-run | preflight | train-bg | eval-bg | all-bg | summary | check-ready | status
 EOF
     ;;
 esac

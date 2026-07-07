@@ -6,6 +6,19 @@
   "target_train_rows": 100000,
   "cap_at_target": false,
   "max_extra_variants_per_clip": 3,
+  "hard_negative_category_boost": {
+    "2": 2.5,
+    "3": 2.0,
+    "14": 2.5
+  },
+  "robbery_category_extra_variants": 2,
+  "keep_all_robbery_in_train": true,
+  "synthetic_gate_max_ratio": 2.0,
+  "deploy_targets": {
+    "f1_pct": 70.0,
+    "recall_pct": 60.0,
+    "fp_rate_pct": 0.01
+  },
   "apply_to_splits": ["train"],
   "recipes": [
     {"name": "scale_up", "ops": [{"op": "scale", "pct": 108.0}]},
@@ -26,7 +39,7 @@
   ],
   "synthetic_eval": {
     "clips_per_category_pool": 40,
-    "variants_per_clip": 15,
+    "variants_per_clip": 8,
     "seed": 42,
     "non_robbery_categories": "all_except_robbery"
   },
