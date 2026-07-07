@@ -4,6 +4,7 @@
   "use_all_recipes": true,
   "variants_per_clip": 15,
   "target_train_rows": 100000,
+  "cap_at_target": false,
   "max_extra_variants_per_clip": 3,
   "apply_to_splits": ["train"],
   "recipes": [
@@ -29,5 +30,5 @@
     "seed": 42,
     "non_robbery_categories": "all_except_robbery"
   },
-  "_comment": "15 variantes fijas por clip real en TRAIN. target_train_rows reparte extras en categorías minoritarias. Val/test reales sin augment; batería sintética aparte en evaluate_mass_augment.py."
+  "_comment": "15 variantes fijas por clip en TRAIN (~clips×15 filas). cap_at_target=false no recorta aunque supere target_train_rows; si queda por debajo, reparte extras en categorías minoritarias hasta target."
 }

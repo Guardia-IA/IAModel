@@ -12,6 +12,8 @@ Uso:
 from __future__ import annotations
 
 import argparse
+import contextlib
+import io
 import json
 import sys
 from pathlib import Path
@@ -52,6 +54,7 @@ try:
         load_mass_augment_config,
         compute_mass_augment_plan,
         mass_aug_to_category_config,
+        apply_mass_plan_to_training_plan,
     )
     from training_time_estimate import estimate_all_experiments, fmt_duration
 except ImportError as exc:
@@ -75,7 +78,7 @@ def load_mass_config(config: Dict[str, Any], override: Optional[Path] = None) ->
     if not path.is_file():
         path = Path(rel)
     cfg = load_mass_augment_config(path)
-    for key in ("variants_per_clip", "target_train_rows", "include_identity", "max_extra_variants_per_clip"):
+    for key in ("variants_per_clip", "target_train_rows", "include_identity", "max_extra_variants_per_clip", "cap_at_target"):
         if key in ma and ma[key] is not None:
             cfg[key] = ma[key]
     if ma.get("synthetic_eval"):
@@ -101,18 +104,20 @@ def _build_base_plan(
         exp_ids = resolve_experiment_ids(config.get("experiment_ids") or "all")
 
     neg_ratio = float(aug_prof.get("negative_to_robbery_ratio", PREFLIGHT_NEGATIVE_TO_ROBBERY_RATIO))
-    plan = build_training_plan(
-        task=cell["task"],
-        positive_class=int(config.get("robbery_class", ROBBERY_CLASS)),
-        pose_source=cell["pose_source"],
-        single_user_only=bool(config.get("single_user_only", True)),
-        data_root=data_root,
-        category_aug_config=category_aug_path(cell_id, run_id=run_id),
-        negative_to_robbery_ratio=neg_ratio,
-        skip_time_estimate=True,
-        class_map_spec=class_map_spec,
-        experiment_ids=exp_ids if exp_ids else None,
-    )
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        plan = build_training_plan(
+            task=cell["task"],
+            positive_class=int(config.get("robbery_class", ROBBERY_CLASS)),
+            pose_source=cell["pose_source"],
+            single_user_only=bool(config.get("single_user_only", True)),
+            data_root=data_root,
+            category_aug_config=category_aug_path(cell_id, run_id=run_id),
+            negative_to_robbery_ratio=neg_ratio,
+            skip_time_estimate=True,
+            class_map_spec=class_map_spec,
+            experiment_ids=exp_ids if exp_ids else None,
+        )
     plan["campaign"] = {
         "cell_id": cell_id,
         "class_map_id": cell["class_map_id"],
@@ -122,7 +127,7 @@ def _build_base_plan(
     }
     if run_id:
         plan["campaign"]["run_id"] = run_id
-    return plan, exp_ids, aug_profile_id
+    return plan, exp_ids, aug_profile_id, buf.getvalue()
 
 
 def run_mass_preflight_cell(
@@ -137,7 +142,7 @@ def run_mass_preflight_cell(
     run_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     cell_id = cell["id"]
-    plan, exp_ids, aug_profile_id = _build_base_plan(
+    plan, exp_ids, aug_profile_id, _base_log = _build_base_plan(
         cell,
         config,
         data_root=data_root,
@@ -145,12 +150,17 @@ def run_mass_preflight_cell(
         run_id=run_id,
     )
 
+    std_totals = (plan.get("dataset_stats") or {}).get("totals") or {}
+    std_synthetic = int(std_totals.get("rows_synthetic_train", 0))
+    std_real_train = int(std_totals.get("clips_real_train", 0))
+
     train_counts = {
         int(k): int(v)
         for k, v in (plan.get("split_stats_by_category", {}).get("train") or {}).items()
     }
     mass_plan = compute_mass_augment_plan(train_counts, mass_cfg)
     cat_cfg = mass_aug_to_category_config(mass_cfg, mass_plan)
+    apply_mass_plan_to_training_plan(plan, mass_plan, cat_cfg)
 
     plan_path = training_plan_path(cell_id, run_id=run_id)
     mass_cfg_path = mass_augment_config_path(cell_id, run_id=run_id)
@@ -164,10 +174,12 @@ def run_mass_preflight_cell(
     }
     plan["proposed_category_augmentation"] = cat_cfg
     plan["category_augmentation_config"] = str(cat_cfg_path.resolve())
-    plan["totals"]["rows_train_proposed"] = int(mass_plan.get("projected_total_rows", 0))
 
-    projected_train = int(mass_plan.get("projected_total_rows", 0))
-    val_rows = int((plan.get("dataset_stats") or {}).get("totals", {}).get("clips_real_val", 0))
+    ds_totals = (plan.get("dataset_stats") or {}).get("totals") or {}
+    projected_train = int(ds_totals.get("rows_total_train", mass_plan.get("projected_total_rows", 0)))
+    synthetic_train = int(ds_totals.get("rows_synthetic_train", 0))
+    real_train = int(mass_plan.get("train_clips", std_real_train))
+    val_rows = int(ds_totals.get("clips_real_val", 0))
     cell_seconds = 0.0
     time_human: Optional[str] = None
 
@@ -194,11 +206,15 @@ def run_mass_preflight_cell(
         }
 
     header(f"Mass augment — {cell_id}")
-    print(f"  Clips train reales: {mass_plan.get('train_clips')}")
-    print(f"  Variantes base/clip: {mass_plan.get('variants_per_clip')}")
+    print(f"  Clips train (UIDs reales en split): {real_train}")
+    print(f"  Variantes por clip: {mass_plan.get('variants_per_clip')} (+ extras balanceo)")
     print(
-        f"  Filas proyectadas train: {CYAN}{projected_train}{RESET} "
-        f"(objetivo {mass_plan.get('target_train_rows')})"
+        f"  {CYAN}TRAIN MASIVO: {real_train} clips × ~{mass_plan.get('variants_per_clip')} "
+        f"= {projected_train} filas augmentadas{RESET}"
+    )
+    print(
+        f"  (Augmentación estándar del preflight: {std_synthetic} sintéticas — "
+        f"{YELLOW}no aplica{RESET}; se usa mass_augmentation)"
     )
     print(f"  Val/test: solo clips reales ({val_rows} val)")
     if time_human:
@@ -227,6 +243,8 @@ def run_mass_preflight_cell(
         "aug_profile": aug_profile_id,
         "train_rows": projected_train,
         "train_rows_projected": projected_train,
+        "train_clips_real": real_train,
+        "train_rows_synthetic": synthetic_train,
         "mass_augment": mass_plan,
         "experiments_count": len(exp_ids),
         "time_estimate_seconds": cell_seconds,

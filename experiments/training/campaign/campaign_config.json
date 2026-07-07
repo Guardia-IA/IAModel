@@ -47,6 +47,7 @@
     "config_path": "config_mass_augmentation.json",
     "variants_per_clip": 15,
     "target_train_rows": 100000,
+    "cap_at_target": false,
     "include_identity": false,
     "max_extra_variants_per_clip": 3,
     "synthetic_eval": {

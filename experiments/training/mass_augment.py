@@ -75,8 +75,9 @@ def compute_mass_augment_plan(
     base_mult = 1 + variants_per_clip if include_identity else variants_per_clip
     base_rows = n_clips * base_mult
     extra_by_cat: Dict[int, int] = {int(c): 0 for c in train_counts}
+    cap_at_target = bool(cfg.get("cap_at_target", False))
 
-    if base_rows > target_rows and not include_identity:
+    if cap_at_target and base_rows > target_rows and not include_identity:
         variants_per_clip = max(1, target_rows // n_clips)
         base_mult = variants_per_clip
         base_rows = n_clips * variants_per_clip
@@ -119,12 +120,84 @@ def compute_mass_augment_plan(
         "variants_per_clip": variants_per_clip,
         "include_identity": include_identity,
         "target_train_rows": target_rows,
+        "cap_at_target": cap_at_target,
         "projected_base_rows": base_rows,
         "projected_total_rows": projected_total,
         "category_variants": category_variants,
         "extra_variants_by_category": {str(k): v for k, v in extra_by_cat.items()},
         "train_clips": n_clips,
     }
+
+
+def apply_mass_plan_to_training_plan(
+    plan: Dict[str, Any],
+    mass_plan: Dict[str, Any],
+    cat_cfg: Dict[str, Any],
+) -> None:
+    """Sustituye dataset_stats/totals del preflight estándar por proyección mass-augment."""
+    try:
+        from .train_model_operations import summarize_category_aug_on_train
+    except ImportError:
+        from train_model_operations import summarize_category_aug_on_train  # type: ignore
+
+    train_counts = {
+        int(k): int(v) for k, v in (plan.get("split_stats_by_category", {}).get("train") or {}).items()
+    }
+    val_counts = {
+        int(k): int(v) for k, v in (plan.get("split_stats_by_category", {}).get("val") or {}).items()
+    }
+    test_counts = {
+        int(k): int(v) for k, v in (plan.get("split_stats_by_category", {}).get("test") or {}).items()
+    }
+    rows_detail = summarize_category_aug_on_train(train_counts, cat_cfg)
+    include_identity = bool(mass_plan.get("include_identity", cat_cfg.get("include_identity", False)))
+    projected = int(mass_plan.get("projected_total_rows", 0))
+    real_train = int(mass_plan.get("train_clips", sum(train_counts.values())))
+
+    by_cat: Dict[str, Dict[str, int]] = {}
+    total_rows = 0
+    total_synthetic = 0
+    cats = sorted(set(train_counts) | set(val_counts) | set(test_counts), key=lambda c: int(c))
+    for cat in cats:
+        clips = int(train_counts.get(cat, 0))
+        detail = rows_detail.get(int(cat), {})
+        rows = int(detail.get("train_rows", 0))
+        synthetic = max(0, rows - clips) if include_identity else rows
+        by_cat[str(int(cat))] = {
+            "clips_real_train": clips,
+            "clips_real_val": int(val_counts.get(cat, 0)),
+            "clips_real_test": int(test_counts.get(cat, 0)),
+            "aug_per_clip": int(detail.get("aug_per_clip", 0)),
+            "rows_synthetic_train": synthetic,
+            "rows_total_train": rows,
+        }
+        total_rows += rows
+        total_synthetic += synthetic
+
+    if projected <= 0:
+        projected = total_rows
+    if include_identity:
+        total_synthetic = max(0, projected - real_train)
+    else:
+        total_synthetic = projected
+
+    plan["dataset_stats"] = {
+        "by_category": by_cat,
+        "totals": {
+            "clips_real_train": real_train,
+            "clips_real_val": sum(int(v) for v in val_counts.values()),
+            "clips_real_test": sum(int(v) for v in test_counts.values()),
+            "rows_synthetic_train": total_synthetic,
+            "rows_total_train": projected,
+            "include_identity_in_rows": include_identity,
+        },
+    }
+    plan.setdefault("totals", {})
+    plan["totals"]["rows_train_proposed"] = projected
+    plan["totals"]["rows_synthetic_train"] = total_synthetic
+    plan["totals"]["uids_train"] = plan["totals"].get("uids_train") or len(
+        plan.get("split_uids", {}).get("train") or []
+    )
 
 
 def mass_aug_to_category_config(cfg: Dict[str, Any], plan: Dict[str, Any]) -> Dict[str, Any]:
@@ -160,7 +233,6 @@ def expand_examples_with_mass_augmentation(
     include_identity = bool(plan.get("include_identity", cfg.get("include_identity", False)))
     use_all = bool(cfg.get("use_all_recipes", True))
     base_n = int(plan.get("variants_per_clip", cfg.get("variants_per_clip", len(bank))))
-    extra_by_cat = plan.get("extra_variants_by_category") or {}
     cat_variants = plan.get("category_variants") or {}
 
     ranges = augment_ranges or {
@@ -185,7 +257,6 @@ def expand_examples_with_mass_augmentation(
         cat = int(_example_folder_category(ex))
         uid = _example_uid(ex)
         n_req = int(cat_variants.get(str(cat), base_n)) if cat_variants else base_n
-        n_extra = int(extra_by_cat.get(str(cat), 0))
 
         if use_all:
             recipes = bank[: min(base_n, len(bank))]
@@ -198,13 +269,6 @@ def expand_examples_with_mass_augmentation(
                 )
         else:
             ops_list = _category_augment_ops_for_clip(uid, n_req, bank, ranges, seed=seed)
-
-        if n_extra > 0:
-            ops_list.extend(
-                _category_augment_ops_for_clip(
-                    uid + ":extra", n_extra, bank, ranges, seed=seed ^ 0xA5A5,
-                )
-            )
 
         if include_identity:
             out.append(_copy_pose_example(ex, forced_ops=[]))
