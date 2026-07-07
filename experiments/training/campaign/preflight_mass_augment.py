@@ -44,7 +44,9 @@ try:
         build_training_plan,
         write_training_plan,
         header,
+        BOLD,
         CYAN,
+        GREEN,
         YELLOW,
         RESET,
     )
@@ -130,6 +132,114 @@ def _build_base_plan(
     return plan, exp_ids, aug_profile_id, buf.getvalue()
 
 
+def print_mass_augment_final_summary(
+    summary: List[Dict[str, Any]],
+    *,
+    mass_cfg: Dict[str, Any],
+    run_id: Optional[str] = None,
+    experiments_count: int = 0,
+) -> Dict[str, Any]:
+    """Resumen final: clips reales, ops/clip, filas augmentadas y tiempo total."""
+    ok_rows = [r for r in summary if "error" not in r and r.get("train_rows_projected")]
+    variants_cfg = int(mass_cfg.get("variants_per_clip", 15))
+    recipes_n = len(mass_cfg.get("recipes") or [])
+
+    total_clips = 0
+    total_rows = 0
+    total_synthetic = 0
+    total_seconds = 0.0
+
+    for row in ok_rows:
+        total_clips += int(row.get("train_clips_real") or 0)
+        total_rows += int(row.get("train_rows_projected") or 0)
+        total_synthetic += int(row.get("train_rows_synthetic") or row.get("train_rows_projected") or 0)
+        total_seconds += float(row.get("time_estimate_seconds") or 0.0)
+
+    total_human = fmt_duration(total_seconds)
+    total_hours = round(total_seconds / 3600.0, 2)
+    n_cells = len(ok_rows)
+
+    header("RESUMEN FINAL — augmentación masiva")
+    print(f"  Recetas config: {CYAN}{recipes_n}{RESET} | variantes/clip: {CYAN}{variants_cfg}{RESET}")
+    print(
+        f"\n  {BOLD}{'Celda':<20} | {'Clips train':>11} | {'Ops/clip':>8} | "
+        f"{'Filas aug.':>11} | {'Total train':>11} | {'Tiempo':>12}{RESET}"
+    )
+    print("  " + "-" * 74)
+    for row in ok_rows:
+        clips = int(row.get("train_clips_real") or 0)
+        ops = int(row.get("variants_per_clip") or (row.get("mass_augment") or {}).get("variants_per_clip") or variants_cfg)
+        rows = int(row.get("train_rows_projected") or 0)
+        synth = int(row.get("train_rows_synthetic") or rows)
+        human = row.get("time_estimate_human") or fmt_duration(float(row.get("time_estimate_seconds") or 0))
+        print(
+            f"  {row['cell_id']:<20} | {clips:>11,} | {ops:>8} | {synth:>11,} | {rows:>11,} | {human:>12}"
+        )
+    print("  " + "-" * 74)
+    print(
+        f"  {BOLD}SUMA TOTAL:{RESET} {GREEN}{total_clips:,}{RESET} clips reales → "
+        f"{GREEN}{total_synthetic:,}{RESET} filas augmentadas/época | "
+        f"{BOLD}tiempo train:{RESET} {CYAN}{total_human}{RESET} ({total_hours} h)"
+    )
+    print(f"  Experimentos/celda: {experiments_count} | entrenamientos totales: {experiments_count * n_cells}")
+    if ok_rows:
+        ds0 = int(ok_rows[0].get("total_dataset_clips") or 0)
+        if ds0:
+            print(
+                f"  Dataset completo: {ds0:,} clips | split train (reales): "
+                f"{int(ok_rows[0].get('train_clips_real') or 0):,} clips fuente"
+            )
+    print(
+        f"  {YELLOW}Ignora «8711 reales + 1480 sintéticas»: es augmentación estándar, no mass aug.{RESET}\n"
+    )
+
+    lines = [
+        "=" * 78,
+        "RESUMEN FINAL — PREFLIGHT AUGMENTACIÓN MASIVA",
+        f"Recetas: {recipes_n} | variantes/clip: {variants_cfg}",
+        "",
+    ]
+    for row in ok_rows:
+        clips = int(row.get("train_clips_real") or 0)
+        ops = int(row.get("variants_per_clip") or variants_cfg)
+        rows = int(row.get("train_rows_projected") or 0)
+        val_n = int(row.get("val_clips") or 0)
+        human = row.get("time_estimate_human") or fmt_duration(float(row.get("time_estimate_seconds") or 0))
+        lines.append(
+            f"{row['cell_id']}: {clips:,} clips × {ops} ops → {rows:,} filas train/época | val={val_n:,} | {human}"
+        )
+    lines.extend(
+        [
+            f"TOTAL: {total_clips:,} clips | {total_synthetic:,} filas augmentadas | {total_human} ({total_hours} h)",
+            "=" * 78,
+        ]
+    )
+
+    payload = {
+        "run_id": run_id,
+        "variants_per_clip": variants_cfg,
+        "recipes_count": recipes_n,
+        "cells": n_cells,
+        "experiments_per_cell": experiments_count,
+        "total_train_clips": total_clips,
+        "total_augmented_rows": total_synthetic,
+        "total_train_rows_per_epoch": total_rows,
+        "total_seconds": total_seconds,
+        "total_human": total_human,
+        "total_hours": total_hours,
+        "per_cell": ok_rows,
+    }
+
+    if run_id:
+        log_dir = artifacts_root(run_id) / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        out_txt = log_dir / "preflight_mass_augment_summary.txt"
+        out_txt.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        print(f"  Resumen guardado: {CYAN}{out_txt}{RESET}\n")
+
+    return payload
+
+
 def run_mass_preflight_cell(
     cell: Dict[str, Any],
     config: Dict[str, Any],
@@ -151,8 +261,8 @@ def run_mass_preflight_cell(
     )
 
     std_totals = (plan.get("dataset_stats") or {}).get("totals") or {}
-    std_synthetic = int(std_totals.get("rows_synthetic_train", 0))
     std_real_train = int(std_totals.get("clips_real_train", 0))
+    total_dataset_clips = int(plan.get("totals", {}).get("examples_valid", 0))
 
     train_counts = {
         int(k): int(v)
@@ -182,6 +292,7 @@ def run_mass_preflight_cell(
     val_rows = int(ds_totals.get("clips_real_val", 0))
     cell_seconds = 0.0
     time_human: Optional[str] = None
+    device = "gpu"
 
     if not skip_time_estimate and exp_ids:
         time_summary = estimate_all_experiments(
@@ -191,6 +302,7 @@ def run_mass_preflight_cell(
         )
         cell_seconds = float(time_summary["primary_total_seconds"])
         time_human = fmt_duration(cell_seconds)
+        device = str(time_summary.get("primary_device") or "gpu")
         plan["training_time_estimate"] = {
             "train_rows_per_epoch": projected_train,
             "val_rows_per_epoch": val_rows,
@@ -205,20 +317,11 @@ def run_mass_preflight_cell(
             "mass_augment_projected_train_rows": projected_train,
         }
 
-    header(f"Mass augment — {cell_id}")
-    print(f"  Clips train (UIDs reales en split): {real_train}")
-    print(f"  Variantes por clip: {mass_plan.get('variants_per_clip')} (+ extras balanceo)")
     print(
-        f"  {CYAN}TRAIN MASIVO: {real_train} clips × ~{mass_plan.get('variants_per_clip')} "
-        f"= {projected_train} filas augmentadas{RESET}"
+        f"  [{cell_id}] clips train={real_train:,} | ops/clip={mass_plan.get('variants_per_clip')} | "
+        f"filas augmentadas={projected_train:,} | val={val_rows:,}"
+        + (f" | tiempo≈{time_human}" if time_human else "")
     )
-    print(
-        f"  (Augmentación estándar del preflight: {std_synthetic} sintéticas — "
-        f"{YELLOW}no aplica{RESET}; se usa mass_augmentation)"
-    )
-    print(f"  Val/test: solo clips reales ({val_rows} val)")
-    if time_human:
-        print(f"  Tiempo estimado ({len(exp_ids)} exp): {YELLOW}{time_human}{RESET}")
 
     if write:
         with open(mass_cfg_path, "w", encoding="utf-8") as f:
@@ -244,11 +347,16 @@ def run_mass_preflight_cell(
         "train_rows": projected_train,
         "train_rows_projected": projected_train,
         "train_clips_real": real_train,
+        "total_dataset_clips": total_dataset_clips,
         "train_rows_synthetic": synthetic_train,
+        "val_clips": val_rows,
+        "variants_per_clip": int(mass_plan.get("variants_per_clip") or 0),
+        "recipes_count": len(mass_cfg.get("recipes") or []),
         "mass_augment": mass_plan,
         "experiments_count": len(exp_ids),
         "time_estimate_seconds": cell_seconds,
         "time_estimate_human": time_human,
+        "primary_device": device if not skip_time_estimate else None,
     }
 
 
@@ -278,6 +386,7 @@ def main() -> int:
     exp_ids = resolve_experiment_ids(args.experiment_ids or config.get("experiment_ids") or "all")
 
     print(f"\n=== Preflight MASS AUG — {len(cells)} celdas ===")
+    print(f"{YELLOW}Usa ./run_mass_augment.sh preflight (no run_campaign.sh).{RESET}")
     if run_id:
         print(f"Run ID: {run_id} → {artifacts_root(run_id)}")
 
@@ -304,6 +413,13 @@ def main() -> int:
     if not args.skip_time_estimate:
         print_campaign_time_rollup(summary, config, run_id=run_id)
 
+    rollup = print_mass_augment_final_summary(
+        summary,
+        mass_cfg=mass_cfg,
+        run_id=run_id,
+        experiments_count=len(exp_ids),
+    )
+
     if not args.skip_validate and args.write_all:
         from validate_campaign import run_validation, print_report
 
@@ -322,9 +438,9 @@ def main() -> int:
     master = artifacts_root(run_id) / "preflight_mass_augment_summary.json"
     master.parent.mkdir(parents=True, exist_ok=True)
     with open(master, "w", encoding="utf-8") as f:
-        json.dump({"run_id": run_id, "cells": summary}, f, indent=2, ensure_ascii=False)
+        json.dump({"run_id": run_id, "rollup": rollup, "cells": summary}, f, indent=2, ensure_ascii=False)
         f.write("\n")
-    print(f"\nResumen: {master}")
+    print(f"JSON resumen: {master}")
     return 0
 
 

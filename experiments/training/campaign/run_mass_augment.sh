@@ -132,12 +132,12 @@ run_preflight() {
   echo "Log: ${logfile}"
 
   {
-    echo "--- validate ---"
-    "$PY" validate_campaign.py $(run_args) "${EXTRA_ARGS[@]}"
+    echo "--- validate (sin smoke estándar) ---"
+    "$PY" validate_campaign.py --skip-smoke $(run_args) "${EXTRA_ARGS[@]}"
     echo "--- preflight_mass_augment --write-all ---"
     "$PY" preflight_mass_augment.py --write-all $(run_args) "${EXTRA_ARGS[@]}"
-    echo "--- validate --require-plans ---"
-    "$PY" validate_campaign.py --require-plans $(run_args) "${EXTRA_ARGS[@]}"
+    echo "--- validate --require-plans (sin smoke) ---"
+    "$PY" validate_campaign.py --require-plans --skip-smoke $(run_args) "${EXTRA_ARGS[@]}"
   } 2>&1 | tee -a "$logfile"
 
   write_run_meta "preflight_done" >/dev/null

@@ -26,7 +26,7 @@
   ],
   "synthetic_eval": {
     "clips_per_category_pool": 40,
-    "variants_per_clip": 8,
+    "variants_per_clip": 15,
     "seed": 42,
     "non_robbery_categories": "all_except_robbery"
   },
