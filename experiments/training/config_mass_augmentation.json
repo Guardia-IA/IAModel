@@ -2,7 +2,7 @@
   "enabled": true,
   "include_identity": false,
   "use_all_recipes": true,
-  "variants_per_clip": 10,
+  "variants_per_clip": 15,
   "target_train_rows": 100000,
   "cap_at_target": false,
   "max_extra_variants_per_clip": 3,
@@ -43,5 +43,5 @@
     "seed": 42,
     "non_robbery_categories": "all_except_robbery"
   },
-  "_comment": "15 variantes fijas por clip en TRAIN (~clips×15 filas). cap_at_target=false no recorta aunque supere target_train_rows; si queda por debajo, reparte extras en categorías minoritarias hasta target."
+  "_comment": "TRAIN: 15 variantes = las 15 recetas fijas (1 por receta/clip). Con ~7k clips → ~105k filas (target 100k). cap_at_target=false no recorta; extras solo si la base queda por debajo del target (minoritarias + hard negatives 2/3/14). EVAL sintético usa synthetic_eval.variants_per_clip=8 (independiente)."
 }
