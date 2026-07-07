@@ -2,7 +2,7 @@
   "enabled": true,
   "include_identity": false,
   "use_all_recipes": true,
-  "variants_per_clip": 15,
+  "variants_per_clip": 10,
   "target_train_rows": 100000,
   "cap_at_target": false,
   "max_extra_variants_per_clip": 3,
