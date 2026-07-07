@@ -38,6 +38,7 @@ try:
         ensure_cell_dirs,
         resolve_experiment_ids,
         CONFIG_PATH,
+        experiment_ids_for_cell,
     )
     from preflight_campaign import _resolve_cell_settings, print_campaign_time_rollup
     from preflight_train_plan import (
@@ -164,7 +165,8 @@ def print_mass_augment_final_summary(
     experiments_count: int = 0,
 ) -> Dict[str, Any]:
     """Resumen final: clips reales, ops/clip, filas augmentadas y tiempo total."""
-    ok_rows = [r for r in summary if "error" not in r and r.get("train_rows_projected")]
+    ok_rows = [r for r in summary if "error" not in r]
+    failed_rows = [r for r in summary if "error" in r]
     variants_cfg = int(mass_cfg.get("variants_per_clip", 15))
     recipes_n = len(mass_cfg.get("recipes") or [])
 
@@ -172,12 +174,16 @@ def print_mass_augment_final_summary(
     total_rows = 0
     total_synthetic = 0
     total_seconds = 0.0
+    total_train_runs = 0
 
     for row in ok_rows:
         total_clips += int(row.get("train_clips_real") or 0)
-        total_rows += int(row.get("train_rows_projected") or 0)
-        total_synthetic += int(row.get("train_rows_synthetic") or row.get("train_rows_projected") or 0)
+        projected = int(row.get("train_rows_projected") or row.get("train_rows") or 0)
+        total_rows += projected
+        synth = int(row.get("train_rows_synthetic") or projected)
+        total_synthetic += synth
         total_seconds += float(row.get("time_estimate_seconds") or 0.0)
+        total_train_runs += int(row.get("experiments_count") or experiments_count or 0)
 
     total_human = fmt_duration(total_seconds)
     total_hours = round(total_seconds / 3600.0, 2)
@@ -186,24 +192,30 @@ def print_mass_augment_final_summary(
     syn_cfg = mass_cfg.get("synthetic_eval") or {}
     clips_x = int(syn_cfg.get("clips_per_category_pool", 40))
     variants_y = int(syn_cfg.get("variants_per_clip", 8))
-    avg_val = int(sum(int(r.get("val_clips") or 0) for r in ok_rows) / max(n_cells, 1))
 
-    eval_est = estimate_mass_augment_eval_seconds(
-        n_experiments=experiments_count,
-        n_cells=n_cells,
-        val_rows=avg_val,
-        clips_x=clips_x,
-        variants_y=variants_y,
-    )
-    eval_seconds = float(eval_est["seconds"])
-    eval_per_cell = float(eval_est["per_cell_seconds"])
+    eval_seconds = 0.0
+    for row in ok_rows:
+        cell_eval = estimate_mass_augment_eval_seconds(
+            n_experiments=int(row.get("experiments_count") or experiments_count or 0),
+            n_cells=1,
+            val_rows=int(row.get("val_clips") or 0),
+            clips_x=clips_x,
+            variants_y=variants_y,
+        )
+        eval_seconds += float(cell_eval["seconds"])
+    eval_per_cell = eval_seconds / max(n_cells, 1)
 
     storage = estimate_mass_augment_storage(
-        n_experiments=experiments_count,
+        n_experiments=max(int(r.get("experiments_count") or 0) for r in ok_rows) if ok_rows else experiments_count,
         n_cells=n_cells,
         train_rows_per_cell=int(total_rows / max(n_cells, 1)),
     )
 
+    eval_hours = round(eval_seconds / 3600.0, 2)
+    bin_rows = [r for r in ok_rows if r.get("task") == "binary"]
+    mc_rows = [r for r in ok_rows if r.get("task") == "multiclass"]
+    bin_exp = int(bin_rows[0].get("experiments_count") or 0) if bin_rows else 0
+    mc_exp = int(mc_rows[0].get("experiments_count") or 0) if mc_rows else 0
     pipeline_seconds = total_seconds + eval_seconds
     pipeline_human = fmt_duration(pipeline_seconds)
 
@@ -225,6 +237,12 @@ def print_mass_augment_final_summary(
                 print(f"  {YELLOW}[!] {row['cell_id']}: {iss}{RESET}")
 
     header("RESUMEN FINAL — augmentación masiva")
+    if failed_rows:
+        print(f"  {YELLOW}[!] {len(failed_rows)} celda(s) con error (no cuentan en totales):{RESET}")
+        for row in failed_rows:
+            print(f"      - {row.get('cell_id', '?')}: {row.get('error', '?')}")
+    if not ok_rows:
+        print(f"  {YELLOW}[!] Ninguna celda OK — revisa errores arriba o DATA_ROOT.{RESET}\n")
     print(f"  Recetas config: {CYAN}{recipes_n}{RESET} | variantes/clip: {CYAN}{variants_cfg}{RESET}")
     print(
         f"\n  {BOLD}{'Celda':<20} | {'Clips train':>11} | {'Ops/clip':>8} | "
@@ -234,12 +252,14 @@ def print_mass_augment_final_summary(
     for row in ok_rows:
         clips = int(row.get("train_clips_real") or 0)
         ops = int(row.get("variants_per_clip") or (row.get("mass_augment") or {}).get("variants_per_clip") or variants_cfg)
-        rows = int(row.get("train_rows_projected") or 0)
+        rows = int(row.get("train_rows_projected") or row.get("train_rows") or 0)
         synth = int(row.get("train_rows_synthetic") or rows)
         human = row.get("time_estimate_human") or fmt_duration(float(row.get("time_estimate_seconds") or 0))
         print(
             f"  {row['cell_id']:<20} | {clips:>11,} | {ops:>8} | {synth:>11,} | {rows:>11,} | {human:>12}"
         )
+        if rows <= 0:
+            print(f"  {YELLOW}    [!] {row['cell_id']}: filas proyectadas = 0{RESET}")
     print("  " + "-" * 74)
     print(
         f"  {BOLD}SUMA TOTAL:{RESET} {GREEN}{total_clips:,}{RESET} clips reales → "
@@ -258,7 +278,11 @@ def print_mass_augment_final_summary(
         f"  {BOLD}Disco estimado:{RESET} {CYAN}{storage['total_gb']} GB{RESET} "
         f"(recomendado libre ≥ {storage['recommended_free_gb']} GB)"
     )
-    print(f"  Experimentos/celda: {experiments_count} | entrenamientos totales: {experiments_count * n_cells}")
+    print(
+        f"  Experimentos: {len(bin_rows)} celdas bin × {bin_exp} | "
+        f"{len(mc_rows)} celdas mc × {mc_exp} | "
+        f"entrenamientos totales: {CYAN}{total_train_runs}{RESET}"
+    )
     if ok_rows:
         ds0 = int(ok_rows[0].get("total_dataset_clips") or 0)
         if ds0:
@@ -288,7 +312,7 @@ def print_mass_augment_final_summary(
     lines.extend(
         [
             f"TOTAL train: {total_clips:,} clips | {total_synthetic:,} filas augmentadas | {total_human} ({total_hours} h)",
-            f"Eval estimada total: {fmt_duration(eval_seconds)} ({eval_est['hours']} h)",
+            f"Eval estimada total: {fmt_duration(eval_seconds)} ({eval_hours} h)",
             f"Pipeline train+eval: {pipeline_human} ({round(pipeline_seconds / 3600.0, 2)} h)",
             f"Disco estimado: {storage['total_gb']} GB (libre recomendado {storage['recommended_free_gb']} GB)",
             "=" * 78,
@@ -307,13 +331,15 @@ def print_mass_augment_final_summary(
         "train_seconds": total_seconds,
         "train_human": total_human,
         "train_hours": total_hours,
+        "total_train_runs": total_train_runs,
         "eval_seconds_total": eval_seconds,
+        "eval_hours_total": eval_hours,
         "eval_human_total": fmt_duration(eval_seconds),
         "pipeline_seconds": pipeline_seconds,
         "pipeline_human": pipeline_human,
         "storage_estimate": storage,
-        "eval_estimate": eval_est,
         "per_cell": ok_rows,
+        "failed_cells": failed_rows,
     }
 
     if run_id:
@@ -373,7 +399,6 @@ def run_mass_preflight_cell(
         mass_plan["fp_hardened_variant_adjustment"] = True
     cat_cfg = mass_aug_to_category_config(mass_cfg, mass_plan)
     apply_mass_plan_to_training_plan(plan, mass_plan, cat_cfg)
-    split_verification = verify_mass_augment_split(plan)
 
     plan_path = training_plan_path(cell_id, run_id=run_id)
     mass_cfg_path = mass_augment_config_path(cell_id, run_id=run_id)
@@ -389,6 +414,7 @@ def run_mass_preflight_cell(
         "hard_negative_category_boost": mass_cfg.get("hard_negative_category_boost"),
         "deploy_targets": mass_cfg.get("deploy_targets"),
     }
+    split_verification = verify_mass_augment_split(plan)
     plan["proposed_category_augmentation"] = cat_cfg
     plan["category_augmentation_config"] = str(cat_cfg_path.resolve())
 
@@ -490,6 +516,10 @@ def main() -> int:
 
     data_root = Path(args.data_root).expanduser() if args.data_root else None
     run_id = str(args.run_id).strip() if args.run_id else None
+    if not run_id:
+        mass_ptr = CAMPAIGN_DIR / "artifacts" / "runs" / ".current_mass_run"
+        if mass_ptr.is_file():
+            run_id = mass_ptr.read_text(encoding="utf-8").strip() or None
     mass_cfg = load_mass_config(config, Path(args.mass_config) if args.mass_config else None)
     cli_exp_ids = resolve_experiment_ids(args.experiment_ids) if args.experiment_ids else None
 
@@ -498,12 +528,15 @@ def main() -> int:
     if run_id:
         print(f"Run ID: {run_id} → {artifacts_root(run_id)}")
 
-    from learning_curve_utils import experiment_ids_for_cell
-
     summary: List[Dict[str, Any]] = []
     max_experiments = 0
     for cell in cells:
-        cell_exp_ids = cli_exp_ids or experiment_ids_for_cell(cell, config)
+        try:
+            cell_exp_ids = cli_exp_ids or experiment_ids_for_cell(cell, config)
+        except Exception as exc:
+            print(f"  ERROR {cell['id']} (experiment_ids): {exc}", file=sys.stderr)
+            summary.append({"cell_id": cell["id"], "error": str(exc)})
+            continue
         max_experiments = max(max_experiments, len(cell_exp_ids))
         print(
             f"\n--- Celda: {cell['id']} ({cell['task']}, {cell['pose_source']}) "

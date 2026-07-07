@@ -263,7 +263,9 @@ def build_campaign_time_rollup(
     total_s = sum(float(r.get("time_estimate_seconds", 0.0)) for r in rows)
     n_cells = len(rows)
     n_exp = max(int(r.get("experiments_count", 0)) for r in rows)
-    total_runs = n_cells * n_exp
+    total_runs = sum(int(r.get("experiments_count", 0) or 0) for r in rows)
+    if total_runs <= 0:
+        total_runs = n_cells * n_exp
     device = "gpu"
     for r in rows:
         plan_path = Path(str(r.get("plan_path", "")))

@@ -143,6 +143,14 @@ run_preflight() {
   write_run_meta "preflight_done" >/dev/null
   echo ""
   echo "[OK] Preflight mass aug completado. Siguiente: ./run_mass_augment.sh train-bg"
+  if [[ -f "$(logs_dir)/preflight_mass_augment_summary.txt" ]]; then
+    echo ""
+    echo "--- Resumen (tail) ---"
+    tail -25 "$(logs_dir)/preflight_mass_augment_summary.txt"
+  else
+    echo ""
+    echo "Resumen en log: tail -80 ${logfile}"
+  fi
 }
 
 run_train_bg() {

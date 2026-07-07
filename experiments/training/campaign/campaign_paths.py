@@ -39,6 +39,8 @@ def load_merged_campaign_config(path: Optional[Path] = None) -> Dict[str, Any]:
             "target_recall_pct",
             "target_fp_rate_pct",
             "experiment_ids",
+            "binary_experiment_ids",
+            "multiclass_experiment_ids",
         ):
             cfg.setdefault(key, base.get(key))
     return cfg
@@ -169,6 +171,41 @@ def resolve_experiment_ids(spec: Any) -> List[int]:
             return list(range(1, len(EXPERIMENTS) + 1))
         return [int(x) for x in spec]
     raise ValueError(f"experiment_ids inválido: {spec!r} (usa lista de enteros o \"all\")")
+
+
+def _config_block(config: Dict[str, Any], key: str) -> Dict[str, Any]:
+    block = config.get(key)
+    return block if isinstance(block, dict) else {}
+
+
+def task_experiment_id_spec(cell: Dict[str, Any], config: Dict[str, Any]) -> Any:
+    """Spec de experiment_ids según task (binary/multiclass).
+
+    Prioridad: mass_augment → raíz del config → learning_curve → experiment_ids global.
+    """
+    task = str(cell.get("task") or "")
+    id_key = "binary_experiment_ids" if task == "binary" else "multiclass_experiment_ids"
+    sources = (
+        _config_block(config, "mass_augment"),
+        config,
+        _config_block(config, "learning_curve"),
+    )
+    for source in sources:
+        spec = source.get(id_key)
+        if spec is not None:
+            return spec
+    if task == "binary":
+        for source in sources:
+            legacy = source.get("experiment_ids")
+            if legacy is not None:
+                return legacy
+        return [6, 14]
+    return config.get("experiment_ids") or "all"
+
+
+def experiment_ids_for_cell(cell: Dict[str, Any], config: Dict[str, Any]) -> List[int]:
+    """Lista de exp_id (1-based) para entrenar/evaluar la celda."""
+    return resolve_experiment_ids(task_experiment_id_spec(cell, config))
 
 
 def master_reports_dir(run_id: Optional[str] = None) -> Path:
