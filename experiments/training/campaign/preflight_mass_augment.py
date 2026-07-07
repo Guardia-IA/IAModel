@@ -491,16 +491,24 @@ def main() -> int:
     data_root = Path(args.data_root).expanduser() if args.data_root else None
     run_id = str(args.run_id).strip() if args.run_id else None
     mass_cfg = load_mass_config(config, Path(args.mass_config) if args.mass_config else None)
-    exp_ids = resolve_experiment_ids(args.experiment_ids or config.get("experiment_ids") or "all")
+    cli_exp_ids = resolve_experiment_ids(args.experiment_ids) if args.experiment_ids else None
 
     print(f"\n=== Preflight MASS AUG — {len(cells)} celdas ===")
     print(f"{YELLOW}Usa ./run_mass_augment.sh preflight (no run_campaign.sh).{RESET}")
     if run_id:
         print(f"Run ID: {run_id} → {artifacts_root(run_id)}")
 
+    from learning_curve_utils import experiment_ids_for_cell
+
     summary: List[Dict[str, Any]] = []
+    max_experiments = 0
     for cell in cells:
-        print(f"\n--- Celda: {cell['id']} ({cell['task']}, {cell['pose_source']}) ---")
+        cell_exp_ids = cli_exp_ids or experiment_ids_for_cell(cell, config)
+        max_experiments = max(max_experiments, len(cell_exp_ids))
+        print(
+            f"\n--- Celda: {cell['id']} ({cell['task']}, {cell['pose_source']}) "
+            f"— {len(cell_exp_ids)} experimentos ---"
+        )
         try:
             summary.append(
                 run_mass_preflight_cell(
@@ -510,7 +518,7 @@ def main() -> int:
                     data_root=data_root,
                     write=args.write_all,
                     skip_time_estimate=args.skip_time_estimate,
-                    experiment_ids=exp_ids,
+                    experiment_ids=cell_exp_ids,
                     run_id=run_id,
                 )
             )
@@ -525,7 +533,7 @@ def main() -> int:
         summary,
         mass_cfg=mass_cfg,
         run_id=run_id,
-        experiments_count=len(exp_ids),
+        experiments_count=max_experiments,
     )
 
     if not args.skip_validate and args.write_all:

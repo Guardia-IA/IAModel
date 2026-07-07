@@ -6,7 +6,30 @@
   "interactions_per_day": 1000,
   "target_recall_pct": 60.0,
   "target_fp_rate_pct": 0.01,
-  "experiment_ids": "all",
+  "_experiment_ids_comment": "Curado desde learning curves bin_full_hardened (lc_results). Union binario+multiclase en experiment_ids; por celda usa binary_experiment_ids o multiclass_experiment_ids.",
+  "experiment_ids": [
+    1, 2, 4, 5, 6, 7, 8, 10, 11, 12, 13, 24, 25, 26, 27,
+    33, 34, 35, 36, 37, 40, 41, 42, 43, 44, 48, 49, 50, 51,
+    53, 54, 55, 56, 57
+  ],
+  "binary_experiment_ids": [
+    4, 5, 6, 7, 8,
+    10, 11, 12, 13,
+    25, 26,
+    33, 34, 35, 36, 37,
+    40, 41, 42, 43, 44,
+    48, 49, 50,
+    53, 54, 55, 56, 57
+  ],
+  "multiclass_experiment_ids": [
+    1, 2, 4, 5, 6, 7, 8,
+    10, 11, 12, 13,
+    24, 25, 26, 27,
+    33, 34, 35, 36, 37,
+    40, 41, 42, 43, 44,
+    48, 49, 50, 51,
+    53, 54, 55, 56, 57
+  ],
   "threshold_sweep": {
     "softmax_min": 0.5,
     "softmax_max": 0.98,
@@ -31,8 +54,24 @@
     "train_sizes": [3000, 6500, "max"],
     "keep_all_robbery": true,
     "eval_split": "val",
-    "binary_experiment_ids": "all",
-    "multiclass_experiment_ids": "all",
+    "binary_experiment_ids": [
+      4, 5, 6, 7, 8,
+      10, 11, 12, 13,
+      25, 26,
+      33, 34, 35, 36, 37,
+      40, 41, 42, 43, 44,
+      48, 49, 50,
+      53, 54, 55, 56, 57
+    ],
+    "multiclass_experiment_ids": [
+      1, 2, 4, 5, 6, 7, 8,
+      10, 11, 12, 13,
+      24, 25, 26, 27,
+      33, 34, 35, 36, 37,
+      40, 41, 42, 43, 44,
+      48, 49, 50, 51,
+      53, 54, 55, 56, 57
+    ],
     "ensemble": {
       "auto_from_eval": true
     }
@@ -45,6 +84,24 @@
       "bin_filtered",
       "bin_full_hardened",
       "bin_filtered_hardened"
+    ],
+    "binary_experiment_ids": [
+      4, 5, 6, 7, 8,
+      10, 11, 12, 13,
+      25, 26,
+      33, 34, 35, 36, 37,
+      40, 41, 42, 43, 44,
+      48, 49, 50,
+      53, 54, 55, 56, 57
+    ],
+    "multiclass_experiment_ids": [
+      1, 2, 4, 5, 6, 7, 8,
+      10, 11, 12, 13,
+      24, 25, 26, 27,
+      33, 34, 35, 36, 37,
+      40, 41, 42, 43, 44,
+      48, 49, 50, 51,
+      53, 54, 55, 56, 57
     ],
     "config_path": "config_mass_augmentation.json",
     "variants_per_clip": 15,

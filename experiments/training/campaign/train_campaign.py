@@ -100,7 +100,9 @@ def train_cell(
     if exp_ids is not None:
         exp_list = resolve_experiment_ids(exp_ids)
     else:
-        exp_list = resolve_experiment_ids(config.get("experiment_ids"))
+        from learning_curve_utils import experiment_ids_for_cell
+
+        exp_list = experiment_ids_for_cell(cell, config)
     train_opts = _train_opts_for_cell(cell, config, plan)
 
     hn_manifest: Optional[Path] = None
@@ -270,7 +272,8 @@ def main() -> int:
         return 1
 
     for cell in cells:
-        train_cell(cell, config, resume=args.resume, exp_ids=args.exp_ids, run_id=run_id)
+        cell_exp_ids = args.exp_ids or None
+        train_cell(cell, config, resume=args.resume, exp_ids=cell_exp_ids, run_id=run_id)
     return 0
 
 

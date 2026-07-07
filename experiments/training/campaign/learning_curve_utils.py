@@ -261,21 +261,35 @@ def resolve_learning_curve_cell(
     return str(cells[0]["id"])
 
 
+def _task_experiment_id_spec(cell: Dict[str, Any], config: Dict[str, Any]) -> Any:
+    """Resuelve spec de experiment_ids según task (binary/multiclass).
+
+    Prioridad: mass_augment → raíz del config → learning_curve → experiment_ids global.
+    """
+    task = str(cell.get("task") or "")
+    key = "binary_experiment_ids" if task == "binary" else "multiclass_experiment_ids"
+    sources = (
+        config.get("mass_augment") or {},
+        config,
+        learning_curve_config(config),
+    )
+    for source in sources:
+        spec = source.get(key)
+        if spec is not None:
+            return spec
+    if task == "binary":
+        for source in sources:
+            legacy = source.get("experiment_ids")
+            if legacy is not None:
+                return legacy
+        return [6, 14]
+    return config.get("experiment_ids") or "all"
+
+
 def experiment_ids_for_cell(cell: Dict[str, Any], config: Dict[str, Any]) -> List[int]:
     from campaign_paths import resolve_experiment_ids
 
-    lc = learning_curve_config(config)
-    if str(cell.get("task")) == "binary":
-        spec = lc.get("binary_experiment_ids")
-        if spec is None:
-            spec = lc.get("experiment_ids") or config.get("experiment_ids")
-        if spec is not None:
-            return resolve_experiment_ids(spec)
-        return [6, 14]
-    spec = lc.get("multiclass_experiment_ids")
-    if spec is None:
-        spec = config.get("experiment_ids")
-    return resolve_experiment_ids(spec)
+    return resolve_experiment_ids(_task_experiment_id_spec(cell, config))
 
 
 def load_learning_curve_cell_ids(
