@@ -30,10 +30,11 @@ try:
         training_plan_path,
         master_reports_dir,
         CONFIG_PATH,
+        resolve_mass_cells,
     )
     from evaluate_campaign import evaluate_cell
     from evaluate_validation import load_split_uids, build_split_examples
-    from preflight_mass_augment import resolve_mass_cells, load_mass_config
+    from preflight_mass_augment import load_mass_config
     from mass_augment import (
         load_mass_augment_config,
         run_synthetic_battery_for_model,

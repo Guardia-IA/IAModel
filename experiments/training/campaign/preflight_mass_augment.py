@@ -39,6 +39,7 @@ try:
         resolve_experiment_ids,
         CONFIG_PATH,
         experiment_ids_for_cell,
+        resolve_mass_cells,
     )
     from preflight_campaign import _resolve_cell_settings, print_campaign_time_rollup
     from preflight_train_plan import (
@@ -67,23 +68,6 @@ try:
     )
 except ImportError as exc:
     raise SystemExit(f"Import error: {exc}") from exc
-
-
-DEFAULT_MASS_CELLS = (
-    "mc_full",
-    "mc_filtered",
-    "bin_full",
-    "bin_filtered",
-    "bin_full_hardened",
-    "bin_filtered_hardened",
-)
-
-
-def resolve_mass_cells(config: Dict[str, Any], cell_ids: Optional[List[str]]) -> List[Dict[str, Any]]:
-    ma = config.get("mass_augment") or {}
-    default_ids = ma.get("cells") or list(DEFAULT_MASS_CELLS)
-    ids = cell_ids or default_ids
-    return filter_cells(config, list(ids))
 
 
 def load_mass_config(config: Dict[str, Any], override: Optional[Path] = None) -> Dict[str, Any]:

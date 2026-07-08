@@ -99,10 +99,30 @@ run_args() {
   echo --run-id "$RUN_ID"
 }
 
-extra_py_args() {
-  if ((${#EXTRA_ARGS[@]})); then
-    printf '%s' "${EXTRA_ARGS[*]}"
+mass_cells_py() {
+  "$PY" - <<'PY'
+from campaign_paths import load_campaign_config, resolve_mass_cells
+cells = resolve_mass_cells(load_campaign_config(), None)
+print(" ".join(c["id"] for c in cells))
+PY
+}
+
+mass_cells_args() {
+  local has_cells=0
+  local a
+  for a in "${EXTRA_ARGS[@]}"; do
+    if [[ "$a" == "--cells" ]]; then
+      has_cells=1
+      break
+    fi
+  done
+  if [[ $has_cells -eq 1 ]]; then
+    return 0
   fi
+  local ids
+  ids="$(mass_cells_py)"
+  # shellcheck disable=SC2206
+  EXTRA_ARGS=(--cells ${ids} "${EXTRA_ARGS[@]}")
 }
 
 log_banner() {
@@ -119,6 +139,7 @@ log_banner() {
 
 run_preflight() {
   ensure_run_id
+  mass_cells_args
   mkdir -p "$(run_root)/logs"
   echo "$RUN_ID" > "$CURRENT_RUN_FILE"
   write_run_meta "preflight_start" >/dev/null
@@ -155,6 +176,7 @@ run_preflight() {
 
 run_train_bg() {
   ensure_run_id
+  mass_cells_args
   local logfile pidfile
   logfile="$(logs_dir)/train.log"
   pidfile="$(logs_dir)/train.pid"
@@ -176,7 +198,7 @@ run_train_bg() {
 set -euo pipefail
 cd "${SCRIPT_DIR}"
 ${PY} validate_campaign.py --require-plans --run-id "${RUN_ID}" ${extra}
-${PY} train_campaign.py --all --resume --run-id "${RUN_ID}" ${extra}
+${PY} train_campaign.py --mass-all --resume --run-id "${RUN_ID}" ${extra}
 SCRIPT
 
   echo $! > "$pidfile"
@@ -186,6 +208,7 @@ SCRIPT
 
 run_eval_bg() {
   ensure_run_id
+  mass_cells_args
   local logfile pidfile train_pidfile
   logfile="$(logs_dir)/eval.log"
   pidfile="$(logs_dir)/eval.pid"
@@ -220,6 +243,7 @@ SCRIPT
 }
 
 run_all_bg() {
+  mass_cells_args
   RUN_ID="$("$PY" -c "from campaign_paths import new_run_id; print(new_run_id('mass'))")"
   echo "$RUN_ID" > "$CURRENT_RUN_FILE"
   mkdir -p "$(run_root)/logs"
@@ -274,6 +298,7 @@ case "$CMD" in
     ;;
   check-ready)
     ensure_run_id
+    mass_cells_args
     exec "$PY" validate_campaign.py --require-plans $(run_args) "${EXTRA_ARGS[@]}"
     ;;
   preflight)

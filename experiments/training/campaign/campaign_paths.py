@@ -142,6 +142,24 @@ def class_map_path(map_id: str) -> Path:
     return p
 
 
+DEFAULT_MASS_CELLS = (
+    "mc_full",
+    "mc_filtered",
+    "bin_full",
+    "bin_filtered",
+    "bin_full_hardened",
+    "bin_filtered_hardened",
+)
+
+
+def resolve_mass_cells(config: Dict[str, Any], cell_ids: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+    """Celdas del pipeline mass_augment (preflight_mass_augment / evaluate_mass_augment)."""
+    ma = config.get("mass_augment") or {}
+    default_ids = ma.get("cells") or list(DEFAULT_MASS_CELLS)
+    ids = cell_ids or default_ids
+    return filter_cells(config, list(ids))
+
+
 def filter_cells(
     config: Dict[str, Any],
     cell_ids: Optional[List[str]] = None,

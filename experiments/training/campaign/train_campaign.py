@@ -208,6 +208,11 @@ def main() -> int:
     ap.add_argument("--config", type=str, default=None)
     ap.add_argument("--cells", nargs="*", default=None)
     ap.add_argument("--all", action="store_true", help="Todas las celdas del config")
+    ap.add_argument(
+        "--mass-all",
+        action="store_true",
+        help="Celdas de mass_augment.cells (pipeline run_mass_augment.sh; no mc_*_merge)",
+    )
     ap.add_argument("--resume", action="store_true", help="Omite modelos ya entrenados")
     ap.add_argument("--exp-ids", type=int, nargs="*", default=None, help="Override experiment_ids")
     ap.add_argument(
@@ -262,13 +267,20 @@ def main() -> int:
         return 0
 
     run_id = str(args.run_id).strip() if args.run_id else None
-    if args.all or not args.cells:
+    if args.mass_all:
+        from campaign_paths import resolve_mass_cells
+
+        cells = resolve_mass_cells(config, args.cells)
+    elif args.cells:
+        cells = filter_cells(config, args.cells)
+    elif args.all:
         cells = filter_cells(config, None)
     else:
-        cells = filter_cells(config, args.cells)
+        print("Indica --all, --mass-all o --cells id1 id2 ...", file=sys.stderr)
+        return 1
 
     if not cells:
-        print("Indica --all o --cells id1 id2 ...", file=sys.stderr)
+        print("Indica --all, --mass-all o --cells id1 id2 ...", file=sys.stderr)
         return 1
 
     for cell in cells:
