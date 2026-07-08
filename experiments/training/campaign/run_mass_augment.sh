@@ -125,6 +125,12 @@ mass_cells_args() {
   EXTRA_ARGS=(--cells ${ids} "${EXTRA_ARGS[@]}")
 }
 
+extra_py_args() {
+  if ((${#EXTRA_ARGS[@]})); then
+    printf '%s' "${EXTRA_ARGS[*]}"
+  fi
+}
+
 log_banner() {
   local logfile="$1"
   local title="$2"
