@@ -204,6 +204,11 @@ def run_ensemble_export(
     )
     if not examples:
         raise RuntimeError(f"No hay ejemplos en split {split!r}")
+    print(
+        f"  Export ensemble: {[p.name for p in model_paths]} | rule={ens_rule} @ {ens_thr} | "
+        f"{split} clips={len(examples)}",
+        flush=True,
+    )
 
     prob_rows: List[np.ndarray] = []
     base_records: Optional[List[Dict[str, Any]]] = None
@@ -211,6 +216,7 @@ def run_ensemble_export(
     model_labels: List[str] = []
 
     for mp in model_paths:
+        print(f"  → Inferencia {mp.name} ({len(examples)} clips)...", flush=True)
         recs, yt, probs, _margins = collect_binary_predictions(
             mp,
             examples,
@@ -225,6 +231,7 @@ def run_ensemble_export(
             y_true = yt
         elif len(recs) != len(base_records):
             raise RuntimeError(f"Desalineación de predicciones: {mp.name}")
+        print(f"  ✓ {mp.name} listo", flush=True)
 
     assert base_records is not None and y_true is not None
     prob_matrix = np.stack(prob_rows, axis=0)

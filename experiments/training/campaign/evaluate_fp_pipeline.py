@@ -280,8 +280,9 @@ def run_fp_pipeline_eval(
                 "Ejecuta sin --skip-model-eval o corre ./run_fp_pipeline.sh eval"
             )
 
-    print(f"\n=== Export ensemble etapa 1 (split completo) ===")
-    ensemble_export = run_ensemble_export(
+    print(f"\n=== Export ensemble etapa 1 (split completo) ===", flush=True)
+    try:
+        ensemble_export = run_ensemble_export(
         cell_id=stage1_cell,
         model_names=model_names,
         split=split,
@@ -289,9 +290,12 @@ def run_fp_pipeline_eval(
         threshold=ensemble_threshold,
         outcomes="all",
         run_id=run_id,
-    )
+        )
+    except Exception as exc:
+        print(f"ERROR en export ensemble etapa 1: {exc}", file=sys.stderr, flush=True)
+        raise
 
-    print(f"\n=== Merge verificador etapa 2 ===")
+    print(f"\n=== Merge verificador etapa 2 ===", flush=True)
     merge_result = merge_verifier_csv(
         ensemble_export["csv_path"],
         run_id=run_id,
