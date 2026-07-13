@@ -46,37 +46,90 @@ def _write_csv(path: Path, rows: List[Dict[str, Any]], fieldnames: List[str]) ->
 
 
 def _pick_verifier_model(models_dir: Path) -> Path:
-    best = models_dir / "modelo_36.pt"
-    if best.is_file():
-        return best
     paths = sorted(models_dir.glob("modelo_*.pt"))
     if not paths:
         raise FileNotFoundError(f"No hay modelos en {models_dir}")
     return paths[0]
 
 
-def main() -> int:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--ensemble-csv", type=Path, required=True)
-    ap.add_argument("--run-id", required=True)
-    ap.add_argument("--split", choices=["val", "test"], default="val")
-    ap.add_argument("--verifier-cell", default="bin_verifier_234")
-    ap.add_argument("--model", type=Path, default=None, help="Checkpoint verificador (default: modelo_36 si existe)")
-    ap.add_argument("--out", type=Path, default=None)
-    args = ap.parse_args()
+def _normalize_model_filename(name: str) -> str:
+    name = str(name).strip()
+    if name.isdigit():
+        return f"modelo_{int(name):02d}.pt"
+    if not name.endswith(".pt"):
+        return f"{name}.pt" if name.startswith("modelo_") else f"modelo_{name}.pt"
+    return name
 
-    config = load_merged_campaign_config(path=CAMPAIGN_DIR / "campaign_config_fp_pipeline.json")
-    cells = filter_cells(config, [args.verifier_cell])
+
+def resolve_verifier_model_path(
+    *,
+    run_id: str,
+    verifier_cell: str,
+    split: str,
+    explicit: Optional[Path] = None,
+    config_path: Optional[Path] = None,
+) -> Path:
+    if explicit is not None:
+        if not explicit.is_file():
+            raise FileNotFoundError(f"No existe checkpoint verificador: {explicit}")
+        return explicit.resolve()
+
+    v_arts = ensure_cell_dirs(verifier_cell, run_id=run_id)
+    models_dir = v_arts["models_dir"]
+    reports_dir = v_arts["reports_dir"]
+
+    from evaluate_campaign import load_best_ensemble_spec
+
+    spec = load_best_ensemble_spec(reports_dir, split)
+    if spec and spec.get("models"):
+        for raw in spec["models"]:
+            candidate = models_dir / _normalize_model_filename(str(raw))
+            if candidate.is_file():
+                return candidate.resolve()
+
+    per_model_path = reports_dir / f"{split}_per_model_best.json"
+    if per_model_path.is_file():
+        with open(per_model_path, encoding="utf-8") as f:
+            per_model = json.load(f)
+        if per_model:
+            best = max(per_model, key=lambda row: float(row.get("f1_pct") or 0))
+            label = best.get("model") or best.get("label")
+            if label:
+                candidate = models_dir / _normalize_model_filename(str(label))
+                if candidate.is_file():
+                    return candidate.resolve()
+
+    return _pick_verifier_model(models_dir).resolve()
+
+
+def merge_verifier_csv(
+    ensemble_csv: Path,
+    *,
+    run_id: str,
+    split: str = "val",
+    verifier_cell: str = "bin_verifier_234",
+    model: Optional[Path] = None,
+    out: Optional[Path] = None,
+    config_path: Optional[Path] = None,
+) -> Dict[str, Any]:
+    cfg_path = config_path or (CAMPAIGN_DIR / "campaign_config_fp_pipeline.json")
+    config = load_merged_campaign_config(path=cfg_path)
+    cells = filter_cells(config, [verifier_cell])
     if not cells:
-        raise SystemExit(f"Celda verificador no encontrada: {args.verifier_cell}")
+        raise ValueError(f"Celda verificador no encontrada: {verifier_cell}")
     cell = cells[0]
 
-    v_arts = ensure_cell_dirs(args.verifier_cell, run_id=args.run_id)
-    model_path = args.model or _pick_verifier_model(v_arts["models_dir"])
-    plan_path = training_plan_path(args.verifier_cell, run_id=args.run_id)
+    model_path = resolve_verifier_model_path(
+        run_id=run_id,
+        verifier_cell=verifier_cell,
+        split=split,
+        explicit=model,
+        config_path=cfg_path,
+    )
+    plan_path = training_plan_path(verifier_cell, run_id=run_id)
 
-    split_uids, split_meta = load_split_uids(split_name=args.split, training_plan_path=plan_path)
-    split_meta["split_name"] = args.split
+    split_uids, split_meta = load_split_uids(split_name=split, training_plan_path=plan_path)
+    split_meta["split_name"] = split
     examples, _ = build_split_examples(
         split_uids=split_uids,
         split_meta=split_meta,
@@ -91,33 +144,49 @@ def main() -> int:
         model_path,
         examples,
         training_plan_path=plan_path,
-        split_name=args.split,
+        split_name=split,
     )
-    # En verificador: positivo=confusable (cats 2/3/14 mapeadas a binario 0, robo=1)
-    # Queremos P(confusable): en binario verificador, clase 0 = no-robo del verificador = confusable
-    # Wait - binary task: robbery_class=6 is positive (1), confusables are negative (0)
-    # So prob_pos = P(robbery) in verifier = NOT what we want
-    # We want P(confusable) = P(class 0) = 1 - prob_pos IF verifier is trained robo=1 vs confusable=0
-    # Actually verifier: positive=robbery (6), negative=confusable (2,3,14)
-    # P(confusable) = 1 - prob_pos (probability of NOT robbery in verifier space = looks like confusable)
-
+    # Verificador binario: positivo=robo (6), negativo=confusable (2/3/14) → P(confusable)=1-P(robo)
     uid_to_p_conf: Dict[str, float] = {}
     for rec, p in zip(records, probs):
         uid_to_p_conf[str(rec["uid"])] = float(1.0 - p)
 
-    rows_in = _read_csv(args.ensemble_csv)
+    rows_in = _read_csv(ensemble_csv)
     out_rows: List[Dict[str, Any]] = []
     for row in rows_in:
         uid = row.get("uid") or row.get("pose_path") or ""
         p_conf = uid_to_p_conf.get(uid, uid_to_p_conf.get(row.get("uid_absolute", ""), 0.0))
         out_rows.append({**row, "p_verifier": round(p_conf, 6)})
 
-    out_path = args.out or args.ensemble_csv.with_name(
-        args.ensemble_csv.stem + "_with_verifier.csv"
-    )
+    out_path = out or ensemble_csv.with_name(ensemble_csv.stem + "_with_verifier.csv")
     fields = list(out_rows[0].keys()) if out_rows else ["uid", "p_verifier"]
     _write_csv(out_path, out_rows, fields)
-    print(json.dumps({"out": str(out_path), "verifier_model": str(model_path), "rows": len(out_rows)}, indent=2))
+    return {
+        "out": out_path,
+        "verifier_model": model_path,
+        "rows": len(out_rows),
+    }
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--ensemble-csv", type=Path, required=True)
+    ap.add_argument("--run-id", required=True)
+    ap.add_argument("--split", choices=["val", "test"], default="val")
+    ap.add_argument("--verifier-cell", default="bin_verifier_234")
+    ap.add_argument("--model", type=Path, default=None, help="Checkpoint verificador (default: mejor del eval)")
+    ap.add_argument("--out", type=Path, default=None)
+    args = ap.parse_args()
+
+    result = merge_verifier_csv(
+        args.ensemble_csv,
+        run_id=args.run_id,
+        split=args.split,
+        verifier_cell=args.verifier_cell,
+        model=args.model,
+        out=args.out,
+    )
+    print(json.dumps({k: str(v) if isinstance(v, Path) else v for k, v in result.items()}, indent=2))
     return 0
 
 

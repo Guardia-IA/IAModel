@@ -134,7 +134,7 @@ PERSON_COLORS = [
 
 def draw_upper_skeleton(draw, points_xy, confs, w: int, h: int, color_line=(0, 255, 0), color_pt=(0, 255, 100)):
     """Dibuja solo la parte superior del esqueleto. points_xy (8,2) en píxeles."""
-    if points_xy is None or len(points_x= 0:
+    if points_xy is None or len(points_xy) == 0:
         return
     pts = np.asarray(points_xy, dtype=float)
     if confs is None:

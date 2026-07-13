@@ -38,6 +38,14 @@ case "$CMD" in
   eval)
     exec "$PY" evaluate_campaign.py --all --export-fp-videos "${run_args[@]}" "$@"
     ;;
+  eval-pipeline)
+    # Eval modelos + ensemble + verificador + heurísticas → F1/FN finales
+    extra=(--run-id "$RUN_ID" --split "$SPLIT" --stage1-cell "$STAGE1_CELL" --verifier-cell "$VERIFIER_CELL")
+    if [[ "${SKIP_MODEL_EVAL:-}" == "1" ]]; then
+      extra+=(--skip-model-eval)
+    fi
+    exec "$PY" evaluate_fp_pipeline.py "${extra[@]}" "$@"
+    ;;
   export-stage1)
     # Mejor ensemble etapa 1 (ajusta modelos/umbral tras eval)
     exec "$PY" export_ensemble_fp.py --run-id "$RUN_ID" --cell "$STAGE1_CELL" --split "$SPLIT" \
@@ -68,12 +76,7 @@ case "$CMD" in
   all)
     "$0" preflight
     "$0" train
-    "$0" eval
-    echo ""
-    echo "=== Siguiente (manual tras revisar best_ensemble.json) ==="
-    echo "  RUN_ID=$RUN_ID $0 export-stage1 --models modelo_XX modelo_YY --rule mean --threshold 0.68"
-    echo "  RUN_ID=$RUN_ID $0 merge-verifier $(run_root)/reports/${STAGE1_CELL}/${SPLIT}_ensemble_fp_....csv"
-    echo "  RUN_ID=$RUN_ID $0 pipeline-sweep ..._with_verifier.csv --rule and"
+    "$0" eval-pipeline
     ;;
   all-bg|nohup)
     TS="$(date +%Y%m%d_%H%M%S)"
@@ -96,12 +99,13 @@ Variables:
 Comandos:
   preflight          Planes train (2 celdas, sin mass augment)
   train              Entrena bin_filtered_hardened + bin_verifier_234
-  eval               Eval + ensemble grid + FP manifests
+  eval               Solo modelos + ensemble grid (sin heurísticas)
+  eval-pipeline      Eval completa: modelos + ensemble + verificador + H1–H12
   export-stage1      CSV ensemble etapa 1 (pasar --models --rule --threshold)
   merge-verifier     Añade p_verifier al CSV
   heuristics-batch   Features H1–H12 en todo el split
   pipeline-sweep     Barrido etapa1+2+heurísticas+temporal
-  all                preflight → train → eval (+ instrucciones post-eval)
+  all                preflight → train → eval-pipeline
   all-bg             Igual en background
 
 Ejemplo completo:
@@ -109,10 +113,15 @@ Ejemplo completo:
   export HN_CSV=/ruta/val_ensemble_fp_mean_modelo_36+modelo_40_t0.68.csv
   ./run_fp_pipeline.sh preflight
   ./run_fp_pipeline.sh train
-  ./run_fp_pipeline.sh eval
-  ./run_fp_pipeline.sh export-stage1 --models modelo_36 modelo_40 --rule mean --threshold 0.68
+  ./run_fp_pipeline.sh eval-pipeline
+
+  # Si ya corriste eval (solo modelos), reutilízalo:
+  SKIP_MODEL_EVAL=1 ./run_fp_pipeline.sh eval-pipeline
+
+  # Pasos manuales (equivalente a eval-pipeline):
+  ./run_fp_pipeline.sh export-stage1 --models modelo_36 modelo_40 --rule mean --threshold 0.68 --outcomes all
   ./run_fp_pipeline.sh merge-verifier artifacts/runs/\$RUN_ID/reports/bin_filtered_hardened/val_ensemble_fp_mean_modelo_36+modelo_40_t0.68.csv
-  ./run_fp_pipeline.sh pipeline-sweep artifacts/runs/\$RUN_ID/reports/bin_filtered_hardened/val_ensemble_fp_mean_modelo_36+modelo_40_t0.68_with_verifier.csv --rule and
+  ./run_fp_pipeline.sh pipeline-sweep artifacts/runs/\$RUN_ID/reports/bin_filtered_hardened/val_ensemble_fp_mean_modelo_36+modelo_40_t0.68_with_verifier.csv --rule mean
 EOF
     ;;
 esac
