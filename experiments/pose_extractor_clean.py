@@ -605,6 +605,395 @@ def get_color_attributes(frame, bbox):
         return f"RGB({int(c[2])},{int(c[1])},{int(c[0])})"
     return avg_col(top), avg_col(bottom)
 
+
+def _resolve_track_model(yolo_pose_model: str | None = None):
+    """Modelo YOLO pose para tracking (override opcional)."""
+    override = (yolo_pose_model or "").strip()
+    if override:
+        yolo_path = _resolve_model_path(override)
+        return YOLO(yolo_path), yolo_path
+    return model, str(_MODEL_RESOLVED)
+
+
+def _read_clip_timing(clip_path: str) -> tuple[float, float, int]:
+    """Devuelve (fps, clip_duration_seconds, video_frame_count)."""
+    cap = cv2.VideoCapture(clip_path)
+    try:
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        video_frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    finally:
+        cap.release()
+    if fps is None or fps <= 0:
+        fps = DEFAULT_FPS
+    clip_duration = video_frame_count / fps if fps > 0 and video_frame_count > 0 else 0.0
+    return float(fps), clip_duration, video_frame_count
+
+
+def _track_poses_on_clip(
+    clip_path: str,
+    track_model,
+    *,
+    clip_duration: float | None = None,
+) -> tuple[dict, float, int, int, int]:
+    """
+    Ejecuta YOLO track sobre un clip ya recortado.
+    Devuelve temp_person_data, fps, min_valid_frames, processed_frame_count, video_frame_count.
+    """
+    results = track_model.track(
+        source=clip_path,
+        tracker=_tracker_yaml_path(),
+        persist=True,
+        verbose=False,
+        stream=True,
+        device=DEVICE,
+        half=True,
+    )
+    temp_person_data: dict = {}
+    fps, duration_from_file, video_frame_count = _read_clip_timing(clip_path)
+    if clip_duration is None or clip_duration <= 0:
+        clip_duration = duration_from_file
+
+    min_valid_seconds = clip_duration * MIN_COVERAGE_RATIO
+    min_valid_frames = int(min_valid_seconds * fps) if clip_duration > 0 else 0
+
+    for r in results:
+        frame = getattr(r, "orig_img", None)
+        if frame is None or r.keypoints is None or r.boxes.id is None:
+            for tid in list(temp_person_data.keys()):
+                temp_person_data[tid]["poses_full"].append(NAN_POSE.copy())
+                temp_person_data[tid]["keypoint_masks"].append(EMPTY_KP_MASK.copy())
+                temp_person_data[tid]["total"] += 1
+            continue
+
+        boxes_gpu = r.boxes.xyxy
+        ids_gpu = r.boxes.id.int()
+        kpts_gpu = r.keypoints.xyn
+        confs_gpu = r.keypoints.conf
+        ids = ids_gpu.cpu().tolist()
+        kpts = kpts_gpu.cpu().numpy()
+        confs = confs_gpu.cpu().numpy()
+        boxes = boxes_gpu.cpu().numpy()
+
+        for tid in list(temp_person_data.keys()):
+            if tid not in ids:
+                temp_person_data[tid]["poses_full"].append(NAN_POSE.copy())
+                temp_person_data[tid]["keypoint_masks"].append(EMPTY_KP_MASK.copy())
+                temp_person_data[tid]["total"] += 1
+        for i, track_id in enumerate(ids):
+            if track_id not in temp_person_data:
+                c_t, c_b = get_color_attributes(frame, boxes[i])
+                temp_person_data[track_id] = {
+                    "poses_full": [],
+                    "poses": [],
+                    "keypoint_masks": [],
+                    "v_cnt": 0,
+                    "total": 0,
+                    "body_visible_cnt": 0,
+                    "clothes": {"top": c_t, "bottom": c_b},
+                    "kp_conf_sum": 0.0,
+                    "occluded_frames": 0,
+                    "bbox_ratios": [],
+                }
+            conf_kp = confs[i][KEEP_KPS]
+            kpt_pose = _build_masked_pose(kpts[i], confs[i])
+            body_visible = int(_frame_body_visible(kpt_pose))
+            temp_person_data[track_id]["body_visible_cnt"] += body_visible
+            usable = _frame_usable(kpt_pose)
+            temp_person_data[track_id]["poses_full"].append(kpt_pose)
+            temp_person_data[track_id]["keypoint_masks"].append(_keypoint_mask_from_pose(kpt_pose))
+            if usable:
+                temp_person_data[track_id]["poses"].append(kpt_pose)
+                temp_person_data[track_id]["v_cnt"] += 1
+            temp_person_data[track_id]["total"] += 1
+            visible_confs = conf_kp[conf_kp > MIN_KP_CONF]
+            temp_person_data[track_id]["kp_conf_sum"] += (
+                float(np.mean(visible_confs)) if visible_confs.size else 0.0
+            )
+            if any(confs[i][idx] < OCCLUSION_CONF_THR for idx in CRITICAL_KPS):
+                temp_person_data[track_id]["occluded_frames"] += 1
+            h_bbox = boxes[i][3] - boxes[i][1]
+            w_bbox = max(boxes[i][2] - boxes[i][0], 1e-6)
+            temp_person_data[track_id]["bbox_ratios"].append(float(h_bbox / w_bbox))
+
+    processed_frame_count = max((info["total"] for info in temp_person_data.values()), default=0)
+    return temp_person_data, fps, min_valid_frames, processed_frame_count, video_frame_count
+
+
+def _save_clip_pose_artifacts(
+    *,
+    data_dir: Path,
+    clip_name: str,
+    category: str,
+    clip_path: str,
+    temp_person_data: dict,
+    fps: float,
+    min_valid_frames: int,
+    processed_frame_count: int,
+    video_frame_count: int,
+    clip_duration: float,
+    yolo_meta_path: str,
+    meta_fields: dict,
+    old_users_meta: list | None = None,
+    copy_clip: bool = True,
+) -> list[dict]:
+    """Guarda user_X/, meta.json y opcionalmente clip.mp4. Devuelve users_meta."""
+    data_dir.mkdir(parents=True, exist_ok=True)
+    old_by_tid: dict[int, dict] = {}
+    if old_users_meta:
+        for u in old_users_meta:
+            try:
+                old_by_tid[int(u["track_id"])] = u
+            except (KeyError, TypeError, ValueError):
+                continue
+
+    users_meta: list[dict] = []
+    for tid, info in temp_person_data.items():
+        total_frames = info["total"]
+        valid_frames = info["v_cnt"]
+        if total_frames == 0:
+            continue
+
+        user_seconds = total_frames / fps if fps > 0 else 0.0
+        if MIN_USER_SECONDS > 0 and user_seconds < MIN_USER_SECONDS:
+            print(
+                f"[DESCARTADO usuario] Clip '{clip_name}' user_{tid} | "
+                f"duración={user_seconds:.2f}s < {MIN_USER_SECONDS}s"
+            )
+            continue
+
+        body_vis = info.get("body_visible_cnt", 0)
+        if body_vis < BODY_VISIBLE_MIN_FRAMES or (body_vis / total_frames) < BODY_VISIBLE_MIN_RATIO:
+            print(
+                f"[DESCARTADO usuario] Clip '{clip_name}' user_{tid} | "
+                f"solo mano/cabeza/visibilidad insuficiente (body_visible={body_vis}/{total_frames})"
+            )
+            continue
+
+        rel = valid_frames / total_frames
+        valid_pct = round(rel * 100, 1)
+        passes_filters = rel >= RELIABILITY_THR and valid_frames >= min_valid_frames
+        kp_conf_avg = info["kp_conf_sum"] / total_frames if total_frames > 0 else 0.0
+        occlusion_ratio = round(info["occluded_frames"] / total_frames * 100, 1) if total_frames > 0 else 0.0
+        bbox_aspect_ratio = round(float(np.mean(info["bbox_ratios"])), 3) if info["bbox_ratios"] else 0.0
+        poses_full_arr = np.array(info["poses_full"])
+        if len(poses_full_arr) > 1:
+            d = np.diff(poses_full_arr, axis=0)
+            velocity_mag = np.sqrt((d ** 2).sum(axis=-1))
+            subject_velocity = round(float(np.mean(velocity_mag)), 5)
+        else:
+            subject_velocity = 0.0
+
+        prev = old_by_tid.get(int(tid), {})
+        user_meta = {
+            "track_id": int(tid),
+            "valid_pct": valid_pct,
+            "rel": round(rel, 2),
+            "valid_frames": int(valid_frames),
+            "total_frames": int(total_frames),
+            "poses_full_count": len(info["poses_full"]),
+            "poses_filtered_count": len(info["poses"]),
+            "passes_filters": passes_filters,
+            "keypoint_confidence_avg": round(kp_conf_avg, 3),
+            "occlusion_ratio": occlusion_ratio,
+            "bbox_aspect_ratio": bbox_aspect_ratio,
+            "subject_velocity": subject_velocity,
+            "clothes": info["clothes"],
+            "user_cat": int(prev.get("user_cat", category)),
+        }
+        if "is_primary_robber" in prev:
+            user_meta["is_primary_robber"] = prev["is_primary_robber"]
+        users_meta.append(user_meta)
+
+        user_dir = data_dir / f"user_{tid}"
+        user_dir.mkdir(exist_ok=True)
+        _save_user_pose_files(user_dir, info)
+        if not passes_filters:
+            print(
+                f"[SIN filtros] Clip '{clip_name}' user_{tid} | "
+                f"valid_pct={valid_pct}% | valid_frames={valid_frames}, min={min_valid_frames}"
+            )
+
+    try:
+        clip_cat_int = int(category)
+    except (TypeError, ValueError):
+        clip_cat_int = None
+    if clip_cat_int == 6 and users_meta and not any("is_primary_robber" in u for u in users_meta):
+        for idx_u, u in enumerate(users_meta):
+            u["is_primary_robber"] = idx_u == 0
+
+    if video_frame_count and video_frame_count != processed_frame_count:
+        print(
+            f"[AVISO] Clip '{clip_name}': frames en vídeo={video_frame_count}, "
+            f"frames con poses={processed_frame_count}"
+        )
+
+    meta = {
+        "clip_name": clip_name,
+        "fps": fps,
+        "frame_count": processed_frame_count,
+        "video_frame_count": video_frame_count,
+        "min_valid_frames": int(min_valid_frames),
+        "cat": category,
+        "clip_duration": clip_duration,
+        "yolo_model": str(yolo_meta_path),
+        "yolo_backend": "engine" if str(yolo_meta_path).endswith(".engine") else "pt",
+        "users": users_meta,
+        **meta_fields,
+    }
+    if copy_clip and SAVE_PROCESSED_CLIP and clip_path and os.path.exists(clip_path):
+        meta["clip_video"] = "clip.mp4"
+    with open(data_dir / "meta.json", "w", encoding="utf-8") as f:
+        json.dump(meta, f, indent=4, ensure_ascii=False)
+
+    if copy_clip and SAVE_PROCESSED_CLIP and clip_path and os.path.exists(clip_path):
+        dest_clip = data_dir / "clip.mp4"
+        try:
+            shutil.copy2(clip_path, dest_clip)
+        except Exception as e:
+            print(f"[AVISO] No se pudo copiar clip en data_result: {e}")
+
+    return users_meta
+
+
+def _resolve_data_result_root(path: Path) -> Path:
+    """Acepta .../data_result o OUTPUT_BASE (con data_result dentro)."""
+    p = path.expanduser().resolve()
+    if p.name == "data_result":
+        return p
+    nested = p / "data_result"
+    if nested.is_dir():
+        return nested
+    return p
+
+
+def iter_existing_data_result_clips(data_result_root: Path):
+    """Recorre categorías numéricas y clips con meta.json + clip.mp4."""
+    base = _resolve_data_result_root(data_result_root)
+    if not base.is_dir():
+        raise FileNotFoundError(f"No existe data_result: {base}")
+    for cat_dir in sorted(base.iterdir()):
+        if not cat_dir.is_dir():
+            continue
+        try:
+            int(cat_dir.name)
+        except ValueError:
+            continue
+        category = cat_dir.name
+        for clip_dir in sorted(cat_dir.iterdir()):
+            if not clip_dir.is_dir():
+                continue
+            meta_path = clip_dir / "meta.json"
+            clip_mp4 = clip_dir / "clip.mp4"
+            if meta_path.is_file() and clip_mp4.is_file():
+                yield category, clip_dir.name, clip_dir, meta_path, clip_mp4
+
+
+def process_from_data_result(
+    source_data_result: Path,
+    dest_data_result_base: Path,
+    *,
+    track_model,
+    yolo_meta_path: str,
+    failed_clips: list,
+    category_limits: dict[str, int] | None = None,
+    category_counters: dict[str, int] | None = None,
+    single_user_only: bool = False,
+    max_clips: int | None = None,
+) -> None:
+    """
+    Re-extrae poses desde clip.mp4 ya existentes (sin CSV ni FFmpeg).
+    Copia clip.mp4 a dest_data_result_base/{cat}/{clip}/ y regenera user_X/ + meta.json.
+    """
+    if category_limits is None:
+        category_limits = {}
+    if category_counters is None:
+        category_counters = {}
+
+    src_root = _resolve_data_result_root(source_data_result)
+    dest_root = Path(dest_data_result_base)
+    dest_root.mkdir(parents=True, exist_ok=True)
+    print(f"Re-extracción desde: {src_root}")
+    print(f"Salida data_result:   {dest_root}")
+
+    clips = list(iter_existing_data_result_clips(src_root))
+    if max_clips is not None:
+        clips = clips[: max_clips]
+    print(f"Clips encontrados: {len(clips)}")
+
+    for category, clip_name, source_dir, meta_path, clip_mp4 in tqdm(clips, desc="Re-extrayendo poses"):
+        limit = category_limits.get(category)
+        if limit is not None and category_counters.get(category, 0) >= limit:
+            print(f"[OMITIDO] cat={category} límite {limit} alcanzado")
+            continue
+
+        dest_dir = dest_root / category / clip_name
+        if dest_dir.is_dir() and (dest_dir / "meta.json").is_file():
+            print(f"[OMITIDO] Ya existe {dest_dir} (reanudación)")
+            category_counters[category] = category_counters.get(category, 0) + 1
+            continue
+
+        try:
+            with open(meta_path, encoding="utf-8") as f:
+                old_meta = json.load(f)
+        except Exception as e:
+            failed_clips.append({
+                "clip": str(source_dir),
+                "error": f"No se pudo leer meta.json: {e}",
+            })
+            continue
+
+        clip_duration = float(old_meta.get("clip_duration") or 0.0)
+        if clip_duration <= 0:
+            _, clip_duration, _ = _read_clip_timing(str(clip_mp4))
+
+        try:
+            temp_person_data, fps, min_valid_frames, processed_frame_count, video_frame_count = (
+                _track_poses_on_clip(str(clip_mp4), track_model, clip_duration=clip_duration)
+            )
+        except Exception as e:
+            failed_clips.append({"clip": str(source_dir), "error": str(e)})
+            print(f"[ERROR] {clip_name}: {e}")
+            continue
+
+        if not temp_person_data:
+            failed_clips.append({"clip": str(source_dir), "error": "No se detectaron personas"})
+            continue
+
+        if single_user_only and len(temp_person_data) > 1:
+            print(f"[OMITIDO] {clip_name}: multiusuario (n={len(temp_person_data)} tracks)")
+            continue
+
+        preserve_keys = (
+            "video_source",
+            "row_csv",
+            "t_start",
+            "t_end",
+            "full_clip",
+        )
+        meta_fields = {k: old_meta[k] for k in preserve_keys if k in old_meta}
+        meta_fields["reextracted_from"] = str(source_dir.resolve())
+        if old_meta.get("yolo_model"):
+            meta_fields["yolo_model_source"] = old_meta.get("yolo_model")
+
+        _save_clip_pose_artifacts(
+            data_dir=dest_dir,
+            clip_name=clip_name,
+            category=category,
+            clip_path=str(clip_mp4),
+            temp_person_data=temp_person_data,
+            fps=fps,
+            min_valid_frames=min_valid_frames,
+            processed_frame_count=processed_frame_count,
+            video_frame_count=video_frame_count,
+            clip_duration=clip_duration,
+            yolo_meta_path=yolo_meta_path,
+            meta_fields=meta_fields,
+            old_users_meta=old_meta.get("users") or [],
+            copy_clip=True,
+        )
+        category_counters[category] = category_counters.get(category, 0) + 1
+
+
 def process_single_csv(
     CSV_PATH,
     VIDEOS_DIR_RES,
@@ -615,8 +1004,12 @@ def process_single_csv(
     dir_rel_path: str | None = None,
     category_limits: dict[str, int] | None = None,
     category_counters: dict[str, int] | None = None,
+    track_model=None,
+    yolo_meta_path_override: str | None = None,
 ):
     """Procesa un único CSV. Errores por clip se añaden a failed_clips."""
+    pose_model = track_model or model
+    yolo_path_for_meta = yolo_meta_path_override or str(_MODEL_RESOLVED)
     # 1. Detectar fila de inicio (primera con HH:MM:SS en col 2) y leer CSV
     start_row = find_start_row(CSV_PATH)
     print(f"Inicio de datos en fila CSV: {start_row}")
@@ -716,100 +1109,11 @@ def process_single_csv(
                     continue
                 clip_is_temp = True
 
-            # 3. Procesar Pose Tracking en el clip (stream=True reduce uso de memoria).
-            # Cada clip usa su propio temp_person_data (estado fresco); no se reutiliza nada del clip anterior.
-            results = model.track(
-                source=clip_path,
-                tracker=_tracker_yaml_path(),
-                persist=True,
-                verbose=False,
-                stream=True,
-                device=DEVICE,
-                half=True,
+            # 3. YOLO pose tracking sobre el clip (ya recortado o temporal)
+            temp_person_data, fps, min_valid_frames, processed_frame_count, video_frame_count = (
+                _track_poses_on_clip(clip_path, pose_model, clip_duration=clip_duration)
             )
-            temp_person_data = {}
-            # FPS del clip: abrimos solo para leer metadata (evitamos leer el vídeo 2 veces)
-            cap = cv2.VideoCapture(clip_path)
-            try:
-                fps = cap.get(cv2.CAP_PROP_FPS)
-            finally:
-                cap.release()
-            if fps is None or fps <= 0:
-                fps = DEFAULT_FPS
 
-            # Frames mínimos "válidos" exigidos según duración*MIN_COVERAGE_RATIO
-            min_valid_seconds = clip_duration * MIN_COVERAGE_RATIO
-            min_valid_frames = int(min_valid_seconds * fps) if clip_duration > 0 else 0
-
-            # 1:1 frame–pose: cada iteración = un frame; si no hay detección se rellena con NAN_POSE (igual que modo debug).
-            for r in results:
-                frame = getattr(r, 'orig_img', None)
-                if frame is None or r.keypoints is None or r.boxes.id is None:
-                    for tid in list(temp_person_data.keys()):
-                        temp_person_data[tid]['poses_full'].append(NAN_POSE.copy())
-                        temp_person_data[tid]['keypoint_masks'].append(EMPTY_KP_MASK.copy())
-                        temp_person_data[tid]['total'] += 1
-                    continue
-
-                # Optimización GPU→CPU: hacer todas las operaciones en GPU primero, luego transferir
-                # Al agrupar las operaciones GPU y luego las transferencias, PyTorch puede optimizar mejor
-                # el pipeline y reducir overhead de sincronización
-                boxes_gpu = r.boxes.xyxy
-                ids_gpu = r.boxes.id.int()  # Operación .int() en GPU (más rápido que en CPU)
-                kpts_gpu = r.keypoints.xyn
-                confs_gpu = r.keypoints.conf
-                
-                # Transferir todo junto: aunque técnicamente son 4 .cpu(), al estar agrupadas
-                # PyTorch puede optimizar mejor el pipeline y reducir overhead
-                ids = ids_gpu.cpu().tolist()
-                kpts = kpts_gpu.cpu().numpy()
-                confs = confs_gpu.cpu().numpy()
-                boxes = boxes_gpu.cpu().numpy()
-                # Tracks ya vistos pero no detectados en este frame: 1:1 con NaN (igual que modo debug)
-                for tid in list(temp_person_data.keys()):
-                    if tid not in ids:
-                        temp_person_data[tid]['poses_full'].append(NAN_POSE.copy())
-                        temp_person_data[tid]['keypoint_masks'].append(EMPTY_KP_MASK.copy())
-                        temp_person_data[tid]['total'] += 1
-                for i, track_id in enumerate(ids):
-                    if track_id not in temp_person_data:
-                        c_t, c_b = get_color_attributes(frame, boxes[i])
-                        temp_person_data[track_id] = {
-                            'poses_full': [], 'poses': [], 'keypoint_masks': [],
-                            'v_cnt': 0, 'total': 0, 'body_visible_cnt': 0,
-                            'clothes': {'top': c_t, 'bottom': c_b},
-                            'kp_conf_sum': 0.0, 'occluded_frames': 0, 'bbox_ratios': []
-                        }
-
-                    conf_kp = confs[i][KEEP_KPS]
-                    kpt_pose = _build_masked_pose(kpts[i], confs[i])
-                    bbox = boxes[i]
-                    body_visible = int(_frame_body_visible(kpt_pose))
-                    temp_person_data[track_id]['body_visible_cnt'] += body_visible
-
-                    usable = _frame_usable(kpt_pose)
-
-                    # poses_full: secuencia 1:1; NaN solo en keypoints no visibles
-                    temp_person_data[track_id]['poses_full'].append(kpt_pose)
-                    temp_person_data[track_id]['keypoint_masks'].append(_keypoint_mask_from_pose(kpt_pose))
-
-                    # poses: frames con suficientes keypoints visibles (sin exigir los 4 brazos)
-                    if usable:
-                        temp_person_data[track_id]['poses'].append(kpt_pose)
-                        temp_person_data[track_id]['v_cnt'] += 1
-                    temp_person_data[track_id]['total'] += 1
-
-                    visible_confs = conf_kp[conf_kp > MIN_KP_CONF]
-                    temp_person_data[track_id]['kp_conf_sum'] += (
-                        float(np.mean(visible_confs)) if visible_confs.size else 0.0
-                    )
-                    if any(confs[i][idx] < OCCLUSION_CONF_THR for idx in CRITICAL_KPS):
-                        temp_person_data[track_id]['occluded_frames'] += 1
-                    h_bbox = bbox[3] - bbox[1]
-                    w_bbox = max(bbox[2] - bbox[0], 1e-6)
-                    temp_person_data[track_id]['bbox_ratios'].append(float(h_bbox / w_bbox))
-
-            # 4. Guardar: data_result/{cat}/{clip_name}/ con meta.json y user_X/
             if not temp_person_data:
                 failed_clips.append({
                     "csv": str(CSV_PATH), "row": fila_csv, "video": video_rel_path,
@@ -825,140 +1129,31 @@ def process_single_csv(
                 continue
 
             data_dir = Path(DATA_RESULT_BASE) / category / clip_name
-            data_dir.mkdir(parents=True, exist_ok=True)
+            _save_clip_pose_artifacts(
+                data_dir=data_dir,
+                clip_name=clip_name,
+                category=category,
+                clip_path=clip_path,
+                temp_person_data=temp_person_data,
+                fps=fps,
+                min_valid_frames=min_valid_frames,
+                processed_frame_count=processed_frame_count,
+                video_frame_count=video_frame_count,
+                clip_duration=clip_duration,
+                yolo_meta_path=yolo_path_for_meta,
+                meta_fields={
+                    "video_source": str(Path(video_full_path).resolve()),
+                    "row_csv": int(fila_csv),
+                    "t_start": str(t_start),
+                    "t_end": seconds_to_hms(clip_duration) if use_full_clip else str(t_end),
+                    "full_clip": use_full_clip,
+                },
+                copy_clip=SAVE_PROCESSED_CLIP,
+            )
 
-            users_meta = []
-            for tid, info in temp_person_data.items():
-                total_frames = info['total']
-                valid_frames = info['v_cnt']
+            if DELETE_TEMP_VIDEOS and clip_is_temp and clip_path and os.path.exists(clip_path):
+                os.remove(clip_path)
 
-                if total_frames == 0:
-                    continue
-
-                # Duración del usuario en segundos (para filtrar personas de paso rápido / tracks rotos)
-                user_seconds = total_frames / fps if fps > 0 else 0.0
-                if MIN_USER_SECONDS > 0 and user_seconds < MIN_USER_SECONDS:
-                    print(
-                        f"[DESCARTADO usuario] Clip '{clip_name}' user_{tid} | "
-                        f"duración={user_seconds:.2f}s < {MIN_USER_SECONDS}s"
-                    )
-                    continue
-
-                body_vis = info.get('body_visible_cnt', 0)
-                if body_vis < BODY_VISIBLE_MIN_FRAMES or (body_vis / total_frames) < BODY_VISIBLE_MIN_RATIO:
-                    print(
-                        f"[DESCARTADO usuario] Clip '{clip_name}' user_{tid} | "
-                        f"solo mano/cabeza/visibilidad insuficiente (body_visible={body_vis}/{total_frames})"
-                    )
-                    continue
-
-                rel = valid_frames / total_frames
-                valid_pct = round(rel * 100, 1)
-
-                passes_filters = rel >= RELIABILITY_THR and valid_frames >= min_valid_frames
-
-                kp_conf_avg = info['kp_conf_sum'] / total_frames if total_frames > 0 else 0.0
-                occlusion_ratio = round(info['occluded_frames'] / total_frames * 100, 1) if total_frames > 0 else 0.0
-                bbox_aspect_ratio = round(float(np.mean(info['bbox_ratios'])), 3) if info['bbox_ratios'] else 0.0
-                poses_full_arr = np.array(info['poses_full'])
-                if len(poses_full_arr) > 1:
-                    d = np.diff(poses_full_arr, axis=0)
-                    velocity_mag = np.sqrt((d ** 2).sum(axis=-1))
-                    subject_velocity = round(float(np.mean(velocity_mag)), 5)
-                else:
-                    subject_velocity = 0.0
-
-                coverage_seconds = valid_frames / fps if fps > 0 else 0.0
-                user_meta = {
-                    "track_id": int(tid),
-                    "valid_pct": valid_pct,
-                    "rel": round(rel, 2),
-                    "valid_frames": int(valid_frames),
-                    "total_frames": int(total_frames),
-                    "poses_full_count": len(info['poses_full']),
-                    "poses_filtered_count": len(info['poses']),
-                    "passes_filters": passes_filters,
-                    "keypoint_confidence_avg": round(kp_conf_avg, 3),
-                    "occlusion_ratio": occlusion_ratio,
-                    "bbox_aspect_ratio": bbox_aspect_ratio,
-                    "subject_velocity": subject_velocity,
-                    "clothes": info['clothes'],
-                    # Clasificación de usuario (inicialmente igual que la general del clip, meta['cat'])
-                    "user_cat": int(category),
-                }
-                users_meta.append(user_meta)
-
-                # Carpetas user_X con poses + máscaras para entrenamiento
-                user_dir = data_dir / f"user_{tid}"
-                user_dir.mkdir(exist_ok=True)
-                _save_user_pose_files(user_dir, info)
-
-                if not passes_filters:
-                    print(
-                        f"[SIN filtros] Clip '{clip_name}' user_{tid} | "
-                        f"valid_pct={valid_pct}% | valid_frames={valid_frames}, min={min_valid_frames}"
-                    )
-
-            # Marcar usuario "principal" en categoría 6 (robo)
-            try:
-                clip_cat_int = int(category)
-            except (TypeError, ValueError):
-                clip_cat_int = None
-            if clip_cat_int == 6 and users_meta:
-                # Campo booleando para marcar al usuario que está robando
-                # Si hay un solo usuario: True. Si hay varios: solo el primero.
-                for idx_u, u in enumerate(users_meta):
-                    u["is_primary_robber"] = (idx_u == 0)
-
-            # Nº de frames del clip procesado (1:1 con cada poses_full por usuario)
-            processed_frame_count = max(info["total"] for info in temp_person_data.values())
-            video_frame_count = None
-            cap_meta = cv2.VideoCapture(clip_path)
-            try:
-                video_frame_count = int(cap_meta.get(cv2.CAP_PROP_FRAME_COUNT))
-            finally:
-                cap_meta.release()
-            if video_frame_count is not None and video_frame_count != processed_frame_count:
-                warn_msg = f"Clip '{clip_name}': frames en vídeo={video_frame_count}, frames con poses={processed_frame_count}"
-                print(f"[AVISO] {warn_msg}")
-
-            # meta.json único por clip (incl. clip_video si vamos a guardar el clip)
-            meta = {
-                "clip_name": clip_name,
-                "video_source": str(Path(video_full_path).resolve()),
-                "row_csv": int(fila_csv),
-                "t_start": str(t_start),
-                "t_end": seconds_to_hms(clip_duration) if use_full_clip else str(t_end),
-                "full_clip": use_full_clip,
-                "clip_duration": clip_duration,
-                "fps": fps,
-                "frame_count": processed_frame_count,
-                "video_frame_count": video_frame_count,
-                "min_valid_frames": int(min_valid_frames),
-                "cat": category,
-                 # Información del modelo YOLO usado para generar las poses
-                "yolo_model": str(_MODEL_RESOLVED),
-                "yolo_backend": "engine" if str(_MODEL_RESOLVED).endswith(".engine") else "pt",
-                "users": users_meta,
-            }
-            if clip_path and os.path.exists(clip_path) and SAVE_PROCESSED_CLIP:
-                meta["clip_video"] = "clip.mp4"
-            with open(data_dir / "meta.json", "w", encoding="utf-8") as f:
-                json.dump(meta, f, indent=4, ensure_ascii=False)
-
-            # Guardar clip procesado en data_result (mismo archivo que vio YOLO → 1:1 con poses_full)
-            if clip_path and os.path.exists(clip_path):
-                if SAVE_PROCESSED_CLIP:
-                    dest_clip = data_dir / "clip.mp4"
-                    try:
-                        import shutil
-                        shutil.copy2(clip_path, dest_clip)
-                    except Exception as e:
-                        print(f"[AVISO] No se pudo guardar clip en data_result: {e}")
-                if DELETE_TEMP_VIDEOS and clip_is_temp:
-                    os.remove(clip_path)
-
-            # Contar clip como procesado para esta categoría (aunque luego descartes usuarios).
             category_counters[category] = category_counters.get(category, 0) + 1
 
         except Exception as e:
@@ -980,10 +1175,37 @@ def main():
 
     parser = argparse.ArgumentParser(description="Extractor de poses YOLO para clips")
     parser.add_argument("--debug", "--test", dest="debug_video", metavar="VIDEO", help="Modo debug: extrae poses de un único vídeo en carpeta temporal (poses_full.npy, poses.npy)")
-    parser.add_argument("--limit", "-n", type=int, default=None, metavar="N", help="Solo procesar los primeros N clips del CSV (útil para pruebas)")
-    parser.add_argument("--yolo-pose-model", dest="yolo_pose_model", default=None, metavar="MODELO", help="Modelo YOLO pose a usar en modo debug (p. ej. yolo11n-pose.pt). Sobrescribe el de config.py")
+    parser.add_argument("--limit", "-n", type=int, default=None, metavar="N", help="Solo procesar los primeros N clips (CSV o --from-data-result)")
+    parser.add_argument(
+        "--from-data-result",
+        dest="from_data_result",
+        default=None,
+        metavar="DIR",
+        help="Re-extrae poses desde data_result existente (meta.json + clip.mp4), sin CSV ni FFmpeg",
+    )
+    parser.add_argument(
+        "--output-base",
+        dest="output_base",
+        default=None,
+        metavar="DIR",
+        help="Carpeta OUTPUT_BASE de salida (data_result/ dentro). Obligatorio distinta del origen en --from-data-result",
+    )
+    parser.add_argument(
+        "--yolo-pose-model",
+        dest="yolo_pose_model",
+        default=None,
+        metavar="MODELO",
+        help="Modelo YOLO pose (p. ej. yolo26s-pose.pt). Sobrescribe config.py",
+    )
+    parser.add_argument(
+        "--single-user-only",
+        action="store_true",
+        help="En --from-data-result: omitir clips con más de un track",
+    )
     parser.add_argument("--output", "-o", dest="output_dir", default=None, metavar="DIR", help="Directorio donde guardar los .npy en modo debug. Sobrescribe la ruta por defecto de config.py")
     args = parser.parse_args()
+
+    output_root = Path(args.output_base).expanduser().resolve() if args.output_base else OUTPUT
 
     if args.limit is not None and args.debug_video is None:
         global N_DEBUG, DEBUG_MODE
@@ -992,6 +1214,61 @@ def main():
 
     if args.debug_video:
         run_debug_extract(args.debug_video, yolo_pose_model=args.yolo_pose_model, output_dir=args.output_dir)
+        if log_file:
+            if original_stdout is not None:
+                sys.stdout = original_stdout
+            log_file.close()
+        return
+
+    track_model, yolo_meta_path = _resolve_track_model(args.yolo_pose_model)
+    if args.yolo_pose_model:
+        print(f"Modelo pose (override): {yolo_meta_path}")
+
+    if args.from_data_result:
+        source = Path(args.from_data_result).expanduser().resolve()
+        src_data = _resolve_data_result_root(source)
+        dest_data = output_root / "data_result"
+        try:
+            if src_data.resolve() == dest_data.resolve():
+                print("ERROR: --output-base debe apuntar a otra carpeta distinta del origen.")
+                if log_file:
+                    if original_stdout is not None:
+                        sys.stdout = original_stdout
+                    log_file.close()
+                return
+        except FileNotFoundError:
+            pass
+
+        print(f"Dispositivo: {DEVICE}")
+        print(f"Modo: re-extracción desde data_result (sin CSV)")
+        print(f"Salida: {output_root} (data_result/)")
+
+        failed_clips: list = []
+        category_limits = _load_category_limits()
+        category_counters: dict[str, int] = {}
+        max_clips = N_DEBUG if DEBUG_MODE else None
+        process_from_data_result(
+            source,
+            dest_data,
+            track_model=track_model,
+            yolo_meta_path=yolo_meta_path,
+            failed_clips=failed_clips,
+            category_limits=category_limits,
+            category_counters=category_counters,
+            single_user_only=args.single_user_only,
+            max_clips=max_clips,
+        )
+        if failed_clips:
+            print("\n" + "=" * 60)
+            print("RESUMEN DE CLIPS CON ERRORES")
+            print("=" * 60)
+            for fc in failed_clips:
+                print(f"  Clip: {fc.get('clip', fc.get('csv', '?'))}")
+                print(f"    Error: {fc.get('error')}")
+            print(f"\nTotal clips con error: {len(failed_clips)}")
+        else:
+            print("\nTodos los clips se procesaron correctamente.")
+        print(f"\n[FIN] {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} — Re-extracción terminada.")
         if log_file:
             if original_stdout is not None:
                 sys.stdout = original_stdout
@@ -1011,7 +1288,10 @@ def main():
 
     # 3. Device y ruta de salida
     print(f"Dispositivo: {DEVICE}")
-    print(f"Salida: {OUTPUT} (temp_clips/ + data_result/)")
+    if args.output_base:
+        print(f"Salida: {output_root} (temp_clips/ + data_result/)")
+    else:
+        print(f"Salida: {OUTPUT} (temp_clips/ + data_result/)")
 
     experiments = get_experiments()
     if not experiments:
@@ -1026,8 +1306,8 @@ def main():
         experiments = experiments[:1]  # Solo primer CSV
         print(f"[DEBUG] Procesando solo {N_DEBUG} clips del primer CSV")
 
-    temp_clips_base = OUTPUT / "temp_clips"
-    data_result_base = OUTPUT / "data_result"
+    temp_clips_base = output_root / "temp_clips"
+    data_result_base = output_root / "data_result"
     temp_clips_base.mkdir(parents=True, exist_ok=True)
     data_result_base.mkdir(parents=True, exist_ok=True)
 
@@ -1035,6 +1315,10 @@ def main():
     category_limits = _load_category_limits()
     if category_limits:
         print(f"Límites por categoría (config_pose_extraction.json): {category_limits}")
+
+    track_model, yolo_meta_path = _resolve_track_model(args.yolo_pose_model)
+    if args.yolo_pose_model:
+        print(f"Modelo pose (override): {yolo_meta_path}")
 
     failed_clips = []
     used_clip_names = set()
@@ -1053,6 +1337,8 @@ def main():
             dir_rel_path=exp.get("rel_path"),
             category_limits=category_limits,
             category_counters=category_counters,
+            track_model=track_model if args.yolo_pose_model else None,
+            yolo_meta_path_override=yolo_meta_path if args.yolo_pose_model else None,
         )
 
     # 4. Resumen de clips fallidos

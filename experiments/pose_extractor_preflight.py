@@ -2,14 +2,14 @@
 """
 Pre-chequeo antes de lanzar pose_extractor_clean.py.
 
-Desde la ruta de búsqueda de CSVs (config.PATH_ROOT o CSV_PATH):
-  1) Lista los CSVs encontrados y total de vídeos/clips por categoría.
-  2) Comprueba que los vídeos existan y que los CSV sean válidos.
-  3) Estima el tiempo total de procesamiento según GPU/CPU y modelo YOLO.
+Modo CSV (por defecto): busca CSVs bajo PATH_ROOT, cuenta clips y valida vídeos.
+Modo data_result (--from-data-result): recorre data_result existente (meta.json + clip.mp4).
 
 Uso:
   python pose_extractor_preflight.py
   python pose_extractor_preflight.py --path /ruta/alternativa
+  python pose_extractor_preflight.py --from-data-result /ruta/data_result
+  python pose_extractor_preflight.py --from-data-result /ruta/data --yolo-pose-model yolo26s-pose.pt
 """
 import re
 import subprocess
@@ -135,15 +135,12 @@ def _load_category_limits() -> dict[str, int]:
     """
     limits: dict[str, int] = {}
     cfg_path = Path(POSE_EXTRACTION_CONFIG)
-    print(f"  [DEBUG] Buscando config de límites en: {cfg_path} (existe={cfg_path.exists()})")
     if not cfg_path.exists():
         return limits
     try:
         with open(cfg_path, "r", encoding="utf-8") as f:
             data = json.load(f)
-        print(f"  [DEBUG] Contenido bruto de config_pose_extraction.json: {data}")
-    except Exception as e:
-        print(f"  [DEBUG] Error al leer config_pose_extraction.json: {e}")
+    except Exception:
         return limits
     cat_cfg = data.get("category_limits", {})
     if isinstance(cat_cfg, dict):
@@ -176,12 +173,260 @@ SEC_PER_FRAME_ENGINE = {
     "cuda": {"n": 0.010, "s": 0.016, "m": 0.022, "l": 0.035, "x": 0.06},
 }
 FFMPEG_SEC_PER_CLIP = 3.0
+COPY_SEC_PER_CLIP = 0.5  # re-extracción: copia clip.mp4, sin FFmpeg
+
+
+def _resolve_data_result_root(path: Path) -> Path:
+    """Acepta .../data_result o OUTPUT_BASE (con data_result dentro)."""
+    p = path.expanduser().resolve()
+    if p.name == "data_result":
+        return p
+    nested = p / "data_result"
+    if nested.is_dir():
+        return nested
+    return p
+
+
+def _clip_duration_seconds(clip_mp4: Path, meta: dict | None, fps_cache: dict) -> tuple[float, float, int]:
+    """Devuelve (duración_s, fps, frames_aprox) para un clip existente."""
+    fps = 12.0
+    frames = 0
+    dur = 0.0
+    if meta:
+        try:
+            fps = float(meta.get("fps") or 0.0)
+        except (TypeError, ValueError):
+            fps = 0.0
+        for key in ("frame_count", "video_frame_count"):
+            try:
+                frames = int(meta.get(key) or 0)
+            except (TypeError, ValueError):
+                frames = 0
+            if frames > 0:
+                break
+        try:
+            dur = float(meta.get("clip_duration") or 0.0)
+        except (TypeError, ValueError):
+            dur = 0.0
+        if dur <= 0 and fps > 0 and frames > 0:
+            dur = frames / fps
+
+    if dur <= 0 or frames <= 0:
+        fps_probe = get_video_fps(clip_mp4, fps_cache)
+        try:
+            out = subprocess.run(
+                [
+                    "ffprobe", "-v", "error", "-show_entries", "format=duration",
+                    "-of", "csv=p=0", str(clip_mp4),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+            dur_probe = float(out.stdout.strip()) if out.returncode == 0 and out.stdout.strip() else 0.0
+        except Exception:
+            dur_probe = 0.0
+        if dur_probe > 0:
+            dur = dur_probe
+        if fps <= 0:
+            fps = fps_probe
+        if frames <= 0 and dur > 0 and fps > 0:
+            frames = int(dur * fps + 0.5)
+
+    if fps <= 0:
+        fps = 12.0
+    if frames <= 0 and dur > 0:
+        frames = int(dur * fps + 0.5)
+    if dur <= 0 and frames > 0:
+        dur = frames / fps
+    return dur, fps, frames
+
+
+def scan_data_result_inventory(data_result_root: Path) -> dict:
+    """
+    Recorre data_result/{cat}/{clip}/ con meta.json + clip.mp4.
+    Devuelve conteos por categoría, totales y estimación de frames.
+    """
+    base = _resolve_data_result_root(data_result_root)
+    if not base.is_dir():
+        raise FileNotFoundError(f"No existe data_result: {base}")
+
+    by_category: dict[int, int] = {}
+    total_clips = 0
+    total_frames = 0
+    total_seconds = 0.0
+    fps_cache: dict = {}
+    incomplete: list[str] = []
+
+    for cat_dir in sorted(base.iterdir()):
+        if not cat_dir.is_dir():
+            continue
+        try:
+            cat = int(cat_dir.name)
+        except ValueError:
+            continue
+        for clip_dir in sorted(cat_dir.iterdir()):
+            if not clip_dir.is_dir():
+                continue
+            meta_path = clip_dir / "meta.json"
+            clip_mp4 = clip_dir / "clip.mp4"
+            if meta_path.is_file() and clip_mp4.is_file():
+                meta = None
+                try:
+                    with open(meta_path, encoding="utf-8") as f:
+                        meta = json.load(f)
+                except Exception:
+                    meta = None
+                dur, _fps, frames = _clip_duration_seconds(clip_mp4, meta, fps_cache)
+                by_category[cat] = by_category.get(cat, 0) + 1
+                total_clips += 1
+                total_frames += max(frames, 0)
+                total_seconds += max(dur, 0.0)
+            elif meta_path.is_file() or clip_mp4.is_file():
+                incomplete.append(str(clip_dir.relative_to(base)))
+
+    return {
+        "base": base,
+        "by_category": by_category,
+        "total_clips": total_clips,
+        "total_frames": total_frames,
+        "total_seconds": total_seconds,
+        "incomplete": incomplete,
+    }
+
+
+def _print_time_estimates(
+    *,
+    total_clips: int,
+    total_frames: int,
+    device: str,
+    model_stem: str,
+    ffmpeg_sec_per_clip: float,
+    label_suffix: str = "",
+) -> None:
+    sec_per_frame_pt = get_sec_per_frame(device, model_stem, backend="pt")
+    inf_pt = total_frames * sec_per_frame_pt
+    ffmpeg_pt = total_clips * ffmpeg_sec_per_clip
+    total_pt = inf_pt + ffmpeg_pt
+
+    model_size = get_model_size(model_stem)
+    print(f"  [YOLO .pt]    Tiempo medio por frame (8 keypoints): {CYAN}{sec_per_frame_pt:.3f} s/frame{RESET} (YOLO-{model_size}, {device.upper()})")
+    if ffmpeg_sec_per_clip > 0:
+        print(f"               Frames: {total_frames} → Inferencia: ~{inf_pt/60:.0f} min  |  FFmpeg: ~{ffmpeg_pt/60:.0f} min")
+    else:
+        print(f"               Frames: {total_frames} → Inferencia: ~{inf_pt/60:.0f} min  |  Copia clips: ~{ffmpeg_pt/60:.0f} min")
+
+    sec_per_frame_eng = get_sec_per_frame(device, model_stem, backend="engine")
+    inf_eng = total_frames * sec_per_frame_eng
+    ffmpeg_eng = total_clips * ffmpeg_sec_per_clip
+    total_eng = inf_eng + ffmpeg_eng
+    print(f"  [YOLO .engine] Tiempo medio por frame (estimado): {CYAN}{sec_per_frame_eng:.3f} s/frame{RESET} (YOLO-{model_size}, {device.upper()})")
+    if ffmpeg_sec_per_clip > 0:
+        print(f"                 Frames: {total_frames} → Inferencia: ~{inf_eng/60:.0f} min  |  FFmpeg: ~{ffmpeg_eng/60:.0f} min")
+    else:
+        print(f"                 Frames: {total_frames} → Inferencia: ~{inf_eng/60:.0f} min  |  Copia clips: ~{ffmpeg_eng/60:.0f} min")
+
+    hours_pt = int(total_pt // 3600)
+    mins_pt = int((total_pt % 3600) // 60)
+    secs_pt = int(total_pt % 60)
+    hours_eng = int(total_eng // 3600)
+    mins_eng = int((total_eng % 3600) // 60)
+    secs_eng = int(total_eng % 60)
+    print(f"\n  Tiempo estimado total YOLO .pt{label_suffix}:     {CYAN}~{hours_pt}h {mins_pt}m {secs_pt}s{RESET}")
+    print(f"  Tiempo estimado total YOLO .engine{label_suffix}:{CYAN}~{hours_eng}h {mins_eng}m {secs_eng}s{RESET}")
+    if total_clips > 0:
+        print(f"  Tiempo medio por clip (.pt):      {CYAN}~{(total_pt/total_clips)/60:.1f} min{RESET} (~{total_pt/total_clips:.0f} s)")
+        print(f"  Tiempo medio por clip (.engine):  {CYAN}~{(total_eng/total_clips)/60:.1f} min{RESET} (~{total_eng/total_clips:.0f} s)")
+
+
+def run_preflight_data_result(
+    source: Path,
+    *,
+    output_base: Path | None,
+    yolo_pose_model: str | None,
+) -> int:
+    header("1) Configuración (re-extracción data_result)")
+    print(f"  Origen:          {source}")
+    if output_base:
+        print(f"  OUTPUT_BASE:     {output_base} (destino propuesto)")
+    else:
+        print(f"  OUTPUT_BASE:     {OUTPUT_BASE or '(config.py)'}")
+    model_name = yolo_pose_model or YOLO_POSE_MODEL
+    print(f"  Modelo YOLO:     {model_name}")
+    print(f"  Modo:            sin CSV / sin FFmpeg (solo YOLO + copia clip.mp4)")
+
+    try:
+        inv = scan_data_result_inventory(source)
+    except FileNotFoundError as e:
+        fail(str(e))
+        return 1
+
+    header("2) Clips en data_result (meta.json + clip.mp4)")
+    print(f"  Raíz escaneada: {inv['base']}")
+    if inv["incomplete"]:
+        warn(f"Carpetas incompletas (falta meta.json o clip.mp4): {len(inv['incomplete'])}")
+        for rel in inv["incomplete"][:10]:
+            print(f"    - {rel}")
+        if len(inv["incomplete"]) > 10:
+            print(f"    ... y {len(inv['incomplete']) - 10} más")
+
+    if inv["total_clips"] == 0:
+        fail("No hay clips válidos (meta.json + clip.mp4).")
+        return 1
+
+    by_cat = inv["by_category"]
+    print(f"\n  {BOLD}Total clips: {inv['total_clips']}{RESET}")
+    print(f"  Por categoría:")
+    for cat in sorted(by_cat):
+        print(f"    cat {cat:>2}: {by_cat[cat]:>5} clips")
+    print(f"  Duración total (meta/ffprobe): {inv['total_seconds']/60:.1f} min")
+    print(f"  Frames totales (estimados):   {inv['total_frames']}")
+
+    category_limits = _load_category_limits()
+    if category_limits:
+        print(f"\n  Límites config_pose_extraction.json (referencia): {category_limits}")
+        limited_total = 0
+        for cat, n in sorted(by_cat.items()):
+            lim = category_limits.get(str(cat))
+            if lim is None:
+                limited_total += n
+            else:
+                limited_total += min(n, lim)
+        print(f"  Clips que procesaría con esos límites: {limited_total}")
+
+    header("3) Validación")
+    ok(f"{inv['total_clips']} clips listos para re-extracción")
+
+    header("4) Dispositivo y modelo")
+    device = get_device()
+    model_stem = Path(model_name).stem
+    if device == "cuda":
+        try:
+            import torch
+            ok(f"GPU: {torch.cuda.get_device_name(0)}")
+        except Exception:
+            ok("GPU: CUDA disponible")
+    else:
+        warn("CPU: CUDA no disponible. La extracción será lenta.")
+
+    header("5) Estimación de tiempo total")
+    _print_time_estimates(
+        total_clips=inv["total_clips"],
+        total_frames=inv["total_frames"],
+        device=device,
+        model_stem=model_stem,
+        ffmpeg_sec_per_clip=COPY_SEC_PER_CLIP,
+        label_suffix=" (re-extracción)",
+    )
+    warn("Estimación aproximada (CPU/GPU y carga del sistema pueden variar).")
+    print()
+    return 0
 
 
 def get_model_size(model_stem: str) -> str:
     """Extrae tamaño del modelo: n, s, m, l, x (p. ej. yolo11n-pose -> n)."""
     s = model_stem.lower().strip()
-    # Estilo yolo11n-pose: última letra del primer bloque
     parts = s.split("-")
     if parts:
         first = parts[0]
@@ -228,8 +473,39 @@ def estimate_time(
 def main():
     import argparse
     parser = argparse.ArgumentParser(description="Pre-chequeo para pose_extractor_clean")
-    parser.add_argument("--path", type=str, default=None, help="Sobrescribir carpeta de búsqueda de CSVs")
+    parser.add_argument("--path", type=str, default=None, help="Sobrescribir carpeta de búsqueda de CSVs (modo CSV)")
+    parser.add_argument(
+        "--from-data-result",
+        dest="from_data_result",
+        default=None,
+        metavar="DIR",
+        help="Inventario de clips en data_result existente (meta.json + clip.mp4), sin buscar CSVs",
+    )
+    parser.add_argument(
+        "--output-base",
+        dest="output_base",
+        default=None,
+        metavar="DIR",
+        help="OUTPUT_BASE destino propuesto (solo informativo en preflight)",
+    )
+    parser.add_argument(
+        "--yolo-pose-model",
+        dest="yolo_pose_model",
+        default=None,
+        metavar="MODELO",
+        help="Modelo YOLO para estimación de tiempo (p. ej. yolo26s-pose.pt)",
+    )
     args = parser.parse_args()
+
+    if args.from_data_result:
+        out = Path(args.output_base).expanduser().resolve() if args.output_base else None
+        sys.exit(
+            run_preflight_data_result(
+                Path(args.from_data_result),
+                output_base=out,
+                yolo_pose_model=args.yolo_pose_model,
+            )
+        )
 
     path_to_scan = args.path or PATH_ROOT
     if not path_to_scan and CSV_PATH:
@@ -369,37 +645,16 @@ def main():
     print(f"  Modelo (estimación): {model_stem}")
 
     header("5) Estimación de tiempo total")
-    model_size = get_model_size(model_stem)
-    # Estimación con modelo .pt (PyTorch)
-    sec_per_frame_pt = get_sec_per_frame(device, model_stem, backend="pt")
-    inf_pt, ffmpeg_pt, _ = estimate_time(total_frames_approx, total_clips, device, model_stem, backend="pt")
-    total_pt = inf_pt + ffmpeg_pt
-
-    print(f"  [YOLO .pt]    Tiempo medio por frame (8 keypoints, KEEP_KPS): {CYAN}{sec_per_frame_pt:.3f} s/frame{RESET} (YOLO-{model_size}, {device.upper()})")
-    print(f"               Frames: {total_frames_approx} → Inferencia: ~{inf_pt/60:.0f} min  |  FFmpeg: ~{ffmpeg_pt/60:.0f} min")
-
-    # Estimación con .engine (TensorRT) — sólo aporta mejora real en CUDA
-    sec_per_frame_eng = get_sec_per_frame(device, model_stem, backend="engine")
-    inf_eng, ffmpeg_eng, _ = estimate_time(total_frames_approx, total_clips, device, model_stem, backend="engine")
-    total_eng = inf_eng + ffmpeg_eng
-    print(f"  [YOLO .engine] Tiempo medio por frame (estimado): {CYAN}{sec_per_frame_eng:.3f} s/frame{RESET} (YOLO-{model_size}, {device.upper()})")
-    print(f"                 Frames: {total_frames_approx} → Inferencia: ~{inf_eng/60:.0f} min  |  FFmpeg: ~{ffmpeg_eng/60:.0f} min")
-
-    # Resumen comparativo
-    hours_pt = int(total_pt // 3600)
-    mins_pt = int((total_pt % 3600) // 60)
-    secs_pt = int(total_pt % 60)
-    hours_eng = int(total_eng // 3600)
-    mins_eng = int((total_eng % 3600) // 60)
-    secs_eng = int(total_eng % 60)
-    print(f"\n  Tiempo estimado total YOLO .pt:     {CYAN}~{hours_pt}h {mins_pt}m {secs_pt}s{RESET}")
-    print(f"  Tiempo estimado total YOLO .engine:{CYAN}~{hours_eng}h {mins_eng}m {secs_eng}s{RESET}")
-
-    if total_clips > 0:
-        sec_per_clip_pt = total_pt / total_clips
-        sec_per_clip_eng = total_eng / total_clips
-        print(f"  Tiempo medio por clip (.pt):      {CYAN}~{sec_per_clip_pt/60:.1f} min{RESET} (~{sec_per_clip_pt:.0f} s)")
-        print(f"  Tiempo medio por clip (.engine):  {CYAN}~{sec_per_clip_eng/60:.1f} min{RESET} (~{sec_per_clip_eng:.0f} s)")
+    model_stem = Path(YOLO_POSE_MODEL).stem
+    if args.yolo_pose_model:
+        model_stem = Path(args.yolo_pose_model).stem
+    _print_time_estimates(
+        total_clips=total_clips,
+        total_frames=total_frames_approx,
+        device=device,
+        model_stem=model_stem,
+        ffmpeg_sec_per_clip=FFMPEG_SEC_PER_CLIP,
+    )
 
     warn("Estimación aproximada (CPU/GPU y carga del sistema pueden variar).")
 
