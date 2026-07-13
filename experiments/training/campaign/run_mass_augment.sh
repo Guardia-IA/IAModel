@@ -47,6 +47,27 @@ strip_run_id_from_extra() {
   EXTRA_ARGS=("${out[@]}")
 }
 
+strip_cells_from_extra() {
+  local out=()
+  local skip_cells=0
+  local a
+  for a in "${EXTRA_ARGS[@]}"; do
+    if [[ $skip_cells -eq 1 ]]; then
+      if [[ "$a" == --* ]]; then
+        skip_cells=0
+        out+=("$a")
+      fi
+      continue
+    fi
+    if [[ "$a" == "--cells" ]]; then
+      skip_cells=1
+      continue
+    fi
+    out+=("$a")
+  done
+  EXTRA_ARGS=("${out[@]}")
+}
+
 ensure_run_id() {
   if [[ -n "$RUN_ID" ]]; then
     return 0
@@ -240,7 +261,7 @@ run_eval_bg() {
 set -euo pipefail
 cd "${SCRIPT_DIR}"
 ${PY} evaluate_mass_augment.py --all --run-id "${RUN_ID}" ${extra}
-${PY} summarize_mass_augment.py --run-id "${RUN_ID}" ${extra}
+${PY} summarize_mass_augment.py --run-id "${RUN_ID}" --split val
 SCRIPT
 
   echo $! > "$pidfile"
@@ -318,6 +339,7 @@ case "$CMD" in
     ;;
   summary)
     ensure_run_id
+    strip_cells_from_extra
     exec "$PY" summarize_mass_augment.py $(run_args) "${EXTRA_ARGS[@]}"
     ;;
   all-bg|pipeline-bg)
