@@ -187,53 +187,66 @@ def _resolve_data_result_root(path: Path) -> Path:
     return p
 
 
-def _clip_duration_seconds(clip_mp4: Path, meta: dict | None, fps_cache: dict) -> tuple[float, float, int]:
-    """Devuelve (duración_s, fps, frames_aprox) para un clip existente."""
+def _clip_duration_from_meta(meta: dict | None) -> tuple[float, float, int]:
+    """Duración/fps/frames solo desde meta.json (sin ffprobe)."""
     fps = 12.0
     frames = 0
     dur = 0.0
-    if meta:
+    if not meta:
+        return dur, fps, frames
+    try:
+        fps = float(meta.get("fps") or 0.0)
+    except (TypeError, ValueError):
+        fps = 0.0
+    for key in ("frame_count", "video_frame_count"):
         try:
-            fps = float(meta.get("fps") or 0.0)
+            frames = int(meta.get(key) or 0)
         except (TypeError, ValueError):
-            fps = 0.0
-        for key in ("frame_count", "video_frame_count"):
-            try:
-                frames = int(meta.get(key) or 0)
-            except (TypeError, ValueError):
-                frames = 0
-            if frames > 0:
-                break
-        try:
-            dur = float(meta.get("clip_duration") or 0.0)
-        except (TypeError, ValueError):
-            dur = 0.0
-        if dur <= 0 and fps > 0 and frames > 0:
-            dur = frames / fps
+            frames = 0
+        if frames > 0:
+            break
+    try:
+        dur = float(meta.get("clip_duration") or 0.0)
+    except (TypeError, ValueError):
+        dur = 0.0
+    if dur <= 0 and fps > 0 and frames > 0:
+        dur = frames / fps
+    if fps <= 0:
+        fps = 12.0
+    if frames <= 0 and dur > 0:
+        frames = int(dur * fps + 0.5)
+    if dur <= 0 and frames > 0 and fps > 0:
+        dur = frames / fps
+    return dur, fps, frames
 
-    if dur <= 0 or frames <= 0:
-        fps_probe = get_video_fps(clip_mp4, fps_cache)
-        try:
-            out = subprocess.run(
-                [
-                    "ffprobe", "-v", "error", "-show_entries", "format=duration",
-                    "-of", "csv=p=0", str(clip_mp4),
-                ],
-                capture_output=True,
-                text=True,
-                timeout=10,
-                check=False,
-            )
-            dur_probe = float(out.stdout.strip()) if out.returncode == 0 and out.stdout.strip() else 0.0
-        except Exception:
-            dur_probe = 0.0
-        if dur_probe > 0:
-            dur = dur_probe
-        if fps <= 0:
-            fps = fps_probe
-        if frames <= 0 and dur > 0 and fps > 0:
-            frames = int(dur * fps + 0.5)
 
+def _clip_duration_seconds(clip_mp4: Path, meta: dict | None, fps_cache: dict) -> tuple[float, float, int]:
+    """Devuelve (duración_s, fps, frames_aprox). Usa meta; ffprobe solo si faltan datos."""
+    dur, fps, frames = _clip_duration_from_meta(meta)
+    if dur > 0 and frames > 0:
+        return dur, fps, frames
+
+    fps_probe = get_video_fps(clip_mp4, fps_cache)
+    try:
+        out = subprocess.run(
+            [
+                "ffprobe", "-v", "error", "-show_entries", "format=duration",
+                "-of", "csv=p=0", str(clip_mp4),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        dur_probe = float(out.stdout.strip()) if out.returncode == 0 and out.stdout.strip() else 0.0
+    except Exception:
+        dur_probe = 0.0
+    if dur_probe > 0:
+        dur = dur_probe
+    if fps <= 0:
+        fps = fps_probe
+    if frames <= 0 and dur > 0 and fps > 0:
+        frames = int(dur * fps + 0.5)
     if fps <= 0:
         fps = 12.0
     if frames <= 0 and dur > 0:
@@ -243,10 +256,18 @@ def _clip_duration_seconds(clip_mp4: Path, meta: dict | None, fps_cache: dict) -
     return dur, fps, frames
 
 
-def scan_data_result_inventory(data_result_root: Path) -> dict:
+def scan_data_result_inventory(
+    data_result_root: Path,
+    *,
+    count_only: bool = False,
+    probe_videos: bool = False,
+) -> dict:
     """
     Recorre data_result/{cat}/{clip}/ con meta.json + clip.mp4.
-    Devuelve conteos por categoría, totales y estimación de frames.
+
+    count_only=True: solo comprueba que existan ambos ficheros (rápido, sin leer meta ni ffprobe).
+    probe_videos=True: si meta no tiene frames/duración, usa ffprobe (lento).
+    Por defecto: lee meta.json pero no llama ffprobe.
     """
     base = _resolve_data_result_root(data_result_root)
     if not base.is_dir():
@@ -258,6 +279,7 @@ def scan_data_result_inventory(data_result_root: Path) -> dict:
     total_seconds = 0.0
     fps_cache: dict = {}
     incomplete: list[str] = []
+    meta_missing_stats = 0
 
     for cat_dir in sorted(base.iterdir()):
         if not cat_dir.is_dir():
@@ -271,19 +293,28 @@ def scan_data_result_inventory(data_result_root: Path) -> dict:
                 continue
             meta_path = clip_dir / "meta.json"
             clip_mp4 = clip_dir / "clip.mp4"
-            if meta_path.is_file() and clip_mp4.is_file():
+            has_meta = meta_path.is_file()
+            has_clip = clip_mp4.is_file()
+            if has_meta and has_clip:
+                by_category[cat] = by_category.get(cat, 0) + 1
+                total_clips += 1
+                if count_only:
+                    continue
                 meta = None
                 try:
                     with open(meta_path, encoding="utf-8") as f:
                         meta = json.load(f)
                 except Exception:
                     meta = None
-                dur, _fps, frames = _clip_duration_seconds(clip_mp4, meta, fps_cache)
-                by_category[cat] = by_category.get(cat, 0) + 1
-                total_clips += 1
+                if probe_videos:
+                    dur, _fps, frames = _clip_duration_seconds(clip_mp4, meta, fps_cache)
+                else:
+                    dur, _fps, frames = _clip_duration_from_meta(meta)
+                    if frames <= 0 and dur <= 0:
+                        meta_missing_stats += 1
                 total_frames += max(frames, 0)
                 total_seconds += max(dur, 0.0)
-            elif meta_path.is_file() or clip_mp4.is_file():
+            elif has_meta or has_clip:
                 incomplete.append(str(clip_dir.relative_to(base)))
 
     return {
@@ -293,6 +324,8 @@ def scan_data_result_inventory(data_result_root: Path) -> dict:
         "total_frames": total_frames,
         "total_seconds": total_seconds,
         "incomplete": incomplete,
+        "meta_missing_stats": meta_missing_stats,
+        "count_only": count_only,
     }
 
 
@@ -345,6 +378,8 @@ def run_preflight_data_result(
     *,
     output_base: Path | None,
     yolo_pose_model: str | None,
+    count_only: bool = False,
+    probe_videos: bool = False,
 ) -> int:
     header("1) Configuración (re-extracción data_result)")
     print(f"  Origen:          {source}")
@@ -354,10 +389,19 @@ def run_preflight_data_result(
         print(f"  OUTPUT_BASE:     {OUTPUT_BASE or '(config.py)'}")
     model_name = yolo_pose_model or YOLO_POSE_MODEL
     print(f"  Modelo YOLO:     {model_name}")
-    print(f"  Modo:            sin CSV / sin FFmpeg (solo YOLO + copia clip.mp4)")
+    if count_only:
+        print(f"  Modo:            conteo rápido (solo existencia meta.json + clip.mp4)")
+    elif probe_videos:
+        print(f"  Modo:            meta + ffprobe por clip (lento, estimación precisa)")
+    else:
+        print(f"  Modo:            meta.json only (sin ffprobe)")
 
     try:
-        inv = scan_data_result_inventory(source)
+        inv = scan_data_result_inventory(
+            source,
+            count_only=count_only,
+            probe_videos=probe_videos,
+        )
     except FileNotFoundError as e:
         fail(str(e))
         return 1
@@ -380,8 +424,15 @@ def run_preflight_data_result(
     print(f"  Por categoría:")
     for cat in sorted(by_cat):
         print(f"    cat {cat:>2}: {by_cat[cat]:>5} clips")
-    print(f"  Duración total (meta/ffprobe): {inv['total_seconds']/60:.1f} min")
-    print(f"  Frames totales (estimados):   {inv['total_frames']}")
+
+    if not count_only:
+        print(f"  Duración total (meta/ffprobe): {inv['total_seconds']/60:.1f} min")
+        print(f"  Frames totales (estimados):   {inv['total_frames']}")
+        if inv.get("meta_missing_stats"):
+            warn(
+                f"{inv['meta_missing_stats']} clips sin frames/duración en meta "
+                f"(usa --probe-videos para ffprobe, o --count-only para omitir stats)"
+            )
 
     category_limits = _load_category_limits()
     if category_limits:
@@ -394,6 +445,11 @@ def run_preflight_data_result(
             else:
                 limited_total += min(n, lim)
         print(f"  Clips que procesaría con esos límites: {limited_total}")
+
+    if count_only:
+        print()
+        ok(f"Inventario rápido: {inv['total_clips']} clips en {len(by_cat)} categorías")
+        return 0
 
     header("3) Validación")
     ok(f"{inv['total_clips']} clips listos para re-extracción")
@@ -495,6 +551,16 @@ def main():
         metavar="MODELO",
         help="Modelo YOLO para estimación de tiempo (p. ej. yolo26s-pose.pt)",
     )
+    parser.add_argument(
+        "--count-only",
+        action="store_true",
+        help="Solo contar clips (existencia meta.json + clip.mp4). Sin leer meta ni ffprobe — muy rápido",
+    )
+    parser.add_argument(
+        "--probe-videos",
+        action="store_true",
+        help="Usar ffprobe en cada clip si meta no tiene duración/frames (lento, ~minutos en datasets grandes)",
+    )
     args = parser.parse_args()
 
     if args.from_data_result:
@@ -504,6 +570,8 @@ def main():
                 Path(args.from_data_result),
                 output_base=out,
                 yolo_pose_model=args.yolo_pose_model,
+                count_only=args.count_only,
+                probe_videos=args.probe_videos,
             )
         )
 
