@@ -28,8 +28,6 @@ if str(CAMPAIGN_DIR) not in sys.path:
 from campaign_paths import ensure_cell_dirs, filter_cells, load_merged_campaign_config, training_plan_path
 from evaluate_validation import build_split_examples, load_split_uids
 from evaluate_campaign import collect_binary_predictions
-from class_map_utils import apply_class_map_spec, load_class_map
-from campaign_paths import class_map_path
 
 
 def _read_csv(path: Path) -> List[Dict[str, str]]:
@@ -136,9 +134,10 @@ def merge_verifier_csv(
         pose_source=cell["pose_source"],
         single_user_only=bool(config.get("single_user_only", True)),
         task=cell["task"],
+        positive_class=int(config.get("robbery_class", 6)),
     )
-    cmap = load_class_map(class_map_path(cell["class_map_id"]))
-    examples = apply_class_map_spec(examples, cmap)
+    # No aplicar class_map aquí: build_split_examples(task=binary) ya deja labels 0/1.
+    # apply_class_map_spec relabelaría confusables (2/3/14) → KeyError en label_to_idx del checkpoint.
 
     records, _yt, probs, _margins = collect_binary_predictions(
         model_path,
