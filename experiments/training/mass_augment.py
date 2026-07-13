@@ -355,23 +355,27 @@ def _predict_examples(
 
     idx_to_label = {v: k for k, v in label_to_idx.items()}
     num_classes = len(label_to_idx)
-    input_dim = 34 * 2
+
+    ckpt = torch.load(model_path, map_location=device, weights_only=False)
+    cfg = dict(ckpt.get("config") or arch_cfg)
+    arch = str(cfg.get("arch", arch_cfg.get("arch", "tcn")))
+    input_dim = int(ckpt["input_dim"])
+    seq_len = int(ckpt.get("seq_len", seq_len))
 
     ds = build_pose_dataset_for_eval(
         examples,
         label_to_idx,
         seq_len,
         dataset_split="val",
-        checkpoint={"config": arch_cfg},
+        checkpoint=ckpt,
     )
     loader = DataLoader(ds, batch_size=batch_size, shuffle=False, num_workers=0)
     model = build_model(
-        str(arch_cfg.get("arch", "tcn")),
+        arch,
         input_dim,
         num_classes,
-        arch_cfg,
+        cfg,
     ).to(device)
-    ckpt = torch.load(model_path, map_location=device, weights_only=False)
     model.load_state_dict(ckpt["model_state_dict"])
     model.eval()
 
