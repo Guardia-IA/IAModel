@@ -5,11 +5,19 @@ Pre-chequeo antes de lanzar pose_extractor_clean.py.
 Modo CSV (por defecto): busca CSVs bajo PATH_ROOT, cuenta clips y valida vídeos.
 Modo data_result (--from-data-result): recorre data_result existente (meta.json + clip.mp4).
 
-Uso:
+Uso (re-extracción desde data_result existente):
+  # Conteo + tiempo estimado (lee meta.json, NO ffprobe):
+  python pose_extractor_preflight.py --from-data-result /ruta/data_result --yolo-pose-model yolo26s-pose.pt
+
+  # Solo conteo instantáneo (sin meta, sin tiempo):
+  python pose_extractor_preflight.py --from-data-result /ruta/data_result --count-only
+
+  # ffprobe solo si meta no tiene frames (lento, evitar salvo necesidad):
+  python pose_extractor_preflight.py --from-data-result /ruta/data_result --probe-videos
+
+Modo CSV (extracción inicial desde CSVs):
   python pose_extractor_preflight.py
   python pose_extractor_preflight.py --path /ruta/alternativa
-  python pose_extractor_preflight.py --from-data-result /ruta/data_result
-  python pose_extractor_preflight.py --from-data-result /ruta/data --yolo-pose-model yolo26s-pose.pt
 """
 import re
 import subprocess
@@ -321,6 +329,7 @@ def scan_data_result_inventory(
         "base": base,
         "by_category": by_category,
         "total_clips": total_clips,
+        "total_folders": total_clips + len(incomplete),
         "total_frames": total_frames,
         "total_seconds": total_seconds,
         "incomplete": incomplete,
@@ -406,32 +415,39 @@ def run_preflight_data_result(
         fail(str(e))
         return 1
 
-    header("2) Clips en data_result (meta.json + clip.mp4)")
+    header("2) Inventario (existencia meta.json + clip.mp4, sin ffprobe)")
     print(f"  Raíz escaneada: {inv['base']}")
-    if inv["incomplete"]:
-        warn(f"Carpetas incompletas (falta meta.json o clip.mp4): {len(inv['incomplete'])}")
+    n_incomplete = len(inv["incomplete"])
+    n_correct = inv["total_clips"]
+    n_total = inv.get("total_folders", n_correct + n_incomplete)
+    print(f"\n  {BOLD}Carpetas de clip encontradas:{RESET} {n_total}")
+    print(f"  {GREEN}Correctas{RESET} (meta.json + clip.mp4):     {n_correct}")
+    if n_incomplete:
+        warn(f"Incompletas (falta meta o clip):           {n_incomplete}")
         for rel in inv["incomplete"][:10]:
             print(f"    - {rel}")
-        if len(inv["incomplete"]) > 10:
-            print(f"    ... y {len(inv['incomplete']) - 10} más")
+        if n_incomplete > 10:
+            print(f"    ... y {n_incomplete - 10} más")
+    else:
+        ok("Todas las carpetas tienen meta.json y clip.mp4")
 
-    if inv["total_clips"] == 0:
-        fail("No hay clips válidos (meta.json + clip.mp4).")
+    if n_correct == 0:
+        fail("No hay clips correctos (meta.json + clip.mp4).")
         return 1
 
     by_cat = inv["by_category"]
-    print(f"\n  {BOLD}Total clips: {inv['total_clips']}{RESET}")
-    print(f"  Por categoría:")
+    print(f"\n  Desglose por categoría (solo correctos):")
     for cat in sorted(by_cat):
         print(f"    cat {cat:>2}: {by_cat[cat]:>5} clips")
 
     if not count_only:
-        print(f"  Duración total (meta/ffprobe): {inv['total_seconds']/60:.1f} min")
+        src = "meta.json" if not probe_videos else "meta.json + ffprobe (fallback)"
+        print(f"  Duración total ({src}): {inv['total_seconds']/60:.1f} min")
         print(f"  Frames totales (estimados):   {inv['total_frames']}")
         if inv.get("meta_missing_stats"):
             warn(
-                f"{inv['meta_missing_stats']} clips sin frames/duración en meta "
-                f"(usa --probe-videos para ffprobe, o --count-only para omitir stats)"
+                f"{inv['meta_missing_stats']} clips correctos sin frames/duración en meta "
+                f"(estimación parcial; usa --probe-videos solo si necesitas precisión)"
             )
 
     category_limits = _load_category_limits()
@@ -447,12 +463,15 @@ def run_preflight_data_result(
         print(f"  Clips que procesaría con esos límites: {limited_total}")
 
     if count_only:
+        header("RESUMEN")
+        print(f"  1) Clips: {n_total} carpetas → {n_correct} correctos, {n_incomplete} incompletos")
+        print(f"  2) Tiempo estimado: omitido (--count-only no lee meta.json)")
         print()
-        ok(f"Inventario rápido: {inv['total_clips']} clips en {len(by_cat)} categorías")
+        warn("Para estimar tiempo: quita --count-only y pasa --yolo-pose-model")
         return 0
 
     header("3) Validación")
-    ok(f"{inv['total_clips']} clips listos para re-extracción")
+    ok(f"{n_correct} clips listos para re-extracción")
 
     header("4) Dispositivo y modelo")
     device = get_device()
@@ -476,6 +495,20 @@ def run_preflight_data_result(
         label_suffix=" (re-extracción)",
     )
     warn("Estimación aproximada (CPU/GPU y carga del sistema pueden variar).")
+
+    header("RESUMEN")
+    print(f"  1) Clips: {n_total} carpetas → {GREEN}{n_correct} correctos{RESET}, {n_incomplete} incompletos")
+    device = get_device()
+    model_stem = Path(model_name).stem
+    sec_pt = get_sec_per_frame(device, model_stem, backend="pt")
+    total_pt = inv["total_frames"] * sec_pt + n_correct * COPY_SEC_PER_CLIP
+    h, rem = divmod(int(total_pt), 3600)
+    m, s = divmod(rem, 60)
+    print(
+        f"  2) Tiempo estimado ({model_name}, {device.upper()}, .pt): "
+        f"{CYAN}~{h}h {m}m {s}s{RESET} "
+        f"({inv['total_frames']} frames × {sec_pt:.3f} s/frame + copia clips)"
+    )
     print()
     return 0
 
