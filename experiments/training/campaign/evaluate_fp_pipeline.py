@@ -283,13 +283,19 @@ def run_fp_pipeline_eval(
     print(f"\n=== Export ensemble etapa 1 (split completo) ===", flush=True)
     try:
         ensemble_export = run_ensemble_export(
-        cell_id=stage1_cell,
-        model_names=model_names,
-        split=split,
-        rule=ensemble_rule,
-        threshold=ensemble_threshold,
-        outcomes="all",
-        run_id=run_id,
+            cell_id=stage1_cell,
+            model_names=model_names,
+            split=split,
+            rule=ensemble_rule,
+            threshold=ensemble_threshold,
+            cascade_low=0.4,
+            cascade_high=0.55,
+            single_user_only=None,
+            batch_size=64,
+            export_videos=False,
+            use_symlink=True,
+            outcomes="all",
+            run_id=run_id,
         )
     except Exception as exc:
         print(f"ERROR en export ensemble etapa 1: {exc}", file=sys.stderr, flush=True)
