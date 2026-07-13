@@ -1,0 +1,7 @@
+{
+  "id": "verifier_confusable",
+  "description": "Etapa 2: solo robo (6) vs confusables 2, 3, 14 — resto excluido del train/eval",
+  "exclude": [0, 1, 4, 5, 7, 8, 9, 10, 11, 12, 13],
+  "remap": {},
+  "robbery_class": 6
+}
