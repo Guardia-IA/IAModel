@@ -21,7 +21,7 @@ TEMP_CLIPS = None  # Solo modo CSV_PATH: None = temp_clips en dir del CSV
 # OUTPUT_BASE = carpeta donde van temp_clips/ y data_result/
 #   temp_clips/{0,1,2,...}/ = clips por categoría
 #   data_result/{0,1,2,...}/{clip_name}/ = meta.json + user_X/
-OUTPUT_BASE = "/home/angel/DatosEntrenamiento/datos_1/data"   # None = output junto al script
+OUTPUT_BASE = "/home/angel/DatosEntrenamiento/datos_1/data_yolo26m"   # None = output junto al script
 TEMP_BASE = None     # Legacy: solo para get_experiments si no usas OUTPUT_BASE unificado.
 
 CLIP_META_PATH = None  # build_clip_index genera clip_meta.csv (índice de todos los meta.json).
@@ -44,7 +44,7 @@ VAAPI_DEVICE = None   # None = sin VAAPI
 # --- MODELO YOLO POSE ---
 # Usado por pose_extractor_clean y pose_extractor_preflight.
 # yolo26n: ligero y más preciso que yolo11n. yolo26s/m y yolo11x para más calidad.
-YOLO_POSE_MODEL = "yolo26n-pose.pt"
+YOLO_POSE_MODEL = "yolo26m-pose.pt"
 
 
 def _find_csv_files(root: str):
