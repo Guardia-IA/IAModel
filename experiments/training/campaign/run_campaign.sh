@@ -49,6 +49,24 @@ strip_run_id_from_extra() {
   EXTRA_ARGS=("${out[@]}")
 }
 
+strip_data_root_from_extra() {
+  local out=()
+  local skip=0
+  local a
+  for a in "${EXTRA_ARGS[@]}"; do
+    if [[ $skip -eq 1 ]]; then
+      skip=0
+      continue
+    fi
+    if [[ "$a" == "--data-root" ]]; then
+      skip=1
+      continue
+    fi
+    out+=("$a")
+  done
+  EXTRA_ARGS=("${out[@]}")
+}
+
 ensure_run_id() {
   if [[ -n "$RUN_ID" ]]; then
     return 0
@@ -149,6 +167,7 @@ run_preflight() {
 
 run_train_fg() {
   ensure_run_id
+  strip_data_root_from_extra
   local logfile
   logfile="$(logs_dir)/train.log"
   log_banner "$logfile" "TRAIN (foreground)"
@@ -162,6 +181,7 @@ run_train_fg() {
 
 run_train_bg() {
   ensure_run_id
+  strip_data_root_from_extra
   local logfile pidfile
   logfile="$(logs_dir)/train.log"
   pidfile="$(logs_dir)/train.pid"
@@ -194,6 +214,7 @@ SCRIPT
 
 run_eval_fg() {
   ensure_run_id
+  strip_data_root_from_extra
   local logfile
   logfile="$(logs_dir)/eval.log"
   log_banner "$logfile" "EVAL (foreground)"
@@ -206,6 +227,7 @@ run_eval_fg() {
 
 run_eval_bg() {
   ensure_run_id
+  strip_data_root_from_extra
   local logfile pidfile train_pidfile
   logfile="$(logs_dir)/eval.log"
   pidfile="$(logs_dir)/eval.pid"
