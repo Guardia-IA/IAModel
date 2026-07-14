@@ -47,12 +47,49 @@ def _copy_with_label(ex: "PoseExample", label: int) -> "PoseExample":
     )
 
 
+def categories_below_clip_threshold(
+    folder_scan: Dict[int, Dict[str, int]],
+    threshold: int,
+    *,
+    count_key: str = "clips",
+) -> List[int]:
+    """Categorías con menos de `threshold` clips listos (p. ej. meta.json en data_result)."""
+    thr = max(1, int(threshold))
+    out: List[int] = []
+    for cat, info in sorted(folder_scan.items(), key=lambda x: int(x[0])):
+        n = int((info or {}).get(count_key, 0) or 0)
+        if n < thr:
+            out.append(int(cat))
+    return out
+
+
+def resolve_class_map_spec(
+    class_map_spec: Dict[str, Any],
+    folder_scan: Optional[Dict[int, Dict[str, int]]] = None,
+) -> Dict[str, Any]:
+    """
+    Fusiona exclude estático + exclude_below_clip_count (dinámico según inventario).
+    Devuelve copia del spec con 'exclude' ya resuelto (lista ordenada).
+    """
+    spec = deepcopy(class_map_spec or {})
+    exclude = {int(x) for x in spec.get("exclude", [])}
+    threshold = spec.get("exclude_below_clip_count")
+    if threshold is not None and folder_scan:
+        for cat in categories_below_clip_threshold(folder_scan, int(threshold)):
+            exclude.add(cat)
+    spec["exclude"] = sorted(exclude)
+    if threshold is not None:
+        spec["exclude_below_clip_count"] = int(threshold)
+    return spec
+
+
 def apply_class_map_spec(
     examples: List["PoseExample"],
     class_map_spec: Dict[str, Any],
 ) -> List["PoseExample"]:
     """
     - exclude: lista de categorías de carpeta a eliminar del dataset.
+    - exclude_below_clip_count: resolver antes con resolve_class_map_spec + folder_scan.
     - remap: dict orig -> nueva etiqueta de entrenamiento (solo multiclass).
     """
     spec = class_map_spec or {}
@@ -73,15 +110,22 @@ def apply_class_map_spec(
     return out
 
 
-def plan_class_map_block(class_map_spec: Dict[str, Any]) -> Dict[str, Any]:
-    """Subconjunto serializable para training_plan.json."""
-    return {
-        "id": class_map_spec.get("id"),
-        "description": class_map_spec.get("description"),
-        "exclude": [int(x) for x in class_map_spec.get("exclude", [])],
-        "remap": {str(k): int(v) for k, v in (class_map_spec.get("remap") or {}).items()},
-        "robbery_class": int(class_map_spec.get("robbery_class", 6)),
+def plan_class_map_block(
+    class_map_spec: Dict[str, Any],
+    folder_scan: Optional[Dict[int, Dict[str, int]]] = None,
+) -> Dict[str, Any]:
+    """Subconjunto serializable para training_plan.json (exclude ya resuelto)."""
+    resolved = resolve_class_map_spec(class_map_spec, folder_scan)
+    block: Dict[str, Any] = {
+        "id": resolved.get("id"),
+        "description": resolved.get("description"),
+        "exclude": [int(x) for x in resolved.get("exclude", [])],
+        "remap": {str(k): int(v) for k, v in (resolved.get("remap") or {}).items()},
+        "robbery_class": int(resolved.get("robbery_class", 6)),
     }
+    if resolved.get("exclude_below_clip_count") is not None:
+        block["exclude_below_clip_count"] = int(resolved["exclude_below_clip_count"])
+    return block
 
 
 def adjust_augment_for_fp_hardened(

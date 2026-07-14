@@ -2,21 +2,6 @@
   "enabled": true,
   "include_identity": true,
   "default": 0,
-  "categories": {
-    "0": 3,
-    "1": 3,
-    "2": 2,
-    "3": 5,
-    "4": 3,
-    "5": 3,
-    "6": 8,
-    "7": 2,
-    "8": 2,
-    "9": 2,
-    "10": 2,
-    "12": 2,
-    "13": 2,
-    "14": 3
-  },
-  "_comment": "categories[N]=variantes augment SOLO train. Clase 6=robo (recall). Resto=menos FP normal→6. Usa preflight_train.py --write-config."
+  "categories": {},
+  "_comment": "default=0: sin augment por clip salvo clases minoritarias. El preflight propone solo lo necesario para balancear train. Regenerar: preflight_campaign.py --write-all"
 }

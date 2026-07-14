@@ -1,0 +1,8 @@
+{
+  "id": "drop_below_50",
+  "description": "Excluye automáticamente categorías con menos de 50 clips (meta.json) en data_result",
+  "exclude": [],
+  "exclude_below_clip_count": 50,
+  "remap": {},
+  "robbery_class": 6
+}

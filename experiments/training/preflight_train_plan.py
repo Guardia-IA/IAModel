@@ -264,15 +264,31 @@ def build_training_plan(
     )
     if class_map_spec:
         try:
-            from .class_map_utils import apply_class_map_spec, plan_class_map_block
+            from .class_map_utils import (
+                apply_class_map_spec,
+                plan_class_map_block,
+                resolve_class_map_spec,
+            )
         except ImportError:
-            from class_map_utils import apply_class_map_spec, plan_class_map_block  # type: ignore
+            from class_map_utils import (  # type: ignore
+                apply_class_map_spec,
+                plan_class_map_block,
+                resolve_class_map_spec,
+            )
+        resolved_map = resolve_class_map_spec(class_map_spec, folder_scan)
         n_before = len(examples)
-        examples = apply_class_map_spec(examples, class_map_spec)
+        examples = apply_class_map_spec(examples, resolved_map)
+        excluded = resolved_map.get("exclude") or []
         print(
-            f"  Class map {class_map_spec.get('id')}: "
+            f"  Class map {resolved_map.get('id')}: "
             f"{n_before} → {len(examples)} ejemplos tras exclude/remap"
         )
+        if resolved_map.get("exclude_below_clip_count") is not None:
+            print(
+                f"  Umbral exclude_below_clip_count={resolved_map['exclude_below_clip_count']}: "
+                f"excluidas {excluded}"
+            )
+        class_map_spec = resolved_map
     global_counts = count_examples_by_folder_category(examples)
     n_total = len(examples)
     print(f"  Ejemplos válidos: {CYAN}{n_total}{RESET} | categorías: {len(global_counts)}")
@@ -324,6 +340,8 @@ def build_training_plan(
         include_identity=include_identity,
     )
     for cat in folder_scan:
+        if class_map_spec and int(cat) in set(class_map_spec.get("exclude") or []):
+            continue
         proposed_aug.setdefault(int(cat), 0)
 
     proposed_cfg = _build_proposed_config(
@@ -427,7 +445,7 @@ def build_training_plan(
             from .class_map_utils import plan_class_map_block
         except ImportError:
             from class_map_utils import plan_class_map_block  # type: ignore
-        plan["class_map"] = plan_class_map_block(class_map_spec)
+        plan["class_map"] = plan_class_map_block(class_map_spec, folder_scan)
 
     if not skip_time_estimate:
         est_title = "7) Estimación de tiempo (todos los experimentos en model_config.py)"

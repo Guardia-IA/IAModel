@@ -150,7 +150,7 @@
       "id": "mc_full",
       "task": "multiclass",
       "pose_source": "full",
-      "class_map_id": "full",
+      "class_map_id": "drop_below_50",
       "aug_profile": "baseline"
     },
     {
@@ -164,7 +164,7 @@
       "id": "mc_filtered",
       "task": "multiclass",
       "pose_source": "filtered",
-      "class_map_id": "full",
+      "class_map_id": "drop_below_50",
       "aug_profile": "baseline"
     },
     {
@@ -178,7 +178,7 @@
       "id": "bin_full",
       "task": "binary",
       "pose_source": "full",
-      "class_map_id": "full",
+      "class_map_id": "drop_below_50",
       "aug_profile": "baseline"
     },
     {
@@ -192,14 +192,14 @@
       "id": "bin_filtered",
       "task": "binary",
       "pose_source": "filtered",
-      "class_map_id": "full",
+      "class_map_id": "drop_below_50",
       "aug_profile": "baseline"
     },
     {
       "id": "bin_filtered_hardened",
       "task": "binary",
       "pose_source": "filtered",
-      "class_map_id": "full",
+      "class_map_id": "drop_below_50",
       "aug_profile": "fp_hardened"
     }
   ]
