@@ -920,6 +920,13 @@ def _execute_eval(
                 f"  Mejor barrido: FP={best['fp']} FN={best['fn']} F1={best['f1_pct']:.1f}% "
                 f"Rec={best['recall_pct']:.1f}%"
             )
+            print(
+                f"    policy: mode={best['alarm_mode']} "
+                f"p_win={best['p_window_threshold']} full_clip={best['full_clip_threshold']} "
+                f"min_cons={best['min_consecutive_windows']} min_kin={best['min_s_kin']} "
+                f"req_kin={best['require_robbery_like']} req_conceal={best['require_reach_then_conceal_or_conceal']} "
+                f"post_veto={best['post_purchase_veto_windows']}"
+            )
             hits = [r for r in sweep_rows if r["meets_fp_target"]]
             if hits:
                 h = hits[0]
