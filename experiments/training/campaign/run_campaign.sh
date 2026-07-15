@@ -298,6 +298,106 @@ SCRIPT
   echo "  tail -f ${pipeline_log}"
 }
 
+run_sliding_window_fg() {
+  ensure_run_id
+  local mode="${SLIDING_MODE:-full}"
+  local logfile
+  logfile="$(logs_dir)/sliding_window.log"
+  log_banner "$logfile" "SLIDING WINDOW (${mode})"
+
+  local sw_cell="${SW_CELL:-bin_full}"
+  local sw_model="${SW_MODEL:-modelo_12}"
+  local sw_split="${SW_SPLIT:-val}"
+  local sw_max_fp="${SW_MAX_FP:-1}"
+
+  if [[ -z "${GUADIA_DATA_RESULT_ROOT:-}" ]]; then
+    echo "[!] GUADIA_DATA_RESULT_ROOT no está definido — el eval puede fallar si los UIDs no resuelven poses." >&2
+  fi
+
+  echo "Run: ${RUN_ID}"
+  echo "Modo: ${mode} | celda=${sw_cell} modelo=${sw_model} split=${sw_split} max_fp=${sw_max_fp}"
+  echo "Log: ${logfile}"
+
+  {
+    echo "--- sliding_window mode=${mode} ---"
+    RUN_ID="${RUN_ID}" \
+      CELL="${sw_cell}" \
+      MODEL="${sw_model}" \
+      SPLIT="${sw_split}" \
+      MAX_FP="${sw_max_fp}" \
+      "${SCRIPT_DIR}/run_sliding_window_eval.sh" "${mode}" "${EXTRA_ARGS[@]}"
+    write_run_meta "sliding_window_done" >/dev/null
+  } 2>&1 | tee -a "$logfile"
+}
+
+run_sliding_window_bg() {
+  ensure_run_id
+  local logfile pidfile
+  logfile="$(logs_dir)/sliding_window.log"
+  pidfile="$(logs_dir)/sliding_window.pid"
+
+  if [[ -f "$pidfile" ]] && kill -0 "$(cat "$pidfile")" 2>/dev/null; then
+    echo "Sliding-window ya en curso (PID $(cat "$pidfile")). Log: ${logfile}" >&2
+    exit 1
+  fi
+
+  log_banner "$logfile" "SLIDING WINDOW (background)"
+  write_run_meta "sliding_window_start" >/dev/null
+
+  local mode="${SLIDING_MODE:-full}"
+  local sw_cell="${SW_CELL:-bin_full}"
+  local sw_model="${SW_MODEL:-modelo_12}"
+  local sw_split="${SW_SPLIT:-val}"
+  local sw_max_fp="${SW_MAX_FP:-1}"
+  local extra
+  extra="$(extra_py_args)"
+
+  nohup bash >> "${logfile}" 2>&1 <<SCRIPT &
+set -euo pipefail
+cd "${SCRIPT_DIR}"
+export RUN_ID="${RUN_ID}"
+export GUADIA_DATA_RESULT_ROOT="${GUADIA_DATA_RESULT_ROOT:-}"
+export SLIDING_MODE="${mode}"
+export SW_CELL="${sw_cell}"
+export SW_MODEL="${sw_model}"
+export SW_SPLIT="${sw_split}"
+export SW_MAX_FP="${sw_max_fp}"
+./run_sliding_window_eval.sh "${mode}" ${extra}
+SCRIPT
+
+  echo $! > "$pidfile"
+  echo "[OK] Sliding-window en background PID $(cat "$pidfile")"
+  echo "  tail -f ${logfile}"
+}
+
+run_sliding_window_battery() {
+  ensure_run_id
+  local logfile
+  logfile="$(logs_dir)/sliding_window_battery.log"
+  log_banner "$logfile" "SLIDING WINDOW BATTERY (full + fp-only + multiclass)"
+
+  if [[ -z "${GUADIA_DATA_RESULT_ROOT:-}" ]]; then
+    echo "[!] Define GUADIA_DATA_RESULT_ROOT antes de lanzar la batería." >&2
+    exit 1
+  fi
+
+  echo "Run: ${RUN_ID} | Log: ${logfile}"
+
+  {
+    echo "=== 1/3 bin_full full + sweep ==="
+    SLIDING_MODE=full SW_CELL=bin_full "${SCRIPT_DIR}/run_sliding_window_eval.sh" full "${EXTRA_ARGS[@]}"
+    echo ""
+    echo "=== 2/3 bin_full fp-only + sweep ==="
+    SLIDING_MODE=fp-only SW_CELL=bin_full "${SCRIPT_DIR}/run_sliding_window_eval.sh" fp-only "${EXTRA_ARGS[@]}"
+    echo ""
+    echo "=== 3/3 mc_full multiclass + sweep ==="
+    SLIDING_MODE=multiclass SW_CELL=mc_full "${SCRIPT_DIR}/run_sliding_window_eval.sh" multiclass "${EXTRA_ARGS[@]}"
+    write_run_meta "sliding_window_battery_done" >/dev/null
+    echo ""
+    echo "[FIN] Batería anti-FP completada RUN_ID=${RUN_ID}"
+  } 2>&1 | tee -a "$logfile"
+}
+
 show_status() {
   ensure_run_id
   echo "RUN_ID actual: ${RUN_ID}"
@@ -305,7 +405,7 @@ show_status() {
   if [[ -f "$(run_root)/run_meta.json" ]]; then
     echo "Meta: $(run_root)/run_meta.json"
   fi
-  for name in preflight train eval pipeline; do
+  for name in preflight train eval pipeline sliding_window; do
     local pf
     pf="$(logs_dir)/${name}.pid"
     if [[ -f "$pf" ]] && kill -0 "$(cat "$pf")" 2>/dev/null; then
@@ -363,6 +463,50 @@ case "$CMD" in
     ensure_run_id
     exec "$PY" export_ensemble_fp.py --split val --outcomes errors $(run_args) "${EXTRA_ARGS[@]}"
     ;;
+  sliding-window|sliding-window-fg)
+    SLIDING_MODE="${SLIDING_MODE:-full}"
+    run_sliding_window_fg
+    ;;
+  sliding-window-fp)
+    SLIDING_MODE=fp-only
+    run_sliding_window_fg
+    ;;
+  sliding-window-mc|sliding-window-multiclass)
+    SLIDING_MODE=multiclass
+    run_sliding_window_fg
+    ;;
+  sliding-window-strict)
+    SLIDING_MODE=strict
+    run_sliding_window_fg
+    ;;
+  sliding-window-bg)
+    SLIDING_MODE="${SLIDING_MODE:-full}"
+    run_sliding_window_bg
+    ;;
+  sliding-window-battery)
+    run_sliding_window_battery
+    ;;
+  sliding-window-battery-bg)
+    ensure_run_id
+    local logfile pidfile
+    logfile="$(logs_dir)/sliding_window_battery.log"
+    pidfile="$(logs_dir)/sliding_window_battery.pid"
+    if [[ -f "$pidfile" ]] && kill -0 "$(cat "$pidfile")" 2>/dev/null; then
+      echo "Batería sliding-window ya en curso (PID $(cat "$pidfile"))." >&2
+      exit 1
+    fi
+    write_run_meta "sliding_window_battery_start" >/dev/null
+    nohup bash >> "${logfile}" 2>&1 <<SCRIPT &
+set -euo pipefail
+cd "${SCRIPT_DIR}"
+export RUN_ID="${RUN_ID}"
+export GUADIA_DATA_RESULT_ROOT="${GUADIA_DATA_RESULT_ROOT:-}"
+./run_campaign.sh sliding-window-battery --run-id "${RUN_ID}"
+SCRIPT
+    echo $! > "$pidfile"
+    echo "[OK] Batería anti-FP en background PID $(cat "$pidfile")"
+    echo "  tail -f ${logfile}"
+    ;;
   summary)
     ensure_run_id
     exec "$PY" summarize_campaign.py $(run_args) "${EXTRA_ARGS[@]}"
@@ -396,21 +540,32 @@ Comandos:
   eval-fg          Eval en primer plano
   summary          CSV maestro del RUN_ID activo
   export-ensemble-fp  Re-exporta FP/FN del mejor ensemble (lee best_ensemble.json)
-  all              preflight → train-fg → eval-fg (todo primer plano)
-  all-bg           Nuevo RUN_ID + preflight → train-bg → eval-bg (nohup)
+  sliding-window      Ventanas 3s + filtros anti-FP (foreground, modo full)
+  sliding-window-fp   Solo clips FP/FN del CSV de errores modelo_12
+  sliding-window-mc   Multiclase mc_full + veto 6→3/4/5
+  sliding-window-strict  Filtro conservador + barrido
+  sliding-window-bg   Igual que sliding-window en BACKGROUND
+  sliding-window-battery  Batería completa: full + fp-only + multiclass
+  sliding-window-battery-bg  Batería en BACKGROUND (recomendado)
 
-Flujo recomendado (60 experimentos, SSH):
+Variables extra (sliding-window):
+  SW_CELL=bin_full   SW_MODEL=modelo_12   SW_SPLIT=val   SW_MAX_FP=1
+  SLIDING_MODE=full|fp-only|multiclass|strict
+
+Flujo anti-FP (tras eval de campaña yolo26m):
+  export GUADIA_DATA_RESULT_ROOT=/home/angel/.../data_yolo26m/data_result
+  export RUN_ID=campaign_20260714_164642
+  ./run_campaign.sh sliding-window-battery-bg
+  tail -f artifacts/runs/$RUN_ID/logs/sliding_window_battery.log
+
+Flujo entrenamiento (60 experimentos, SSH):
   ./run_campaign.sh new-run
   ./run_campaign.sh preflight
   ./run_campaign.sh train          # background
   tail -f artifacts/runs/<RUN_ID>/logs/train.log
   ./run_campaign.sh eval           # background tras train
+  ./run_campaign.sh all-bg         # o pipeline completo en background
 
-O todo de una vez:
-  ./run_campaign.sh all-bg
-  tail -f artifacts/runs/<RUN_ID>/logs/pipeline.log
-
-experiment_ids en campaign_config.json: "all" (60 arquitecturas).
 Pasar --run-id explícito en cualquier fase para reutilizar carpeta.
 EOF
     ;;
