@@ -154,7 +154,9 @@ def _load_poses(example: Any) -> Tuple[np.ndarray, Optional[Path]]:
     poses = np.load(pose_path)
     if valid_mask_path.is_file():
         vm = np.load(valid_mask_path)
-        poses = poses[vm].copy()
+        # valid_mask solo aplica a poses_full.npy (misma longitud T); poses.npy ya viene filtrado.
+        if vm.ndim == 1 and len(vm) == poses.shape[0]:
+            poses = poses[vm].copy()
     if np.any(np.isnan(poses)):
         poses = np.nan_to_num(poses, nan=0.0, posinf=0.0, neginf=0.0)
     return poses, valid_mask_path if valid_mask_path.is_file() else None

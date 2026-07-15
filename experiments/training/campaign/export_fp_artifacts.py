@@ -40,7 +40,7 @@ def example_export_paths(ex: PoseExample) -> Dict[str, str]:
     vm = getattr(ex, "valid_mask_path", None)
     if vm is not None and Path(vm).is_file():
         valid_mask_s = str(Path(vm).resolve())
-    elif (user_dir / "valid_mask.npy").is_file():
+    elif pose_path.name == "poses_full.npy" and (user_dir / "valid_mask.npy").is_file():
         valid_mask_s = str((user_dir / "valid_mask.npy").resolve())
 
     video_path = clip_video.resolve() if clip_video.is_file() else None
