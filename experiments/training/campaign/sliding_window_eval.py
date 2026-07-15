@@ -46,7 +46,7 @@ if str(CAMPAIGN_DIR) not in sys.path:
 try:
     from campaign_paths import ensure_cell_dirs, load_campaign_config, training_plan_path
     from evaluate_validation import build_split_examples, load_split_uids
-    from evaluate_campaign import _binary_metrics
+    from evaluate_campaign import _binary_metrics, load_best_ensemble_spec
     from export_fp_artifacts import example_export_paths
     from train_model_operations import (
         PoseExample,
@@ -223,6 +223,208 @@ class WindowModelRunner:
         return p_robo, pred_class, prob
 
 
+@dataclass
+class EnsembleSpec:
+    models: List[str]
+    rule: str
+    thresholds: List[float]
+    source: str = "explicit"
+    f1_pct: Optional[float] = None
+    fp: Optional[int] = None
+    fn: Optional[int] = None
+
+    @property
+    def threshold(self) -> float:
+        return float(self.thresholds[0]) if self.thresholds else 0.5
+
+    def file_tag(self) -> str:
+        model_tag = "+".join(m.replace(".pt", "") for m in self.models)
+        if self.rule == "mean":
+            t = f"{self.threshold:.2f}"
+            return f"ensemble_{self.rule}_{model_tag}_t{t}"
+        t = "+".join(f"{x:.2f}" for x in self.thresholds)
+        return f"ensemble_{self.rule}_{model_tag}_t{t}"
+
+
+def _ensemble_spec_from_json(spec: Dict[str, Any], source: str = "best_low_fp") -> EnsembleSpec:
+    models = [str(m) for m in spec.get("models") or []]
+    rule = str(spec.get("rule") or "mean")
+    thr = spec.get("threshold")
+    if isinstance(thr, list):
+        thresholds = [float(x) for x in thr]
+    elif thr is not None:
+        thresholds = [float(thr)] * max(len(models), 1)
+    else:
+        thrs = spec.get("thresholds")
+        thresholds = [float(x) for x in thrs] if isinstance(thrs, list) else [0.5]
+    if rule == "and" and len(thresholds) == 1 and len(models) > 1:
+        thresholds = thresholds * len(models)
+    return EnsembleSpec(
+        models=models,
+        rule=rule,
+        thresholds=thresholds,
+        source=source,
+        f1_pct=float(spec["f1_pct"]) if spec.get("f1_pct") is not None else None,
+        fp=int(spec["fp"]) if spec.get("fp") is not None else None,
+        fn=int(spec["fn"]) if spec.get("fn") is not None else None,
+    )
+
+
+def _ensemble_spec_from_grid_row(row: Dict[str, str], source: str = "best_f1") -> EnsembleSpec:
+    rule = str(row.get("decision_mode", "ensemble_mean")).replace("ensemble_", "")
+    models = [m.strip() for m in str(row.get("models", "")).split("|") if m.strip()]
+    thresholds = [float(t) for t in str(row.get("thresholds", "0.5")).split("|") if t.strip()]
+    if rule == "mean" and len(thresholds) > 1:
+        thresholds = [thresholds[0]]
+    if rule == "and" and len(thresholds) == 1 and len(models) > 1:
+        thresholds = thresholds * len(models)
+    return EnsembleSpec(
+        models=models,
+        rule=rule,
+        thresholds=thresholds,
+        source=source,
+        f1_pct=float(row.get("f1_pct", 0) or 0),
+        fp=int(float(row.get("fp", 0) or 0)),
+        fn=int(float(row.get("fn", 0) or 0)),
+    )
+
+
+def load_best_f1_ensemble_spec(reports_dir: Path, split: str) -> EnsembleSpec:
+    grid = reports_dir / f"{split}_ensemble_grid.csv"
+    if not grid.is_file():
+        raise FileNotFoundError(
+            f"No hay {grid.name}. Ejecuta evaluate_campaign.py antes o usa --ensemble-models explícito."
+        )
+    rows = list(csv.DictReader(grid.open(encoding="utf-8")))
+    ens_rows = [r for r in rows if str(r.get("decision_mode", "")).startswith("ensemble_")]
+    if not ens_rows:
+        raise RuntimeError(f"Sin filas ensemble en {grid}")
+    best = max(ens_rows, key=lambda r: float(r.get("f1_pct", 0) or 0))
+    return _ensemble_spec_from_grid_row(best, source="best_f1")
+
+
+def resolve_ensemble_spec(
+    args: argparse.Namespace,
+    reports_dir: Path,
+    split: str,
+) -> EnsembleSpec:
+    if args.ensemble_models:
+        rule = str(args.ensemble_rule or "mean")
+        thrs = (
+            [float(args.ensemble_threshold)] * len(args.ensemble_models)
+            if rule == "and"
+            else [float(args.ensemble_threshold)]
+        )
+        return EnsembleSpec(
+            models=[_normalize_model_name(m).replace(".pt", "") for m in args.ensemble_models],
+            rule=rule,
+            thresholds=thrs,
+            source="explicit",
+        )
+    source = str(args.ensemble_source or "best_f1")
+    if source == "best_f1":
+        return load_best_f1_ensemble_spec(reports_dir, split)
+    if source in ("best_low_fp", "auto"):
+        spec = load_best_ensemble_spec(reports_dir, split)
+        if spec is None:
+            raise FileNotFoundError(f"No hay {split}_best_ensemble.json en {reports_dir}")
+        return _ensemble_spec_from_json(spec, source=source)
+    raise ValueError(f"ensemble_source desconocido: {source!r}")
+
+
+class WindowEnsembleRunner:
+    """Ensemble binario: mean / and sobre p_robo de varios checkpoints."""
+
+    def __init__(self, models_dir: Path, spec: EnsembleSpec, device: Optional[torch.device] = None):
+        self.spec = spec
+        self.tag = spec.file_tag()
+        self.models_dir = models_dir
+        self.runners: List[WindowModelRunner] = []
+        for name in spec.models:
+            path = models_dir / _normalize_model_name(name)
+            if not path.is_file():
+                raise FileNotFoundError(f"No existe modelo ensemble: {path}")
+            self.runners.append(WindowModelRunner(path, device=device))
+        if not self.runners:
+            raise ValueError("Ensemble sin modelos")
+        self.is_binary = all(r.is_binary for r in self.runners)
+
+    def _combine(self, p_list: Sequence[float]) -> Tuple[float, bool]:
+        rule = self.spec.rule.lower()
+        thrs = self.spec.thresholds
+        if rule == "mean":
+            p = float(np.mean(p_list))
+            thr = thrs[0] if thrs else 0.5
+            return p, p >= thr
+        if rule == "and":
+            if len(thrs) < len(p_list):
+                thrs = thrs + [thrs[-1]] * (len(p_list) - len(thrs))
+            ok = all(p >= t for p, t in zip(p_list, thrs))
+            p = float(np.mean(p_list))
+            return p, ok
+        raise ValueError(f"Regla ensemble no soportada: {rule!r} (mean|and)")
+
+    @torch.no_grad()
+    def predict_poses(self, poses: np.ndarray) -> Tuple[float, int, np.ndarray]:
+        if len(poses) < 2:
+            return 0.0, 0, np.zeros(2, dtype=np.float64)
+        p_list: List[float] = []
+        pred_classes: List[int] = []
+        for runner in self.runners:
+            p_robo, pred_class, _ = runner.predict_poses(poses)
+            p_list.append(p_robo)
+            pred_classes.append(pred_class)
+        p_robo, alarm = self._combine(p_list)
+        pred_class = 6 if alarm else int(pred_classes[0] if pred_classes else 0)
+        return p_robo, pred_class, np.array(p_list, dtype=np.float64)
+
+
+def make_predictor(
+    args: argparse.Namespace,
+    arts: Dict[str, Path],
+) -> Tuple[Any, TemporalPolicy]:
+    policy = TemporalPolicy(
+        window_sec=args.window_sec,
+        stride_sec=args.stride_sec,
+        fps=args.fps,
+        p_window_threshold=args.p_window_threshold,
+        full_clip_threshold=args.full_clip_threshold,
+        min_consecutive_windows=args.min_consecutive_windows,
+        min_s_kin=args.min_s_kin,
+        require_robbery_like=not args.no_require_kin,
+        require_reach_then_conceal_or_conceal=args.require_conceal,
+        post_purchase_veto_windows=args.post_purchase_veto_windows,
+        alarm_mode=args.alarm_mode,
+        use_full_clip_baseline=not args.windows_only,
+        veto_isolated_spike=not args.allow_isolated_spike,
+    )
+
+    predictor = str(args.predictor or "single").lower()
+    if predictor == "single":
+        model_path = arts["models_dir"] / _normalize_model_name(args.model)
+        if not model_path.is_file():
+            raise FileNotFoundError(f"No existe modelo: {model_path}")
+        runner: Any = WindowModelRunner(model_path)
+        runner.tag = model_path.stem  # type: ignore[attr-defined]
+        print(f"  Checkpoint: {model_path} (binario={runner.is_binary})", flush=True)
+        return runner, policy
+
+    spec = resolve_ensemble_spec(args, arts["reports_dir"], args.split)
+    runner = WindowEnsembleRunner(arts["models_dir"], spec)
+    for r in runner.runners:
+        print(f"  Checkpoint ensemble: {r.model_path}", flush=True)
+    thr = spec.threshold
+    policy.full_clip_threshold = thr
+    if args.p_window_threshold == 0.50:
+        policy.p_window_threshold = thr
+    print(
+        f"  Ensemble ({spec.source}): {'|'.join(spec.models)} {spec.rule} @ {spec.thresholds} "
+        f"| val F1={spec.f1_pct}% FP={spec.fp} FN={spec.fn}",
+        flush=True,
+    )
+    return runner, policy
+
+
 def iter_windows(
     n_frames: int,
     *,
@@ -250,7 +452,7 @@ def iter_windows(
 
 def build_timeline(
     example: Any,
-    runner: WindowModelRunner,
+    runner: Any,
     policy: TemporalPolicy,
     *,
     baseline_p: Optional[float] = None,
@@ -264,7 +466,10 @@ def build_timeline(
 
     p_full, cls_full, _ = runner.predict_poses(poses)
     baseline_p = float(baseline_p if baseline_p is not None else p_full)
-    baseline_alarm = baseline_p >= policy.full_clip_threshold
+    if isinstance(runner, WindowEnsembleRunner):
+        baseline_alarm = int(cls_full) == 6
+    else:
+        baseline_alarm = baseline_p >= policy.full_clip_threshold
 
     window_frames = max(int(round(policy.window_sec * fps)), policy.min_window_frames)
     stride_frames = max(1, int(round(policy.stride_sec * fps)))
@@ -558,11 +763,144 @@ def _load_errors_uids(csv_path: Path) -> Optional[set]:
     return uids if uids else None
 
 
+def _execute_eval(
+    args: argparse.Namespace,
+    *,
+    runner: Any,
+    policy: TemporalPolicy,
+    tag: str,
+    examples: Sequence[Any],
+    pool_info: Dict[str, Any],
+    reports_dir: Path,
+    cell_id: str,
+) -> Dict[str, Any]:
+    is_binary = bool(getattr(runner, "is_binary", True))
+    kind = "ensemble" if isinstance(runner, WindowEnsembleRunner) else "single"
+    print(
+        f"  Predictor={kind} tag={tag} ({'binario' if is_binary else 'multiclase'}) "
+        f"| ventana={args.window_sec}s | clips={len(examples)}",
+        flush=True,
+    )
+
+    timelines: List[ClipTimeline] = []
+    for i, ex in enumerate(examples):
+        if (i + 1) % 50 == 0 or i == 0:
+            print(f"  [{tag}] Timeline {i + 1}/{len(examples)}...", flush=True)
+        timelines.append(build_timeline(ex, runner, policy))
+
+    summary = evaluate_timelines(timelines, label=tag)
+    summary["policy"] = asdict(policy)
+    summary["pool_info"] = pool_info
+    summary["predictor_tag"] = tag
+    summary["predictor_kind"] = kind
+    if isinstance(runner, WindowEnsembleRunner):
+        summary["ensemble"] = asdict(runner.spec)
+    else:
+        summary["model"] = tag
+    summary["cell_id"] = cell_id
+    summary["split"] = args.split
+
+    out_json = reports_dir / f"{args.split}_sliding_window_{tag}_summary.json"
+    with open(out_json, "w", encoding="utf-8") as f:
+        json.dump(summary, f, indent=2, ensure_ascii=False)
+        f.write("\n")
+
+    detail_rows: List[Dict[str, Any]] = []
+    for tl in timelines:
+        detail_rows.append(
+            {
+                "uid": tl.uid,
+                "true_label": tl.true_label,
+                "folder_category": tl.folder_category,
+                "baseline_p_robo": tl.baseline_p_robo,
+                "baseline_alarm": int(tl.baseline_alarm),
+                "final_alarm": int(tl.final_alarm),
+                "filter_reason": tl.filter_reason,
+                "n_windows": len(tl.windows),
+                "max_window_p": max((w.p_robo for w in tl.windows), default=0.0),
+                "clip_path": tl.clip_path,
+                "pose_path": tl.pose_path,
+            }
+        )
+    detail_csv = reports_dir / f"{args.split}_sliding_window_{tag}_clips.csv"
+    _write_csv(
+        detail_csv,
+        detail_rows,
+        fieldnames=list(detail_rows[0].keys()) if detail_rows else ["uid"],
+    )
+
+    fp_removed_path = reports_dir / f"{args.split}_sliding_window_{tag}_fp_removed.txt"
+    remaining_fp_path = reports_dir / f"{args.split}_sliding_window_{tag}_fp_remaining.txt"
+    fn_lost_path = reports_dir / f"{args.split}_sliding_window_{tag}_tp_lost.txt"
+
+    def _write_uid_list(path: Path, uids: Sequence[str], header: str) -> None:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(f"# {header}\n")
+            for u in uids:
+                f.write(f"{u}\n")
+
+    _write_uid_list(fp_removed_path, summary["fp_removed_uids"], "FP eliminados por filtro temporal/cinemático")
+    _write_uid_list(remaining_fp_path, summary["remaining_fp_uids"], "FP que siguen tras filtro")
+    _write_uid_list(fn_lost_path, summary["tp_lost_uids"], "Robos perdidos en baseline pero filtrados")
+
+    bm = summary["baseline"]
+    fm = summary["filtered"]
+    print(f"\n=== {tag} — split {args.split} ===")
+    print(
+        f"BASELINE  TP={bm['tp']} FP={bm['fp']} FN={bm['fn']} | "
+        f"F1={bm['f1_pct']:.1f}% Rec={bm['recall_pct']:.1f}% FP%={bm['fp_rate_pct']:.2f}"
+    )
+    print(
+        f"FILTRADO  TP={fm['tp']} FP={fm['fp']} FN={fm['fn']} | "
+        f"F1={fm['f1_pct']:.1f}% Rec={fm['recall_pct']:.1f}% FP%={fm['fp_rate_pct']:.2f}"
+    )
+    print(f"  FP eliminados: {summary['fp_removed']} | Robos perdidos: {summary['tp_lost']}")
+    print(f"  Resumen: {out_json}")
+
+    if args.sweep:
+        print(f"\n=== Barrido [{tag}] ===", flush=True)
+        sweep_rows = sweep_policies(
+            timelines,
+            is_binary=is_binary,
+            max_fp_target=args.max_fp_target,
+            min_recall_pct=args.min_recall_pct,
+        )
+        sweep_csv = reports_dir / f"{args.split}_sliding_window_{tag}_sweep.csv"
+        if sweep_rows:
+            fields = list(sweep_rows[0].keys())
+            _write_csv(sweep_csv, sweep_rows[:500], fieldnames=fields)
+            best = sweep_rows[0]
+            print(
+                f"  Mejor barrido: FP={best['fp']} FN={best['fn']} F1={best['f1_pct']:.1f}% "
+                f"Rec={best['recall_pct']:.1f}%"
+            )
+            hits = [r for r in sweep_rows if r["meets_fp_target"]]
+            if hits:
+                h = hits[0]
+                print(f"  ✓ FP≤{args.max_fp_target}: F1={h['f1_pct']:.1f}% Rec={h['recall_pct']:.1f}%")
+            else:
+                print(f"  ⚠ Ninguna config alcanza FP≤{args.max_fp_target}")
+            print(f"  CSV: {sweep_csv}")
+
+    summary["paths"] = {
+        "summary_json": str(out_json),
+        "clips_csv": str(detail_csv),
+        "fp_remaining": str(remaining_fp_path),
+    }
+    return summary
+
+
 def run_eval(args: argparse.Namespace) -> int:
     config = load_campaign_config()
     cell = next((c for c in config.get("cells", []) if c["id"] == args.cell), None)
     if cell is None:
         raise SystemExit(f"Celda desconocida: {args.cell}")
+
+    print(
+        f"  Celda={args.cell} task={cell.get('task')} pose={cell.get('pose_source')} "
+        f"→ models/{args.cell}/",
+        flush=True,
+    )
 
     arts = ensure_cell_dirs(args.cell, run_id=args.run_id)
     plan_path = training_plan_path(args.cell, run_id=args.run_id)
@@ -570,8 +908,14 @@ def run_eval(args: argparse.Namespace) -> int:
         raise SystemExit(f"Falta plan: {plan_path}")
 
     model_path = arts["models_dir"] / _normalize_model_name(args.model)
-    if not model_path.is_file():
+    pred_mode = str(args.predictor or "single").lower()
+    if pred_mode in ("single", "both") and not model_path.is_file():
         raise SystemExit(f"No existe modelo: {model_path}")
+    if pred_mode == "ensemble":
+        try:
+            resolve_ensemble_spec(args, arts["reports_dir"], args.split)
+        except (FileNotFoundError, RuntimeError) as exc:
+            raise SystemExit(str(exc)) from exc
 
     split_uids, split_meta = load_split_uids(split_name=args.split, training_plan_path=plan_path)
     split_meta["split_name"] = args.split
@@ -597,135 +941,40 @@ def run_eval(args: argparse.Namespace) -> int:
         examples = [ex for ex in examples if _example_uid(ex) in filter_uids or _example_uid(ex).split("/")[-1] in filter_uids]
         print(f"  Filtrado errors-csv: {len(examples)} clips", flush=True)
 
-    runner = WindowModelRunner(model_path)
-    policy = TemporalPolicy(
-        window_sec=args.window_sec,
-        stride_sec=args.stride_sec,
-        fps=args.fps,
-        p_window_threshold=args.p_window_threshold,
-        full_clip_threshold=args.full_clip_threshold,
-        min_consecutive_windows=args.min_consecutive_windows,
-        min_s_kin=args.min_s_kin,
-        require_robbery_like=not args.no_require_kin,
-        require_reach_then_conceal_or_conceal=args.require_conceal,
-        post_purchase_veto_windows=args.post_purchase_veto_windows,
-        alarm_mode=args.alarm_mode,
-        use_full_clip_baseline=not args.windows_only,
-        veto_isolated_spike=not args.allow_isolated_spike,
-    )
-
-    print(
-        f"  Modelo: {model_path.name} ({'binario' if runner.is_binary else 'multiclase'}) "
-        f"| ventana={args.window_sec}s stride={args.stride_sec}s | clips={len(examples)}",
-        flush=True,
-    )
-
-    timelines: List[ClipTimeline] = []
-    for i, ex in enumerate(examples):
-        if (i + 1) % 50 == 0 or i == 0:
-            print(f"  Timeline {i + 1}/{len(examples)}...", flush=True)
-        tl = build_timeline(ex, runner, policy)
-        timelines.append(tl)
-
     reports_dir = arts["reports_dir"]
     reports_dir.mkdir(parents=True, exist_ok=True)
 
-    summary = evaluate_timelines(timelines, label=args.model)
-    summary["policy"] = asdict(policy)
-    summary["pool_info"] = pool_info
-    summary["model"] = str(model_path)
-    summary["cell_id"] = args.cell
-    summary["split"] = args.split
+    predictor_mode = str(args.predictor or "single").lower()
+    jobs: List[Tuple[str, argparse.Namespace]] = []
+    if predictor_mode == "both":
+        single_args = argparse.Namespace(**{**vars(args), "predictor": "single"})
+        ens_args = argparse.Namespace(**{**vars(args), "predictor": "ensemble"})
+        jobs = [("single", single_args), ("ensemble", ens_args)]
+    else:
+        jobs = [(predictor_mode, args)]
 
-    out_json = reports_dir / f"{args.split}_sliding_window_{model_path.stem}_summary.json"
-    with open(out_json, "w", encoding="utf-8") as f:
-        json.dump(summary, f, indent=2, ensure_ascii=False)
-        f.write("\n")
-
-    detail_rows: List[Dict[str, Any]] = []
-    for tl in timelines:
-        detail_rows.append(
-            {
-                "uid": tl.uid,
-                "true_label": tl.true_label,
-                "folder_category": tl.folder_category,
-                "baseline_p_robo": tl.baseline_p_robo,
-                "baseline_alarm": int(tl.baseline_alarm),
-                "final_alarm": int(tl.final_alarm),
-                "filter_reason": tl.filter_reason,
-                "n_windows": len(tl.windows),
-                "max_window_p": max((w.p_robo for w in tl.windows), default=0.0),
-                "clip_path": tl.clip_path,
-                "pose_path": tl.pose_path,
-            }
+    all_summaries: List[Dict[str, Any]] = []
+    for _label, job_args in jobs:
+        runner, policy = make_predictor(job_args, arts)
+        tag = str(getattr(runner, "tag", args.model))
+        summary = _execute_eval(
+            job_args,
+            runner=runner,
+            policy=policy,
+            tag=tag,
+            examples=examples,
+            pool_info=pool_info,
+            reports_dir=reports_dir,
+            cell_id=args.cell,
         )
-    detail_csv = reports_dir / f"{args.split}_sliding_window_{model_path.stem}_clips.csv"
-    _write_csv(
-        detail_csv,
-        detail_rows,
-        fieldnames=list(detail_rows[0].keys()) if detail_rows else ["uid"],
-    )
+        all_summaries.append(summary)
 
-    fp_removed_path = reports_dir / f"{args.split}_sliding_window_{model_path.stem}_fp_removed.txt"
-    remaining_fp_path = reports_dir / f"{args.split}_sliding_window_{model_path.stem}_fp_remaining.txt"
-    fn_lost_path = reports_dir / f"{args.split}_sliding_window_{model_path.stem}_tp_lost.txt"
-
-    def _write_uid_list(path: Path, uids: Sequence[str], header: str) -> None:
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(f"# {header}\n")
-            for u in uids:
-                f.write(f"{u}\n")
-
-    _write_uid_list(fp_removed_path, summary["fp_removed_uids"], "FP eliminados por filtro temporal/cinemático")
-    _write_uid_list(remaining_fp_path, summary["remaining_fp_uids"], "FP que siguen tras filtro")
-    _write_uid_list(fn_lost_path, summary["tp_lost_uids"], "Robos detectados en baseline pero perdidos tras filtro")
-
-    bm = summary["baseline"]
-    fm = summary["filtered"]
-    print(f"\n=== {model_path.name} — split {args.split} ===")
-    print(
-        f"BASELINE  TP={bm['tp']} FP={bm['fp']} FN={bm['fn']} | "
-        f"F1={bm['f1_pct']:.1f}% Rec={bm['recall_pct']:.1f}% FP%={bm['fp_rate_pct']:.2f}"
-    )
-    print(
-        f"FILTRADO  TP={fm['tp']} FP={fm['fp']} FN={fm['fn']} | "
-        f"F1={fm['f1_pct']:.1f}% Rec={fm['recall_pct']:.1f}% FP%={fm['fp_rate_pct']:.2f}"
-    )
-    print(f"  FP eliminados: {summary['fp_removed']} | Robos perdidos (ex-baseline TP): {summary['tp_lost']}")
-    print(f"  Resumen: {out_json}")
-    print(f"  Detalle clips: {detail_csv}")
-    print(f"  FP restantes: {remaining_fp_path}")
-
-    if args.sweep:
-        print("\n=== Barrido de políticas (sin re-inferencia) ===", flush=True)
-        sweep_rows = sweep_policies(
-            timelines,
-            is_binary=runner.is_binary,
-            max_fp_target=args.max_fp_target,
-            min_recall_pct=args.min_recall_pct,
-        )
-        sweep_csv = reports_dir / f"{args.split}_sliding_window_{model_path.stem}_sweep.csv"
-        if sweep_rows:
-            fields = list(sweep_rows[0].keys())
-            _write_csv(sweep_csv, sweep_rows[:500], fieldnames=fields)
-            best = sweep_rows[0]
-            print(
-                f"  Mejor barrido: FP={best['fp']} FN={best['fn']} F1={best['f1_pct']:.1f}% "
-                f"Rec={best['recall_pct']:.1f}% | fp_removed={best['fp_removed']} tp_lost={best['tp_lost']}"
-            )
-            print(f"  Política: min_cons={best['min_consecutive_windows']} min_kin={best['min_s_kin']} "
-                  f"p_win={best['p_window_threshold']} full_thr={best['full_clip_threshold']} "
-                  f"mode={best['alarm_mode']}")
-            print(f"  CSV barrido (top 500): {sweep_csv}")
-            hits = [r for r in sweep_rows if r["meets_fp_target"]]
-            if hits:
-                h = hits[0]
-                print(f"  ✓ Config con FP≤{args.max_fp_target}: F1={h['f1_pct']:.1f}% Rec={h['recall_pct']:.1f}% "
-                      f"(FN={h['fn']})")
-            else:
-                print(f"  ⚠ Ninguna config del barrido alcanza FP≤{args.max_fp_target}")
-        else:
-            print("  Sin filas en barrido (revisa min_recall_pct)")
+    if len(all_summaries) > 1:
+        combo_path = reports_dir / f"{args.split}_sliding_window_combined_summary.json"
+        with open(combo_path, "w", encoding="utf-8") as f:
+            json.dump(all_summaries, f, indent=2, ensure_ascii=False)
+            f.write("\n")
+        print(f"\n  Resumen combinado: {combo_path}")
 
     return 0
 
@@ -735,14 +984,26 @@ def main() -> int:
     ap.add_argument("--run-id", required=True)
     ap.add_argument("--cell", default="bin_full")
     ap.add_argument("--model", default="modelo_12")
+    ap.add_argument(
+        "--predictor",
+        choices=["single", "ensemble", "both"],
+        default="single",
+        help="single | ensemble (best F1 grid) | both",
+    )
+    ap.add_argument(
+        "--ensemble-source",
+        choices=["best_f1", "best_low_fp", "auto"],
+        default="best_f1",
+    )
+    ap.add_argument("--ensemble-models", nargs="*", default=None)
+    ap.add_argument("--ensemble-rule", choices=["mean", "and"], default=None)
+    ap.add_argument("--ensemble-threshold", type=float, default=0.5)
     ap.add_argument("--split", choices=["val", "test"], default="val")
-    ap.add_argument("--batch-size", type=int, default=64)
-    ap.add_argument("--errors-csv", default=None, help="Solo UIDs presentes en CSV (FP/FN exportado)")
+    ap.add_argument("--errors-csv", default=None)
 
     ap.add_argument("--window-sec", type=float, default=3.0)
     ap.add_argument("--stride-sec", type=float, default=1.0)
     ap.add_argument("--fps", type=float, default=DEFAULT_FPS)
-
     ap.add_argument("--p-window-threshold", type=float, default=0.50)
     ap.add_argument("--full-clip-threshold", type=float, default=0.50)
     ap.add_argument("--min-consecutive-windows", type=int, default=2)
@@ -751,10 +1012,9 @@ def main() -> int:
     ap.add_argument("--require-conceal", action="store_true")
     ap.add_argument("--post-purchase-veto-windows", type=int, default=3)
     ap.add_argument("--alarm-mode", choices=["filter_baseline", "windows_only"], default="filter_baseline")
-    ap.add_argument("--windows-only", action="store_true", help="No usar baseline clip completo")
+    ap.add_argument("--windows-only", action="store_true")
     ap.add_argument("--allow-isolated-spike", action="store_true")
-
-    ap.add_argument("--sweep", action="store_true", help="Barrido de políticas anti-FP")
+    ap.add_argument("--sweep", action="store_true")
     ap.add_argument("--max-fp-target", type=int, default=1)
     ap.add_argument("--min-recall-pct", type=float, default=0.0)
 

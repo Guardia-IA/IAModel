@@ -20,7 +20,7 @@ MODEL="${SW_MODEL:-modelo_12}"
 CELL="${SW_CELL:-bin_full}"
 MAX_FP="${SW_MAX_FP:-1}"
 
-CMD="${1:-full}"
+CMD="${1:-full-both}"
 shift || true
 
 common_args=(
@@ -34,56 +34,61 @@ common_args=(
 
 case "$CMD" in
   full)
-    exec "$PY" sliding_window_eval.py "${common_args[@]}" "$@"
+    exec "$PY" sliding_window_eval.py "${common_args[@]}" --predictor single "$@"
+    ;;
+  full-both|both)
+    # modelo_12 + mejor ensemble F1 del grid (típ. 11|12 mean @ 0.50)
+    exec "$PY" sliding_window_eval.py "${common_args[@]}" --predictor both "$@"
+    ;;
+  ensemble|ensemble-f1)
+    exec "$PY" sliding_window_eval.py \
+      --run-id "$RUN_ID" --cell "$CELL" --split "$SPLIT" \
+      --predictor ensemble --ensemble-source best_f1 \
+      --sweep --max-fp-target "$MAX_FP" "$@"
+    ;;
+  ensemble-low-fp)
+    # val_best_ensemble.json — conservador (6 FP, muchos FN)
+    exec "$PY" sliding_window_eval.py \
+      --run-id "$RUN_ID" --cell "$CELL" --split "$SPLIT" \
+      --predictor ensemble --ensemble-source best_low_fp \
+      --sweep --max-fp-target "$MAX_FP" "$@"
     ;;
   fp-only)
     ERR_CSV="${2:-artifacts/runs/${RUN_ID}/reports/${CELL}/${SPLIT}_errors_${MODEL}.csv}"
     if [[ ! -f "$ERR_CSV" ]]; then
       echo "ERROR: no existe $ERR_CSV" >&2
-      echo "Ejecuta antes: ./run_campaign.sh eval --run-id $RUN_ID --cells $CELL" >&2
       exit 1
     fi
     shift || true
-    exec "$PY" sliding_window_eval.py "${common_args[@]}" --errors-csv "$ERR_CSV" "$@"
+    exec "$PY" sliding_window_eval.py "${common_args[@]}" --predictor both --errors-csv "$ERR_CSV" "$@"
     ;;
   multiclass)
     exec "$PY" sliding_window_eval.py \
-      --run-id "$RUN_ID" \
-      --cell mc_full \
-      --model "$MODEL" \
-      --split "$SPLIT" \
-      --sweep \
-      --max-fp-target "$MAX_FP" \
-      "$@"
+      --run-id "$RUN_ID" --cell mc_full --model "$MODEL" --split "$SPLIT" \
+      --predictor single --sweep --max-fp-target "$MAX_FP" "$@"
     ;;
   strict)
     exec "$PY" sliding_window_eval.py \
-      --run-id "$RUN_ID" \
-      --cell "$CELL" \
-      --model "$MODEL" \
-      --split "$SPLIT" \
-      --min-consecutive-windows 3 \
-      --min-s-kin 0.50 \
-      --require-conceal \
-      --p-window-threshold 0.55 \
-      --full-clip-threshold 0.55 \
-      --sweep \
-      --max-fp-target "$MAX_FP" \
-      "$@"
+      --run-id "$RUN_ID" --cell "$CELL" --model "$MODEL" --split "$SPLIT" \
+      --predictor both \
+      --min-consecutive-windows 3 --min-s-kin 0.50 --require-conceal \
+      --p-window-threshold 0.55 --full-clip-threshold 0.55 \
+      --sweep --max-fp-target "$MAX_FP" "$@"
     ;;
   help|*)
     cat <<EOF
 Uso: GUADIA_DATA_RESULT_ROOT=... RUN_ID=... $0 <comando>
 
 Comandos:
-  full        Val completo + barrido anti-FP (default)
-  fp-only     Solo clips del CSV val_errors_\${MODEL}.csv
-  multiclass  mc_full + regla post-compra en ventanas
-  strict      Política conservadora + barrido
+  full-both     modelo_12 + mejor ensemble F1 + barrido (default batería)
+  full          Solo modelo_12
+  ensemble-f1   Solo mejor ensemble F1 (grid)
+  ensemble-low-fp  Ensemble auto val_best_ensemble.json (6 FP)
+  fp-only       FP/FN CSV con single+ensemble
+  multiclass    mc_full modelo_12
+  strict        both + filtros conservadores
 
-Defaults:
-  RUN_ID=$RUN_ID
-  CELL=$CELL  MODEL=$MODEL  SPLIT=$SPLIT  MAX_FP=$MAX_FP
+Defaults: RUN_ID=$RUN_ID CELL=$CELL MODEL=$MODEL
 EOF
     ;;
 esac

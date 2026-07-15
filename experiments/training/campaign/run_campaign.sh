@@ -374,7 +374,7 @@ run_sliding_window_battery() {
   ensure_run_id
   local logfile
   logfile="$(logs_dir)/sliding_window_battery.log"
-  log_banner "$logfile" "SLIDING WINDOW BATTERY (full + fp-only + multiclass)"
+  log_banner "$logfile" "SLIDING WINDOW BATTERY (modelo_12 + ensemble F1 + fp-only + mc)"
 
   if [[ -z "${GUADIA_DATA_RESULT_ROOT:-}" ]]; then
     echo "[!] Define GUADIA_DATA_RESULT_ROOT antes de lanzar la batería." >&2
@@ -384,14 +384,19 @@ run_sliding_window_battery() {
   echo "Run: ${RUN_ID} | Log: ${logfile}"
 
   {
-    echo "=== 1/3 bin_full full + sweep ==="
-    SLIDING_MODE=full SW_CELL=bin_full "${SCRIPT_DIR}/run_sliding_window_eval.sh" full "${EXTRA_ARGS[@]}"
+    echo "=== 1/3 bin_full — modelo_12 BINARIO argmax + ensemble F1 11|12 (both) + sweep ==="
+    SLIDING_MODE=full-both SW_CELL=bin_full "${SCRIPT_DIR}/run_sliding_window_eval.sh" full-both "${EXTRA_ARGS[@]}"
     echo ""
-    echo "=== 2/3 bin_full fp-only + sweep ==="
+    echo "=== 2/3 bin_full — fp-only modelo_12 + ensemble (both) + sweep ==="
     SLIDING_MODE=fp-only SW_CELL=bin_full "${SCRIPT_DIR}/run_sliding_window_eval.sh" fp-only "${EXTRA_ARGS[@]}"
     echo ""
-    echo "=== 3/3 mc_full multiclass + sweep ==="
-    SLIDING_MODE=multiclass SW_CELL=mc_full "${SCRIPT_DIR}/run_sliding_window_eval.sh" multiclass "${EXTRA_ARGS[@]}"
+    echo "=== 3/3 bin_full — ensemble conservador val_best_ensemble.json + sweep ==="
+    SLIDING_MODE=ensemble-low-fp SW_CELL=bin_full "${SCRIPT_DIR}/run_sliding_window_eval.sh" ensemble-low-fp "${EXTRA_ARGS[@]}"
+    if [[ "${SW_INCLUDE_MC:-0}" == "1" ]]; then
+      echo ""
+      echo "=== EXTRA mc_full — modelo_12 MULTICLASE (distinto checkpoint, opcional) ==="
+      SLIDING_MODE=multiclass SW_CELL=mc_full "${SCRIPT_DIR}/run_sliding_window_eval.sh" multiclass "${EXTRA_ARGS[@]}"
+    fi
     write_run_meta "sliding_window_battery_done" >/dev/null
     echo ""
     echo "[FIN] Batería anti-FP completada RUN_ID=${RUN_ID}"
@@ -549,7 +554,7 @@ Comandos:
   sliding-window-mc   Multiclase mc_full + veto 6→3/4/5
   sliding-window-strict  Filtro conservador + barrido
   sliding-window-bg   Igual que sliding-window en BACKGROUND
-  sliding-window-battery  Batería completa: full + fp-only + multiclass
+  sliding-window-battery  Batería bin_full: modelo_12 + ensemble F1 + fp-only (sin mc salvo SW_INCLUDE_MC=1)
   sliding-window-battery-bg  Batería en BACKGROUND (recomendado)
 
 Variables extra (sliding-window):
