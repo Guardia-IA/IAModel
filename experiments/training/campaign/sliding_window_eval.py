@@ -303,6 +303,38 @@ def load_best_f1_ensemble_spec(reports_dir: Path, split: str) -> EnsembleSpec:
     return _ensemble_spec_from_grid_row(best, source="best_f1")
 
 
+def _lookup_ensemble_grid_row(
+    reports_dir: Path,
+    split: str,
+    models: Sequence[str],
+    rule: str,
+    thresholds: Sequence[float],
+) -> Optional[Dict[str, str]]:
+    grid = reports_dir / f"{split}_ensemble_grid.csv"
+    if not grid.is_file():
+        return None
+    model_tag = "|".join(_normalize_model_name(m).replace(".pt", "") for m in models)
+    decision_mode = f"ensemble_{rule.lower()}"
+    if rule.lower() == "mean":
+        thr_key = f"{float(thresholds[0]):.3f}"
+    else:
+        thr_key = "|".join(f"{float(t):.3f}" for t in thresholds)
+    with open(grid, newline="", encoding="utf-8") as f:
+        for row in csv.DictReader(f):
+            if row.get("models") != model_tag:
+                continue
+            if str(row.get("decision_mode", "")) != decision_mode:
+                continue
+            row_thr = str(row.get("thresholds", "")).replace(" ", "")
+            if rule.lower() == "mean":
+                if not (row_thr == thr_key or row_thr.startswith(f"{thr_key}|")):
+                    continue
+            elif row_thr != thr_key:
+                continue
+            return row
+    return None
+
+
 def resolve_ensemble_spec(
     args: argparse.Namespace,
     reports_dir: Path,
@@ -315,12 +347,19 @@ def resolve_ensemble_spec(
             if rule == "and"
             else [float(args.ensemble_threshold)]
         )
-        return EnsembleSpec(
+        spec = EnsembleSpec(
             models=[_normalize_model_name(m).replace(".pt", "") for m in args.ensemble_models],
             rule=rule,
             thresholds=thrs,
             source="explicit",
         )
+        row = _lookup_ensemble_grid_row(reports_dir, split, spec.models, rule, thrs)
+        if row:
+            spec.f1_pct = float(row.get("f1_pct", 0) or 0)
+            spec.fp = int(row.get("fp", 0) or 0)
+            spec.fn = int(row.get("fn", 0) or 0)
+            spec.source = "explicit_grid"
+        return spec
     source = str(args.ensemble_source or "best_f1")
     if source == "best_f1":
         return load_best_f1_ensemble_spec(reports_dir, split)
@@ -375,7 +414,12 @@ class WindowEnsembleRunner:
             p_list.append(p_robo)
             pred_classes.append(pred_class)
         p_robo, alarm = self._combine(p_list)
-        pred_class = 6 if alarm else int(pred_classes[0] if pred_classes else 0)
+        if alarm:
+            pred_class = 6
+        elif self.is_binary:
+            pred_class = 0
+        else:
+            pred_class = int(pred_classes[0] if pred_classes else 0)
         return p_robo, pred_class, np.array(p_list, dtype=np.float64)
 
 
@@ -464,10 +508,10 @@ def build_timeline(
     meta_path = Path(paths["meta_json_path"]) if paths.get("meta_json_path") else None
     fps = _read_fps(meta_path, policy.fps)
 
-    p_full, cls_full, _ = runner.predict_poses(poses)
+    p_full, cls_full, p_aux = runner.predict_poses(poses)
     baseline_p = float(baseline_p if baseline_p is not None else p_full)
     if isinstance(runner, WindowEnsembleRunner):
-        baseline_alarm = int(cls_full) == 6
+        _, baseline_alarm = runner._combine(p_aux.tolist())
     else:
         baseline_alarm = baseline_p >= policy.full_clip_threshold
 
@@ -903,6 +947,13 @@ def run_eval(args: argparse.Namespace) -> int:
     )
 
     arts = ensure_cell_dirs(args.cell, run_id=args.run_id)
+    reports_dir = Path(args.reports_dir).resolve() if args.reports_dir else arts["reports_dir"]
+    if args.reports_dir and not reports_dir.is_dir():
+        raise SystemExit(f"No existe --reports-dir: {reports_dir}")
+    if args.models_dir:
+        arts = {**arts, "models_dir": Path(args.models_dir).resolve()}
+    arts["reports_dir"] = reports_dir
+    reports_dir.mkdir(parents=True, exist_ok=True)
     plan_path = training_plan_path(args.cell, run_id=args.run_id)
     if not plan_path.is_file():
         raise SystemExit(f"Falta plan: {plan_path}")
@@ -913,7 +964,7 @@ def run_eval(args: argparse.Namespace) -> int:
         raise SystemExit(f"No existe modelo: {model_path}")
     if pred_mode == "ensemble":
         try:
-            resolve_ensemble_spec(args, arts["reports_dir"], args.split)
+            resolve_ensemble_spec(args, reports_dir, args.split)
         except (FileNotFoundError, RuntimeError) as exc:
             raise SystemExit(str(exc)) from exc
 
@@ -940,9 +991,6 @@ def run_eval(args: argparse.Namespace) -> int:
 
         examples = [ex for ex in examples if _example_uid(ex) in filter_uids or _example_uid(ex).split("/")[-1] in filter_uids]
         print(f"  Filtrado errors-csv: {len(examples)} clips", flush=True)
-
-    reports_dir = arts["reports_dir"]
-    reports_dir.mkdir(parents=True, exist_ok=True)
 
     predictor_mode = str(args.predictor or "single").lower()
     jobs: List[Tuple[str, argparse.Namespace]] = []
@@ -998,6 +1046,16 @@ def main() -> int:
     ap.add_argument("--ensemble-models", nargs="*", default=None)
     ap.add_argument("--ensemble-rule", choices=["mean", "and"], default=None)
     ap.add_argument("--ensemble-threshold", type=float, default=0.5)
+    ap.add_argument(
+        "--reports-dir",
+        default=None,
+        help="Override reports/ (p.ej. eval_pack exportado con val_ensemble_grid.csv)",
+    )
+    ap.add_argument(
+        "--models-dir",
+        default=None,
+        help="Override models/ si los checkpoints no están en artifacts/runs/<RUN_ID>/models/<cell>/",
+    )
     ap.add_argument("--split", choices=["val", "test"], default="val")
     ap.add_argument("--errors-csv", default=None)
 

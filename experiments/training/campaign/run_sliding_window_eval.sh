@@ -53,6 +53,15 @@ case "$CMD" in
       --predictor ensemble --ensemble-source best_low_fp \
       --sweep --max-fp-target "$MAX_FP" "$@"
     ;;
+  ensemble-49-57|ensemble-49|49-57)
+    # 49|57 mean @ 0.86 (bin_filtered) — 6 FP en campaña, F1 ~77.6%
+    exec "$PY" sliding_window_eval.py \
+      --run-id "$RUN_ID" --cell bin_filtered --split "$SPLIT" \
+      --predictor ensemble \
+      --ensemble-models modelo_49 modelo_57 \
+      --ensemble-rule mean --ensemble-threshold 0.86 \
+      --sweep --max-fp-target "$MAX_FP" "$@"
+    ;;
   fp-only)
     ERR_CSV="${2:-artifacts/runs/${RUN_ID}/reports/${CELL}/${SPLIT}_errors_${MODEL}.csv}"
     if [[ ! -f "$ERR_CSV" ]]; then
@@ -84,6 +93,7 @@ Comandos:
   full          Solo modelo_12
   ensemble-f1   Solo mejor ensemble F1 (grid)
   ensemble-low-fp  Ensemble auto val_best_ensemble.json (6 FP)
+  ensemble-49-57  49|57 mean @ 0.86 bin_filtered (6 FP campaña)
   fp-only       FP/FN CSV con single+ensemble
   multiclass    mc_full modelo_12
   strict        both + filtros conservadores

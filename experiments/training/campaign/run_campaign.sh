@@ -506,6 +506,16 @@ case "$CMD" in
     SLIDING_MODE=strict
     run_sliding_window_fg
     ;;
+  sliding-window-ensemble-49-57)
+    SLIDING_MODE=ensemble-49-57
+    SW_CELL=bin_filtered
+    run_sliding_window_fg
+    ;;
+  sliding-window-ensemble-49-57-bg)
+    SLIDING_MODE=ensemble-49-57
+    SW_CELL=bin_filtered
+    run_sliding_window_bg
+    ;;
   sliding-window-bg)
     SLIDING_MODE="${SLIDING_MODE:-full}"
     run_sliding_window_bg
@@ -553,6 +563,8 @@ Comandos:
   sliding-window-fp   Solo clips FP/FN del CSV de errores modelo_12
   sliding-window-mc   Multiclase mc_full + veto 6→3/4/5
   sliding-window-strict  Filtro conservador + barrido
+  sliding-window-ensemble-49-57  49|57 mean @0.86 bin_filtered + SW + barrido
+  sliding-window-ensemble-49-57-bg  Igual en BACKGROUND
   sliding-window-bg   Igual que sliding-window en BACKGROUND
   sliding-window-battery  Batería bin_full: modelo_12 + ensemble F1 + fp-only (sin mc salvo SW_INCLUDE_MC=1)
   sliding-window-battery-bg  Batería en BACKGROUND (recomendado)
