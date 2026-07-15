@@ -398,6 +398,28 @@ run_sliding_window_battery() {
   } 2>&1 | tee -a "$logfile"
 }
 
+run_sliding_window_battery_bg() {
+  ensure_run_id
+  local logfile pidfile
+  logfile="$(logs_dir)/sliding_window_battery.log"
+  pidfile="$(logs_dir)/sliding_window_battery.pid"
+  if [[ -f "$pidfile" ]] && kill -0 "$(cat "$pidfile")" 2>/dev/null; then
+    echo "Batería sliding-window ya en curso (PID $(cat "$pidfile"))." >&2
+    exit 1
+  fi
+  write_run_meta "sliding_window_battery_start" >/dev/null
+  nohup bash >> "${logfile}" 2>&1 <<SCRIPT &
+set -euo pipefail
+cd "${SCRIPT_DIR}"
+export RUN_ID="${RUN_ID}"
+export GUADIA_DATA_RESULT_ROOT="${GUADIA_DATA_RESULT_ROOT:-}"
+./run_campaign.sh sliding-window-battery --run-id "${RUN_ID}"
+SCRIPT
+  echo $! > "$pidfile"
+  echo "[OK] Batería anti-FP en background PID $(cat "$pidfile")"
+  echo "  tail -f ${logfile}"
+}
+
 show_status() {
   ensure_run_id
   echo "RUN_ID actual: ${RUN_ID}"
@@ -487,25 +509,7 @@ case "$CMD" in
     run_sliding_window_battery
     ;;
   sliding-window-battery-bg)
-    ensure_run_id
-    local logfile pidfile
-    logfile="$(logs_dir)/sliding_window_battery.log"
-    pidfile="$(logs_dir)/sliding_window_battery.pid"
-    if [[ -f "$pidfile" ]] && kill -0 "$(cat "$pidfile")" 2>/dev/null; then
-      echo "Batería sliding-window ya en curso (PID $(cat "$pidfile"))." >&2
-      exit 1
-    fi
-    write_run_meta "sliding_window_battery_start" >/dev/null
-    nohup bash >> "${logfile}" 2>&1 <<SCRIPT &
-set -euo pipefail
-cd "${SCRIPT_DIR}"
-export RUN_ID="${RUN_ID}"
-export GUADIA_DATA_RESULT_ROOT="${GUADIA_DATA_RESULT_ROOT:-}"
-./run_campaign.sh sliding-window-battery --run-id "${RUN_ID}"
-SCRIPT
-    echo $! > "$pidfile"
-    echo "[OK] Batería anti-FP en background PID $(cat "$pidfile")"
-    echo "  tail -f ${logfile}"
+    run_sliding_window_battery_bg
     ;;
   summary)
     ensure_run_id
