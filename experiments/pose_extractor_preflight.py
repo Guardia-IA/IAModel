@@ -101,18 +101,36 @@ def _csv_display_row(start_row: int, row_idx: int) -> int:
     return start_row + int(row_idx)
 
 
-def _csv_rel_path(csv_path: Path, experiments: list, root: Path | None) -> str | Path:
-    rel: str | Path = csv_path.name
-    if root is not None:
+def _path_root_containing(csv_path: Path, path_roots: List[Path]) -> Path | None:
+    """PATH_ROOT que contiene este CSV (el más específico / más largo)."""
+    cp = csv_path.resolve()
+    best: Path | None = None
+    best_len = -1
+    for pr in path_roots:
+        rp = pr.expanduser().resolve()
         try:
-            rel = csv_path.relative_to(root)
+            cp.relative_to(rp)
         except ValueError:
-            if experiments:
-                for e in experiments:
-                    if Path(e["csv"]).resolve() == csv_path.resolve():
-                        rel = e.get("rel_path", csv_path.name)
-                        break
-    return rel
+            continue
+        n = len(rp.parts)
+        if n > best_len:
+            best_len = n
+            best = rp
+    return best
+
+
+def _csv_display_path(csv_path: Path, path_roots: List[Path]) -> str:
+    """
+    Ruta legible del CSV para informes: relativa al PATH_ROOT que lo contiene e incluye .csv.
+    """
+    cp = csv_path.resolve()
+    owner = _path_root_containing(cp, path_roots)
+    if owner is not None:
+        try:
+            return cp.relative_to(owner).as_posix()
+        except ValueError:
+            pass
+    return cp.name
 
 
 def is_hms_format(val) -> bool:
@@ -636,8 +654,7 @@ def estimate_time(
 
 def _scan_csv_inventory(
     csv_files: List[Path],
-    experiments: list,
-    root: Path | None,
+    path_roots: List[Path],
     *,
     check_exists_only: bool = False,
     probe_videos: bool = False,
@@ -664,7 +681,7 @@ def _scan_csv_inventory(
 
     for csv_path in csv_files:
         start_row = find_start_row(str(csv_path))
-        csv_rel = _csv_rel_path(csv_path, experiments, root)
+        csv_display = _csv_display_path(csv_path, path_roots)
         try:
             df = pd.read_csv(str(csv_path), skiprows=range(0, start_row - 1), header=None)
         except Exception as e:
@@ -706,7 +723,7 @@ def _scan_csv_inventory(
                     missing_count += 1
                     missing_entries.append({
                         "csv": str(csv_path.resolve()),
-                        "csv_rel": str(csv_rel),
+                        "csv_display": csv_display,
                         "row": fila_csv,
                         "category": cat,
                         "video_rel": video_rel,
@@ -769,9 +786,9 @@ def _scan_csv_inventory(
         total_clips += n_clips
 
         if check_exists_only:
-            print(f"  {csv_rel}: {n_clips} filas CSV")
+            print(f"  {csv_display}: {n_clips} filas CSV")
         else:
-            print(f"  {csv_rel}: {n_clips} clips")
+            print(f"  {csv_display}: {n_clips} clips")
 
     return {
         "total_clips": total_clips,
@@ -801,9 +818,10 @@ def _print_missing_videos(missing_entries: list[dict], *, limit: int = 30) -> No
     print(f"\n  {BOLD}Vídeos no encontrados ({len(missing_entries)}):{RESET}")
     for entry in missing_entries[:limit]:
         print(
-            f"    - CSV: {entry['csv_rel']} | Fila: {entry['row']} | "
+            f"    - CSV: {entry['csv_display']} | Fila: {entry['row']} | "
             f"cat={entry['category']} | {entry['video_rel']}"
         )
+        print(f"      ({entry['csv']})")
         print(f"      → {entry['video_path']}")
     if len(missing_entries) > limit:
         print(f"    ... y {len(missing_entries) - limit} más")
@@ -866,8 +884,7 @@ def run_preflight_csv(
 
     inv = _scan_csv_inventory(
         csv_files,
-        experiments,
-        root,
+        path_roots if path_roots else ([root] if root is not None else []),
         check_exists_only=check_exists_only,
         probe_videos=probe_videos,
     )
