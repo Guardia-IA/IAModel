@@ -96,8 +96,23 @@ def _resolve_video_path(video_rel: str, base_dir: Path) -> Path:
     return (base_dir / p).resolve()
 
 
-def _is_full_clip_range(inicio: str, fin: str) -> bool:
-    return inicio == "00:00:00" and fin == "00:00:00"
+def _csv_display_row(start_row: int, row_idx: int) -> int:
+    """Número de fila en el CSV (1-based, coherente con pose_extractor_clean)."""
+    return start_row + int(row_idx)
+
+
+def _csv_rel_path(csv_path: Path, experiments: list, root: Path | None) -> str | Path:
+    rel: str | Path = csv_path.name
+    if root is not None:
+        try:
+            rel = csv_path.relative_to(root)
+        except ValueError:
+            if experiments:
+                for e in experiments:
+                    if Path(e["csv"]).resolve() == csv_path.resolve():
+                        rel = e.get("rel_path", csv_path.name)
+                        break
+    return rel
 
 
 def is_hms_format(val) -> bool:
@@ -644,11 +659,12 @@ def _scan_csv_inventory(
     fps_cache: dict = {}
     exists_count = 0
     missing_count = 0
-    missing_paths: list[str] = []
+    missing_entries: list[dict] = []
     full_clip_without_probe = 0
 
     for csv_path in csv_files:
         start_row = find_start_row(str(csv_path))
+        csv_rel = _csv_rel_path(csv_path, experiments, root)
         try:
             df = pd.read_csv(str(csv_path), skiprows=range(0, start_row - 1), header=None)
         except Exception as e:
@@ -681,19 +697,36 @@ def _scan_csv_inventory(
 
             video_rel = str(row.iloc[0]).strip().strip('"').strip("'")
             video_full_path = _resolve_video_path(video_rel, base_dir)
+            fila_csv = _csv_display_row(start_row, row_idx)
 
             if check_exists_only:
                 if video_full_path.is_file():
                     exists_count += 1
                 else:
                     missing_count += 1
-                    missing_paths.append(str(video_full_path))
+                    missing_entries.append({
+                        "csv": str(csv_path.resolve()),
+                        "csv_rel": str(csv_rel),
+                        "row": fila_csv,
+                        "category": cat,
+                        "video_rel": video_rel,
+                        "video_path": str(video_full_path),
+                    })
                 n_clips += 1
                 cat_counts[cat] = cat_counts.get(cat, 0) + 1
                 category_counters[cat_str] = category_counters.get(cat_str, 0) + 1
                 continue
 
             if not video_full_path.is_file():
+                missing_count += 1
+                missing_entries.append({
+                    "csv": str(csv_path.resolve()),
+                    "csv_rel": str(csv_rel),
+                    "row": fila_csv,
+                    "category": cat,
+                    "video_rel": video_rel,
+                    "video_path": str(video_full_path),
+                })
                 continue
 
             if _is_full_clip_range(inicio_s, fin_s):
@@ -735,20 +768,10 @@ def _scan_csv_inventory(
             by_category[k] = by_category.get(k, 0) + v
         total_clips += n_clips
 
-        rel = csv_path.name
-        if root is not None:
-            try:
-                rel = csv_path.relative_to(root)
-            except ValueError:
-                if experiments:
-                    for e in experiments:
-                        if Path(e["csv"]).resolve() == csv_path.resolve():
-                            rel = e.get("rel_path", csv_path.name)
-                            break
         if check_exists_only:
-            print(f"  {rel}: {n_clips} filas CSV")
+            print(f"  {csv_rel}: {n_clips} filas CSV")
         else:
-            print(f"  {rel}: {n_clips} clips")
+            print(f"  {csv_rel}: {n_clips} clips")
 
     return {
         "total_clips": total_clips,
@@ -757,11 +780,33 @@ def _scan_csv_inventory(
         "total_frames_approx": total_frames_approx,
         "exists_count": exists_count,
         "missing_count": missing_count,
-        "missing_paths": missing_paths,
+        "missing_entries": missing_entries,
         "full_clip_without_probe": full_clip_without_probe,
         "check_exists_only": check_exists_only,
         "probe_videos": probe_videos,
     }
+
+
+def _print_by_category(by_category: dict[int, int], *, title: str = "Por categoría") -> None:
+    if not by_category:
+        return
+    print(f"\n  {BOLD}{title}:{RESET}")
+    for cat in sorted(by_category):
+        print(f"    cat {cat:>2}: {by_category[cat]:>5} clips")
+
+
+def _print_missing_videos(missing_entries: list[dict], *, limit: int = 30) -> None:
+    if not missing_entries:
+        return
+    print(f"\n  {BOLD}Vídeos no encontrados ({len(missing_entries)}):{RESET}")
+    for entry in missing_entries[:limit]:
+        print(
+            f"    - CSV: {entry['csv_rel']} | Fila: {entry['row']} | "
+            f"cat={entry['category']} | {entry['video_rel']}"
+        )
+        print(f"      → {entry['video_path']}")
+    if len(missing_entries) > limit:
+        print(f"    ... y {len(missing_entries) - limit} más")
 
 
 def run_preflight_csv(
@@ -836,22 +881,20 @@ def run_preflight_csv(
         print(f"  {GREEN}Vídeos encontrados:{RESET}  {inv['exists_count']}")
         if inv["missing_count"]:
             fail(f"Vídeos NO encontrados: {inv['missing_count']}")
-            print("\n  Primeros ficheros ausentes:")
-            for p in inv["missing_paths"][:30]:
-                print(f"    - {p}")
-            if len(inv["missing_paths"]) > 30:
-                print(f"    ... y {len(inv['missing_paths']) - 30} más")
+            _print_missing_videos(inv["missing_entries"])
         else:
             ok("Todos los vídeos referenciados existen en disco.")
-        if inv["by_category"]:
-            print(f"  Por categoría (filas CSV): {dict(sorted(inv['by_category'].items()))}")
         header("RESUMEN")
         print(f"  Filas: {inv['total_clips']} | Existen: {inv['exists_count']} | Faltan: {inv['missing_count']}")
+        _print_by_category(inv["by_category"], title="Clips por categoría (filas CSV)")
         print()
         return 1 if inv["missing_count"] else 0
 
     print(f"\n  {BOLD}Total clips:{RESET} {inv['total_clips']}")
-    print(f"  Por categoría: {dict(sorted(inv['by_category'].items()))}")
+    _print_by_category(inv["by_category"])
+    if inv["missing_count"]:
+        warn(f"{inv['missing_count']} filas omitidas: vídeo no encontrado (no entran en el conteo)")
+        _print_missing_videos(inv["missing_entries"])
     if probe_videos:
         print(f"  Duración total vídeo (ffprobe + CSV): {inv['total_seconds_of_video']/60:.1f} min")
     else:
@@ -912,6 +955,12 @@ def run_preflight_csv(
         warn("Estimación de frames aproximada (sin ffprobe). Usa --probe-videos si necesitas precisión.")
     else:
         warn("Estimación aproximada (CPU/GPU y carga del sistema pueden variar).")
+
+    header("RESUMEN")
+    print(f"  Clips procesables: {inv['total_clips']}")
+    if inv["missing_count"]:
+        print(f"  Vídeos no encontrados (omitidos): {inv['missing_count']}")
+    _print_by_category(inv["by_category"], title="Clips por categoría")
     print()
     return 0
 
