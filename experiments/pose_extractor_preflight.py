@@ -738,7 +738,7 @@ def _scan_csv_inventory(
                 missing_count += 1
                 missing_entries.append({
                     "csv": str(csv_path.resolve()),
-                    "csv_rel": str(csv_rel),
+                    "csv_display": csv_display,
                     "row": fila_csv,
                     "category": cat,
                     "video_rel": video_rel,
