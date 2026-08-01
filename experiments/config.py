@@ -18,7 +18,8 @@ from typing import List, Optional
 # --- RUTAS DE ENTRADA ---
 PATH_ROOTS: List[str] = [
     "/media/8TB/DatosEntrenamiento/datos_2/csv_buenos",
-    "/media/8TB/DatosEntrenamiento/datos_1"
+    "/media/8TB/DatosEntrenamiento/datos_1",
+    "/home/angel/videos"
 ]
 PATH_ROOT = PATH_ROOTS[0] if PATH_ROOTS else None  # Legacy: primer root
 CSV_PATH = None    # Usado solo si no hay PATH_ROOTS ni PATH_ROOT
