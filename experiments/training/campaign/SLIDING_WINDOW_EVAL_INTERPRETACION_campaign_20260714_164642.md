@@ -1,7 +1,8 @@
 # Interpretación — evaluación sliding window (anti-FP)
 
 **RUN_ID:** `campaign_20260714_164642`  
-**Fecha análisis:** 2026-07-15  
+**Fecha análisis:** 2026-07-15 (actualizado tarde: eval 49|57 + SW)  
+**Estado:** pausado — pendiente más datos antes de reentrenar  
 **Split:** val (1241 clips)  
 **Ventana:** 3.0 s, stride 1.0 s, fps 12  
 
@@ -30,6 +31,8 @@ artifacts/runs/campaign_20260714_164642/
 │   ├── val_sliding_window_ensemble_mean_modelo_11+modelo_12_t0.50_*
 │   ├── val_sliding_window_ensemble_and_modelo_11+modelo_40_t0.74+0.74_*
 │   └── val_sliding_window_combined_summary.json
+├── reports/bin_filtered/
+│   └── val_sliding_window_ensemble_mean_modelo_49+modelo_57_t0.86_*  # eval 49|57
 └── reports/mc_full/
     └── val_sliding_window_modelo_12_*
 ```
@@ -314,26 +317,168 @@ El post-procesado temporal reduce FP **~40–50%**, pero no sustituye un modelo/
 
 ---
 
-## 11. Próximo paso sugerido
+## 11. Próximo paso (histórico batería modelo_12)
 
-Informe clip a clip de los **15–28 FP duros** con:
+La batería inicial (`sliding-window-battery`) cubrió `modelo_12` y ensembles 11|12 / 11|40. Ver §4–§7.
 
-- Secuencia de clases por ventana
-- `filter_reason` y `s_kin` por ventana
-- Clasificación: “eliminable con regla nueva” vs “error del modelo (requiere reentrenar/ensemble)”
-
-Comando útil para relanzar evaluación:
-
-```bash
-./run_campaign.sh sliding-window-battery-bg --run-id campaign_20260714_164642
-```
+El siguiente paso evaluado fue **49|57 + SW** (§12). **Decisión actual:** pausar y recoger datos — ver §13.
 
 ---
 
-## 12. Contexto de conversación previa
+## 12. Ensemble 49|57 + sliding window (`bin_filtered`) — eval 2026-07-15
+
+Evaluación adicional del **mejor ensemble low-FP de campaña** con ventanas deslizantes + barrido.
+
+### 12.1 Configuración
+
+| Parámetro | Valor |
+|---|---|
+| Celda | `bin_filtered` (`pose_source=filtered`) |
+| Ensemble | `modelo_49` \| `modelo_57` **mean @ 0.86** |
+| Split | val (1241 clips: 281 robos, 960 negativos) |
+| Comando | `./run_campaign.sh sliding-window-ensemble-49-57-bg --run-id campaign_20260714_164642` |
+| Artefactos | `reports/bin_filtered/val_sliding_window_ensemble_mean_modelo_49+modelo_57_t0.86_*` |
+| Log | `logs/sliding_window.log` |
+
+### 12.2 Bugs corregidos antes del eval
+
+1. **`valid_mask` en `poses.npy`:** con `pose_source=filtered`, `valid_mask.npy` (longitud de `poses_full`) no debe aplicarse sobre `poses.npy` ya filtrado. Fix en `sliding_window_eval.py` y `export_fp_artifacts.py`.
+2. **Baseline ensemble por umbral:** el SW usaba argmax clase 6 en lugar de `mean @ 0.86`. Inflaba FP en otros ensembles (p. ej. 11|40: 6→42). Corregido: usa `_combine(p≥umbral)` como en campaña.
+
+### 12.3 Resultados — tabla resumen (val completo)
+
+| Escenario | Robos detectados (TP) | Robos perdidos (FN) | FP | FP%¹ | F1 | Recall |
+|---|---:|---:|---:|---:|---:|---:|
+| **Sin SW** (campaña, clip completo) | 182 (64,8%) | 99 (35,2%) | **6** | 0,63% | 77,6% | 64,8% |
+| **SW baseline** (sin filtro temporal) | 182 (64,8%) | 99 (35,2%) | **6** | 0,63% | 77,6% | 64,8% |
+| **SW filtro default** | 99 (35,2%) | 182 (64,8%) | **3** | 0,31% | 51,7% | 35,2% |
+| **SW mejor barrido** | 123 (43,8%) | 158 (56,2%) | **2** | 0,21% | 60,6% | 43,8% |
+
+¹ FP% = FP / 960 clips negativos.
+
+**Lectura:** el SW **no sustituye** un buen ensemble low-FP; lo complementa. Con 49|57 el baseline ya es excelente (6 FP). El filtro default es **demasiado agresivo** (−3 FP pero −83 robos). El **mejor barrido** es el trade-off razonable: **6→2 FP** con recall **64,8%→43,8%**. **Ninguna config alcanza FP≤1.**
+
+### 12.4 ¿Qué es “SW mejor barrido”?
+
+No es un filtro distinto al “default”. El script, tras inferir ventanas para los 1241 clips, **prueba cientos de combinaciones** de parámetros (`p_window`, ventanas consecutivas, cinemática, veto pico aislado…) y ordena por **(FP asc, recall desc, F1 desc)**. La fila 1 del `*_sweep.csv` es la **mejor política encontrada automáticamente**.
+
+- El bloque `filtered` del `*_summary.json` = **filtro default** del script (no el barrido).
+- El tail `Mejor barrido: FP=2…` = **resultado del barrido**.
+
+### 12.5 Mejor barrido — política ganadora
+
+```yaml
+alarm_mode: filter_baseline          # parte del baseline ensemble @ 0.86
+p_window_threshold: 0.35
+full_clip_threshold: 0.40
+min_consecutive_windows: 1
+min_s_kin: 0.35
+require_robbery_like: false
+require_reach_then_conceal_or_conceal: false
+post_purchase_veto_windows: 2
+veto_isolated_spike: true
+```
+
+Métricas: TP=123, FP=2, FN=158, F1=60,6%, recall=43,8%. FP eliminados vs baseline: 4. Robos perdidos vs baseline: 59.
+
+**Clave:** con `min_consecutive_windows=1` el **veto de pico aislado sí actúa** (con `min_cons=2` del default, ese veto está desactivado).
+
+Relanzar con esta política (sin barrido):
+
+```bash
+./run_sliding_window_eval.sh ensemble-49-57 \
+  --p-window-threshold 0.35 --full-clip-threshold 0.40 \
+  --min-consecutive-windows 1 --min-s-kin 0.35 --no-require-kin \
+  --post-purchase-veto-windows 2
+```
+
+### 12.6 Los 6 FP sin SW — y qué elimina cada filtro
+
+| # | Clase | Acción | Clip (resumen) | Usuario | Sin SW | Default (3 FP) | Mejor barrido (2 FP) |
+|---|---|---|---|---|---|---|---|
+| 1 | 0 | Salir | `clip_buffer_000000_000004_0` | user_2125 | FP | eliminado | eliminado |
+| 2 | 1 | Carrito/zona 1 | `clip_buffer_000003_000019_1` (3→19 s) | user_2835 | FP | **sobrevive** | **sobrevive** |
+| 3 | 2 | Mirar estantería | `clip_buffer_000017_000042_2` (17→42 s) | user_3339 | FP | **sobrevive** | **sobrevive** |
+| 4 | 3 | Compra | `clip_buffer_000004_000010_3` (4→10 s) | user_4204 | FP | **sobrevive** | eliminado |
+| 5 | 3 | Compra | `clip_buffer_000003_000005_3` (3→5 s) | user_4320 | FP | eliminado | eliminado |
+| 6 | 5 | Dejar producto | `clip_buffer_000000_000004_5` | user_7435 | FP | eliminado | eliminado |
+
+Vídeos (ruta base `.../data_yolo26m/data_result/`): ver `eval_pack_.../bin_filtered/val_fp_ensemble_mean_modelo_49+modelo_57_t0.860+0.860.txt`.
+
+### 12.7 Los 2 FP duros (mejor barrido)
+
+Los que **ningún filtro temporal elimina** con la mejor política:
+
+1. **Clase 2 — mirar estantería** (`user_3339`, ~25 s): señal de robo **sostenida** en varias ventanas; hard negative clásico.
+2. **Clase 1 — carrito/zona 1** (`user_2835`, ~16 s): señal elevada persistente del ensemble @ 0.86.
+
+El FP de **clase 3** (`user_4204`, compra corta ~6 s) cae con el barrido (pico aislado / clip corto).
+
+### 12.8 Robos perdidos con SW (clase 6)
+
+El filtro default pierde **83 robos** respecto al baseline; muchos son **piloto Kanvis** y robos reales con señal no sostenida en ventanas. Listado en `*_summary.json` → `tp_lost_uids`. Prioridad al reentrenar: más robos cortos y piloto Kanvis.
+
+---
+
+## 13. Decisión y plan al retomar (2026-07-15)
+
+**Estado:** trabajo **pausado** hasta recoger más datos y entrenar un nuevo modelo. No seguir apilando filtros/heurísticas sin más datos de hard negatives.
+
+### Punto de referencia guardado
+
+| Métrica | Mejor config actual (sin más datos) |
+|---|---|
+| Low-FP campaña | **49\|57 mean @ 0.86** — 6 FP, recall 64,8%, F1 77,6% |
+| Low-FP + SW barrido | misma política §12.5 — **2 FP**, recall 43,8%, F1 60,6% |
+| Objetivo no alcanzado | FP ≤ 1 con recall aceptable |
+
+### Prioridad al recoger datos
+
+1. **Hard negatives clases 1, 2, 3** (los 2 FP duros + el eliminado clase 3).
+2. **Robos clase 6** que el SW pierde (Kanvis piloto, clips cortos).
+3. Mantener **mismo pipeline**: `pose_source=filtered`, celda `bin_filtered`, split plan existente.
+
+### Al volver — checklist
+
+1. Nueva campaña con `RUN_ID` nuevo; comparar contra tablas §12.3.
+2. Re-evaluar **49|57 @ 0.86** clip completo (baseline).
+3. Opcional: relanzar `sliding-window-ensemble-49-57` con barrido.
+4. Si FP bajan en campaña, repetir SW; si no, no invertir en más filtros.
+
+### Comandos útiles
+
+```bash
+export RUN_ID=campaign_20260714_164642
+export GUADIA_DATA_RESULT_ROOT=/ruta/data_yolo26m/data_result
+
+# SW ensemble 49|57 + barrido (background)
+./run_campaign.sh sliding-window-ensemble-49-57-bg --run-id "$RUN_ID"
+
+# Solo confirmar 2 FP duros con política barrido (3 candidatos)
+./run_sliding_window_eval.sh ensemble-49-57 \
+  --errors-csv /tmp/fp_candidates_49_57.txt \
+  --p-window-threshold 0.35 --min-consecutive-windows 1 \
+  --min-s-kin 0.35 --no-require-kin --post-purchase-veto-windows 2
+```
+
+### Archivos clave (49|57)
+
+| Archivo | Contenido |
+|---|---|
+| `reports/bin_filtered/val_sliding_window_ensemble_mean_modelo_49+modelo_57_t0.86_summary.json` | Baseline + filtered (default) |
+| `reports/bin_filtered/val_sliding_window_ensemble_mean_modelo_49+modelo_57_t0.86_sweep.csv` | Barrido (fila 1 = mejor) |
+| `eval_pack_.../bin_filtered/val_fp_ensemble_mean_modelo_49+modelo_57_t0.860+0.860.txt` | 6 FP campaña (sin SW) |
+| `eval_pack_.../bin_filtered/val_errors_ensemble_mean_modelo_49+modelo_57_t0.860+0.860.csv` | Detalle FP/FN |
+
+---
+
+## 14. Contexto de conversación previa
 
 - Comparativa yolo26n vs yolo26m: no había eval comparable; se usó yolo11n como baseline histórico.
 - Discrepancia FP 6 vs 35 en `export_ensemble_fp.py`: causada por usar `--cell bin_full --threshold 0.5` vs config low-FP en `bin_filtered` (`49|57 @ 0.86`).
-- Mejor modelo solo binario: **modelo_12** (`bin_full`, argmax).
+- Mejor modelo solo binario (F1/recall): **modelo_12** (`bin_full`, argmax) — F1 ~86%, FP=47.
 - Mejor ensemble F1: **11|12 mean @ 0.50** (FP=36 en eval original).
-- Mejor ensemble low-FP campaña: **11|40 AND @ 0.74** (FP=6 en eval clip completo).
+- Mejor ensemble low-FP campaña (`bin_filtered`): **49|57 mean @ 0.86** — F1 77,6%, **FP=6**, recall 64,8% (mejor equilibrio que 11|40 AND).
+- Fix baseline ensemble en SW: ahora reproduce FP=6 para 49|57 (antes bug argmax).
+- SW sobre 49|57: mejor barrido **FP=2**, recall 43,8%; **no alcanza FP≤1**.
+- **Pausa 2026-07-15:** esperar más datos (clases 1/2/3 hard neg, robos Kanvis) antes de nuevo entrenamiento.

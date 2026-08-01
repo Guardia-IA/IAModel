@@ -98,7 +98,7 @@ def main():
     output_file = args.output or DEFAULT_OUTPUT_FILE
 
     if not input_dirs:
-        print("Error: define --input o configura PATH_ROOT/CSV_PATH en config.py")
+        print("Error: define --input o configura PATH_ROOTS/CSV_PATH en config.py")
         return 1
     if not output_file:
         output_file = os.path.join(input_dirs[0], "clip_meta.csv")

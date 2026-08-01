@@ -300,19 +300,17 @@ def specs_from_validate_manifest_payload(
     return out
 
 
-def _output_base_data_result_from_experiments_config() -> Optional[Path]:
-    """OUTPUT_BASE/data_result de experiments/config.py (misma salida que pose_extractor_clean)."""
+def _data_result_roots_from_experiments_config() -> List[Path]:
+    """PATH_ROOTS / OUTPUT_BASE → data_result (experiments/config.py)."""
     try:
         exp_dir = Path(__file__).resolve().parent.parent
         if str(exp_dir) not in sys.path:
             sys.path.insert(0, str(exp_dir))
-        from config import OUTPUT_BASE  # type: ignore[import-untyped]
+        from config import get_data_result_roots  # type: ignore[import-untyped]
 
-        if OUTPUT_BASE:
-            return Path(OUTPUT_BASE).expanduser().resolve() / "data_result"
+        return list(get_data_result_roots())
     except Exception:
-        pass
-    return None
+        return []
 
 
 def _candidate_data_result_roots(explicit: str | Path | None = None) -> List[Path]:
@@ -329,30 +327,46 @@ def _candidate_data_result_roots(explicit: str | Path | None = None) -> List[Pat
             candidates.append(rp)
 
     if explicit is not None:
-        _add(Path(explicit))
+        for part in str(explicit).split(os.pathsep):
+            part = part.strip()
+            if part:
+                _add(Path(part))
         return candidates
 
     env_root = os.environ.get("GUADIA_DATA_RESULT_ROOT", "").strip()
     if env_root:
-        _add(Path(env_root))
+        for part in env_root.split(os.pathsep):
+            part = part.strip()
+            if part:
+                _add(Path(part))
+    for cfg_root in _data_result_roots_from_experiments_config():
+        _add(cfg_root)
     _add(Path(DATA_RESULT_ROOT))
-    _add(_output_base_data_result_from_experiments_config())
     return candidates
+
+
+def get_data_result_roots(data_root: str | Path | None = None) -> List[Path]:
+    """
+    Lista de carpetas data_result (PATH_ROOTS / OUTPUT_BASE / --data-root / env).
+    Devuelve solo las que existen en disco.
+    """
+    return [p for p in _candidate_data_result_roots(data_root) if p.is_dir()]
 
 
 def get_data_result_root(data_root: str | Path | None = None) -> Path:
     """
-    Resuelve la carpeta data_result.
-    Prioridad: argumento explícito → GUADIA_DATA_RESULT_ROOT → model_config → OUTPUT_BASE/data_result.
+    Primera carpeta data_result existente (compatibilidad con código mono-root).
+    Para agregar varios roots usa get_data_result_roots().
     """
-    for root in _candidate_data_result_roots(data_root):
-        if root.is_dir():
-            return root
+    roots = get_data_result_roots(data_root)
+    if roots:
+        return roots[0]
     tried = "\n    ".join(str(p) for p in _candidate_data_result_roots(data_root))
     raise RuntimeError(
         "No se encontró la carpeta data_result. Rutas probadas:\n"
         f"    {tried}\n"
-        "Indica la ruta correcta con --data-root o exporta GUADIA_DATA_RESULT_ROOT."
+        "Indica la ruta correcta con --data-root, PATH_ROOTS/OUTPUT_BASE en config.py "
+        "o exporta GUADIA_DATA_RESULT_ROOT."
     )
 
 
@@ -372,8 +386,28 @@ def scan_data_result_folders(data_root: str | Path | None = None) -> Dict[int, D
 
     clip_dirs: subcarpetas bajo {cat}/ (aunque falte meta.json).
     clips: subcarpetas con meta.json (listas para train).
+    Con varios PATH_ROOTS agrega conteos de todos los data_result configurados.
     """
-    root = get_data_result_root(data_root)
+    roots = get_data_result_roots(data_root)
+    if not roots:
+        get_data_result_root(data_root)
+        roots = get_data_result_roots(data_root)
+
+    out: Dict[int, Dict[str, int]] = {}
+
+    def _merge_part(part: Dict[int, Dict[str, int]]) -> None:
+        for cat, info in part.items():
+            if cat not in out:
+                out[cat] = {"clip_dirs": 0, "clips": 0, "users_with_poses": 0}
+            for k in ("clip_dirs", "clips", "users_with_poses"):
+                out[cat][k] = out[cat].get(k, 0) + int(info.get(k, 0))
+
+    for root in roots:
+        _merge_part(_scan_one_data_result_root(root))
+    return out
+
+
+def _scan_one_data_result_root(root: Path) -> Dict[int, Dict[str, int]]:
     out: Dict[int, Dict[str, int]] = {}
     for cat_dir in sorted(root.iterdir()):
         if not cat_dir.is_dir():
@@ -1155,16 +1189,33 @@ def _copy_pose_example(
 def _manifest_lookup_uids(ex: PoseExample) -> List[str]:
     """
     Candidatos de UID para manifest_cache (md5 por string UTF-8).
-    1) Ruta relativa posix bajo DATA_RESULT_ROOT (portable entre máquinas).
+    1) Ruta relativa posix bajo cada data_result (prefijo si hay varios PATH_ROOTS).
     2) Ruta absoluta resuelta (compatibilidad con cachés y splits antiguos).
     """
-    root = get_data_result_root().resolve()
     pp = Path(ex.pose_path).resolve()
     out: List[str] = []
-    try:
-        out.append(pp.relative_to(root).as_posix())
-    except ValueError:
-        pass
+    roots = get_data_result_roots()
+    if not roots:
+        roots = [get_data_result_root().resolve()]
+
+    multi = len(roots) > 1
+    for root in roots:
+        try:
+            rel = pp.relative_to(root.resolve()).as_posix()
+            if multi:
+                try:
+                    exp_dir = Path(__file__).resolve().parent.parent
+                    if str(exp_dir) not in sys.path:
+                        sys.path.insert(0, str(exp_dir))
+                    from config import data_result_tag  # type: ignore[import-untyped]
+
+                    rel = f"{data_result_tag(root)}/{rel}"
+                except Exception:
+                    rel = f"{root.name}/{rel}"
+            out.append(rel)
+        except ValueError:
+            continue
+
     abs_s = str(pp)
     if not out or out[-1] != abs_s:
         out.append(abs_s)
@@ -1401,28 +1452,16 @@ def _augment_poses_on_the_fly(
     return out
 
 
-def collect_examples(
-    pose_source: str = "filtered",
-    single_user_only: bool = False,
-    min_clip_seconds: float = MIN_CLIP_SECONDS,
-    min_valid_frames: int = MIN_VALID_FRAMES,
-    min_valid_pct: float = MIN_VALID_PCT,
-    max_occlusion_ratio: float = MAX_OCCLUSION_RATIO,
-    data_root: str | Path | None = None,
+def _collect_examples_from_root(
+    root: Path,
+    *,
+    pose_source: str,
+    single_user_only: bool,
+    min_clip_seconds: float,
+    min_valid_frames: int,
+    min_valid_pct: float,
+    max_occlusion_ratio: float,
 ) -> List[PoseExample]:
-    """
-    Recorre data_result/{cat}/{clip_name}/ y construye ejemplos por usuario:
-      1) Incluye usuarios tanto en clips de 1 persona como multiusuario (por defecto).
-      2) Si single_user_only=True: solo clips con exactamente 1 usuario.
-      3) En cat=6 respeta user_cat por usuario:
-         - user_cat=6 se mantiene como robo
-         - user_cat!=6 se reetiqueta a su user_cat.
-      4) En no-cat6 también prioriza user_cat si existe, para etiqueta por usuario.
-      5) Aplica filtro de calidad por usuario (_user_quality_ok: umbrales model_config / CLI).
-      6) pose_source: "filtered" usa poses.npy, "full" usa poses_full.npy (+ valid_mask).
-      preflight_check_operations.py usa esta misma función para N y tiempos estimados.
-    """
-    root = get_data_result_root(data_root)
     examples: List[PoseExample] = []
 
     for cat_dir in sorted(root.iterdir()):
@@ -1448,15 +1487,8 @@ def collect_examples(
             if not users:
                 continue
 
-            # Filtrado opcional para modo "solo usuario único".
-            if single_user_only:
-                if len(users) != 1:
-                    continue
-            clip_cat_int = _to_int(meta.get("cat", cat_str), default=_to_int(cat_str, default=0))
-            # Regla de selección por clip:
-            # - cat != 6: usar todos los usuarios válidos.
-            # - cat == 6: también usar todos los usuarios válidos.
-            #   La etiqueta final se resuelve por user_cat (robos=6, resto a su clase no-6).
+            if single_user_only and len(users) != 1:
+                continue
             users_selected = users
 
             for user in users_selected:
@@ -1507,9 +1539,6 @@ def collect_examples(
                 ):
                     continue
 
-                # Etiqueta final por usuario:
-                # - prioriza user_cat (si está)
-                # - fallback a cat global del clip/carpeta
                 user_cat = user.get("user_cat")
                 if user_cat is not None:
                     label = _to_int(user_cat, default=_to_int(meta.get("cat", cat_str), default=0))
@@ -1528,9 +1557,43 @@ def collect_examples(
                         action_label=int(folder_cat),
                     )
                 )
+    return examples
+
+
+def collect_examples(
+    pose_source: str = "filtered",
+    single_user_only: bool = False,
+    min_clip_seconds: float = MIN_CLIP_SECONDS,
+    min_valid_frames: int = MIN_VALID_FRAMES,
+    min_valid_pct: float = MIN_VALID_PCT,
+    max_occlusion_ratio: float = MAX_OCCLUSION_RATIO,
+    data_root: str | Path | None = None,
+) -> List[PoseExample]:
+    """
+    Recorre data_result/{cat}/{clip_name}/ y construye ejemplos por usuario.
+    Con PATH_ROOTS / varios data_result en config, agrega ejemplos de todas las raíces.
+    """
+    roots = get_data_result_roots(data_root)
+    if not roots:
+        roots = [get_data_result_root(data_root)]
+
+    examples: List[PoseExample] = []
+    for root in roots:
+        examples.extend(
+            _collect_examples_from_root(
+                root,
+                pose_source=pose_source,
+                single_user_only=single_user_only,
+                min_clip_seconds=min_clip_seconds,
+                min_valid_frames=min_valid_frames,
+                min_valid_pct=min_valid_pct,
+                max_occlusion_ratio=max_occlusion_ratio,
+            )
+        )
 
     if not examples:
-        raise RuntimeError("No se encontraron ejemplos válidos en data_result.")
+        tried = ", ".join(str(r) for r in roots)
+        raise RuntimeError(f"No se encontraron ejemplos válidos en data_result. Rutas: {tried}")
     return examples
 
 

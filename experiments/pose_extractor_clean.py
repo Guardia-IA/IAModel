@@ -16,7 +16,7 @@ from ultralytics import YOLO
 
 # --- CONFIGURACIÓN DE RUTAS (edita config.py) ---
 from config import (
-    get_experiments, PATH_ROOT, CSV_PATH, OUTPUT_BASE, LOGS_SUBDIR,
+    get_experiments, get_path_roots, PATH_ROOT, CSV_PATH, OUTPUT_BASE, LOGS_SUBDIR,
     CLIP_SCALE_HEIGHT, VAAPI_DEVICE, YOLO_POSE_MODEL,
 )
 from security import validate_folder
@@ -1275,16 +1275,32 @@ def main():
             log_file.close()
         return
 
-    # 2. Validación previa (security): comprobar que CSVs y vídeos existen, tiempos correctos
-    path_to_validate = PATH_ROOT if PATH_ROOT else (os.path.dirname(os.path.abspath(CSV_PATH or ".")))
-    validation = validate_folder(path_to_validate)
-    if not validation.get("ok"):
-        print("Abortando: hay errores en los CSVs. Corrígelos antes de ejecutar el extractor.")
-        if log_file:
-            if original_stdout is not None:
-                sys.stdout = original_stdout
-            log_file.close()
-        return
+    # 2. Validación previa (security): comprobar CSVs y vídeos en cada PATH_ROOT
+    path_roots = get_path_roots()
+    if path_roots:
+        validation_ok = True
+        for pr in path_roots:
+            print(f"Validando PATH_ROOT: {pr}")
+            validation = validate_folder(str(pr))
+            if not validation.get("ok"):
+                validation_ok = False
+        if not validation_ok:
+            print("Abortando: hay errores en los CSVs. Corrígelos antes de ejecutar el extractor.")
+            if log_file:
+                if original_stdout is not None:
+                    sys.stdout = original_stdout
+                log_file.close()
+            return
+    else:
+        path_to_validate = os.path.dirname(os.path.abspath(CSV_PATH or "."))
+        validation = validate_folder(path_to_validate)
+        if not validation.get("ok"):
+            print("Abortando: hay errores en los CSVs. Corrígelos antes de ejecutar el extractor.")
+            if log_file:
+                if original_stdout is not None:
+                    sys.stdout = original_stdout
+                log_file.close()
+            return
 
     # 3. Device y ruta de salida
     print(f"Dispositivo: {DEVICE}")
@@ -1295,12 +1311,16 @@ def main():
 
     experiments = get_experiments()
     if not experiments:
-        print("Error: no se encontraron CSV. Configura PATH_ROOT o CSV_PATH en config.py")
+        print("Error: no se encontraron CSV. Configura PATH_ROOTS o CSV_PATH en config.py")
         if log_file:
             if original_stdout is not None:
                 sys.stdout = original_stdout
             log_file.close()
         return
+
+    path_roots = get_path_roots()
+    if path_roots:
+        print(f"PATH_ROOTS ({len(path_roots)}): " + ", ".join(str(p) for p in path_roots))
 
     if DEBUG_MODE:
         experiments = experiments[:1]  # Solo primer CSV
@@ -1310,6 +1330,21 @@ def main():
     data_result_base = output_root / "data_result"
     temp_clips_base.mkdir(parents=True, exist_ok=True)
     data_result_base.mkdir(parents=True, exist_ok=True)
+
+    # Destinos por experimento (varios PATH_ROOTS pueden compartir o separar data_result)
+    dest_dirs: set[str] = set()
+    for exp in experiments:
+        dr = exp.get("data_result_dir") or str(data_result_base)
+        dest_dirs.add(dr)
+        Path(dr).mkdir(parents=True, exist_ok=True)
+        tc = exp.get("temp_clips_dir") or str(temp_clips_base)
+        Path(tc).mkdir(parents=True, exist_ok=True)
+    if len(dest_dirs) > 1:
+        print(f"Salidas data_result ({len(dest_dirs)}):")
+        for d in sorted(dest_dirs):
+            print(f"  - {d}")
+    else:
+        print(f"Salida data_result: {next(iter(dest_dirs))}")
 
     # Límite global opcional por categoría (máx. clips a procesar por clase, en todos los CSV)
     category_limits = _load_category_limits()
@@ -1321,19 +1356,25 @@ def main():
         print(f"Modelo pose (override): {yolo_meta_path}")
 
     failed_clips = []
-    used_clip_names = set()
+    used_clip_names_by_dest: dict[str, set] = {}
     category_counters: dict[str, int] = {}
     for i, exp in enumerate(experiments):
+        exp_data_result = exp.get("data_result_dir") or str(data_result_base)
+        exp_temp = exp.get("temp_clips_dir") or str(temp_clips_base)
+        used_names = used_clip_names_by_dest.setdefault(exp_data_result, set())
         print(f"\n{'='*60}")
         print(f"[Experimento {i+1}/{len(experiments)}] CSV: {exp['csv']}")
+        if exp.get("path_root"):
+            print(f"  PATH_ROOT: {exp['path_root']}")
+        print(f"  data_result: {exp_data_result}")
         print(f"{'='*60}")
         process_single_csv(
             exp["csv"],
             exp["videos"],
-            str(data_result_base),
-            str(temp_clips_base),
+            exp_data_result,
+            exp_temp,
             failed_clips,
-            used_clip_names,
+            used_names,
             dir_rel_path=exp.get("rel_path"),
             category_limits=category_limits,
             category_counters=category_counters,

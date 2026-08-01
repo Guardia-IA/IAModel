@@ -137,10 +137,12 @@ def check_gpu(torch_mod) -> Dict[str, Any]:
 
 
 def get_data_result_root() -> Path:
-    root = DATA_RESULT_ROOT
-    if not root.exists():
-        raise RuntimeError(f"No se encontró la carpeta data_result en: {root}")
-    return root
+    try:
+        from train_model_operations import get_data_result_root as _g
+        return _g()
+    except ImportError:
+        from .train_model_operations import get_data_result_root as _g
+        return _g()
 
 
 def dataset_info_from_collect_examples(
@@ -162,7 +164,17 @@ def dataset_info_from_collect_examples(
         from train_model_operations import collect_examples
 
     root = get_data_result_root()
-    print(f"Carpeta de datos: {root}")
+    try:
+        from train_model_operations import get_data_result_roots as _gr
+    except ImportError:
+        from .train_model_operations import get_data_result_roots as _gr
+    all_roots = _gr()
+    if len(all_roots) > 1:
+        print("Carpetas data_result:")
+        for r in all_roots:
+            print(f"  - {r}")
+    else:
+        print(f"Carpeta de datos: {root}")
     print(
         f"{BOLD}Filtros:{RESET} idénticos a train → collect_examples / _user_quality_ok "
         "(MIN_CLIP_SECONDS, MIN_VALID_FRAMES, MIN_VALID_PCT, MAX_OCCLUSION_RATIO; poses_full+valid_mask)."

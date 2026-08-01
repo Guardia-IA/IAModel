@@ -16,7 +16,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 try:
     from .model_config import (  # type: ignore[attr-defined]
@@ -37,6 +37,7 @@ try:
         collect_examples,
         split_examples,
         get_data_result_root,
+        get_data_result_roots,
         scan_data_result_folders,
         load_category_augmentation_config,
         count_examples_by_folder_category,
@@ -65,6 +66,7 @@ except ImportError:
         collect_examples,
         split_examples,
         get_data_result_root,
+        get_data_result_roots,
         scan_data_result_folders,
         load_category_augmentation_config,
         count_examples_by_folder_category,
@@ -213,10 +215,15 @@ def _build_proposed_config(
     }
 
 
-def _print_folder_inventory(folder_scan: Dict[int, Dict[str, int]], data_root: Path) -> None:
+def _print_folder_inventory(
+    folder_scan: Dict[int, Dict[str, int]],
+    data_roots: List[Path],
+) -> None:
     header("1) Inventario en disco (carpetas data_result/{cat}/)")
-    print(f"  Raíz: {CYAN}{data_root}{RESET}")
-    print("  Categoría = nombre de carpeta numérica (p. ej. 14/).")
+    print(f"  Raíces data_result ({len(data_roots)}):")
+    for dr in data_roots:
+        print(f"    {CYAN}{dr}{RESET}")
+    print("  Categoría = nombre de carpeta numérica (p. ej. 14/). Conteos agregados.")
     if not folder_scan:
         print(f"  {YELLOW}No hay subcarpetas numéricas bajo data_result.{RESET}")
         print(
@@ -267,9 +274,11 @@ def run_preflight(
     write_config: bool = False,
     output_config: Optional[Path] = None,
 ) -> Dict[str, Any]:
-    resolved_root = get_data_result_root(data_root)
-    folder_scan = scan_data_result_folders(resolved_root)
-    _print_folder_inventory(folder_scan, resolved_root)
+    resolved_roots = get_data_result_roots(data_root)
+    if not resolved_roots:
+        resolved_roots = [get_data_result_root(data_root)]
+    folder_scan = scan_data_result_folders(data_root)
+    _print_folder_inventory(folder_scan, resolved_roots)
 
     header("2) Ejemplos válidos (collect_examples — mismos filtros que train)")
     print(
@@ -283,7 +292,7 @@ def run_preflight(
         min_valid_frames=int(min_valid_frames),
         min_valid_pct=float(min_valid_pct),
         max_occlusion_ratio=float(max_occlusion_ratio),
-        data_root=resolved_root,
+        data_root=data_root,
     )
     n_total = len(examples)
     global_counts = count_examples_by_folder_category(examples)
@@ -461,8 +470,8 @@ def main() -> int:
         type=str,
         default=None,
         help=(
-            f"Carpeta data_result (default: auto — model_config, GUADIA_DATA_RESULT_ROOT, "
-            f"OUTPUT_BASE/data_result). Actual model_config: {DATA_RESULT_ROOT}"
+            f"Carpeta(s) data_result (default: PATH_ROOTS/OUTPUT_BASE en config.py, "
+            f"GUADIA_DATA_RESULT_ROOT, model_config). Actual model_config: {DATA_RESULT_ROOT}"
         ),
     )
     parser.add_argument(

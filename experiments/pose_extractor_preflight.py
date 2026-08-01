@@ -2,7 +2,7 @@
 """
 Pre-chequeo antes de lanzar pose_extractor_clean.py.
 
-Modo CSV (por defecto): busca CSVs bajo PATH_ROOT, cuenta clips y valida vídeos.
+Modo CSV (por defecto): busca CSVs bajo PATH_ROOTS (o PATH_ROOT), cuenta clips y valida vídeos.
 Modo data_result (--from-data-result): recorre data_result existente (meta.json + clip.mp4).
 
 Uso (re-extracción desde data_result existente):
@@ -33,6 +33,9 @@ from config import (
     OUTPUT_BASE,
     CLIP_SCALE_HEIGHT,
     YOLO_POSE_MODEL,
+    get_experiments,
+    get_path_roots,
+    get_data_result_roots,
 )
 from security import validate_folder
 
@@ -608,25 +611,40 @@ def main():
             )
         )
 
-    path_to_scan = args.path or PATH_ROOT
+    path_roots = get_path_roots()
+    path_to_scan = args.path or (str(path_roots[0]) if path_roots else None)
     if not path_to_scan and CSV_PATH:
         path_to_scan = str(Path(CSV_PATH).resolve().parent)
 
     header("1) Configuración")
-    print(f"  PATH_ROOT / CSV: {path_to_scan or PATH_ROOT or CSV_PATH}")
+    if path_roots:
+        print(f"  PATH_ROOTS ({len(path_roots)}):")
+        for pr in path_roots:
+            print(f"    - {pr}")
+    else:
+        print(f"  PATH_ROOT / CSV: {path_to_scan or PATH_ROOT or CSV_PATH}")
     print(f"  OUTPUT_BASE:     {OUTPUT_BASE or '(script dir)/output'}")
+    dr_roots = get_data_result_roots()
+    if dr_roots:
+        print(f"  data_result ({len(dr_roots)}):")
+        for dr in dr_roots:
+            print(f"    - {dr}")
     print(f"  Escala clips:    {CLIP_SCALE_HEIGHT or 'original'} px altura")
 
     header("2) CSVs y clips por categoría")
-    if path_to_scan:
+    experiments = get_experiments()
+    if path_to_scan and not experiments:
         root = Path(path_to_scan).resolve()
         csv_files = sorted(root.rglob("*.csv")) if root.is_dir() else []
+    elif experiments:
+        csv_files = [Path(e["csv"]) for e in experiments]
+        root = Path(experiments[0]["path_root"]).resolve() if experiments[0].get("path_root") else None
     else:
         csv_files = [Path(CSV_PATH).resolve()] if CSV_PATH and Path(CSV_PATH).exists() else []
         root = csv_files[0].parent if csv_files else None
 
     if not csv_files:
-        fail("No se encontraron CSVs. Revisa PATH_ROOT o CSV_PATH en config.py.")
+        fail("No se encontraron CSVs. Revisa PATH_ROOTS o CSV_PATH en config.py.")
         sys.exit(1)
 
     total_clips = 0
@@ -710,7 +728,16 @@ def main():
         for k, v in cat_counts.items():
             by_category[k] = by_category.get(k, 0) + v
         total_clips += n_clips
-        rel = csv_path.relative_to(root) if root and root in csv_path.parents else csv_path.name
+        rel = csv_path.name
+        if root is not None:
+            try:
+                rel = csv_path.relative_to(root)
+            except ValueError:
+                if experiments:
+                    for e in experiments:
+                        if Path(e["csv"]).resolve() == csv_path.resolve():
+                            rel = e.get("rel_path", csv_path.name)
+                            break
         print(f"  {rel}: {n_clips} clips")
 
     if total_clips == 0:
@@ -723,13 +750,23 @@ def main():
     print(f"  Frames totales (FPS real por vídeo, ≤{max_clip_sec:.0f} s/clip): {total_frames_approx}")
 
     header("3) Validación de vídeos y CSV")
-    path_validate = path_to_scan or (str(Path(CSV_PATH).parent) if CSV_PATH else "")
-    if path_validate:
-        validation = validate_folder(path_validate)
+    if path_roots:
+        all_ok = True
+        for pr in path_roots:
+            print(f"  Validando {pr} ...")
+            validation = validate_folder(str(pr))
+            if not validation.get("ok"):
+                all_ok = False
+        if not all_ok:
+            warn("Hay errores en CSVs o vídeos. Corrígelos antes de ejecutar pose_extractor_clean.")
+        else:
+            ok("Todos los PATH_ROOTS validados correctamente.")
+    elif path_to_scan:
+        validation = validate_folder(path_to_scan)
         if not validation.get("ok"):
             warn("Hay errores en CSVs o vídeos. Corrígelos antes de ejecutar pose_extractor_clean.")
     else:
-        ok("Omisión de validación (sin PATH_ROOT ni CSV_PATH).")
+        ok("Omisión de validación (sin PATH_ROOTS ni CSV_PATH).")
 
     header("4) Dispositivo y modelo")
     device = get_device()

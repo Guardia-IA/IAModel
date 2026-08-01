@@ -40,6 +40,7 @@ try:
         split_examples_stratified_by_uid,
         split_uids_from_example_lists,
         get_data_result_root,
+        get_data_result_roots,
         scan_data_result_folders,
         load_category_augmentation_config,
         count_examples_by_folder_category,
@@ -75,6 +76,7 @@ except ImportError:
         split_examples_stratified_by_uid,
         split_uids_from_example_lists,
         get_data_result_root,
+        get_data_result_roots,
         scan_data_result_folders,
         load_category_augmentation_config,
         count_examples_by_folder_category,
@@ -245,11 +247,15 @@ def build_training_plan(
     class_map_spec: Optional[Dict[str, Any]] = None,
     experiment_ids: Optional[List[int]] = None,
 ) -> Dict[str, Any]:
-    resolved_root = get_data_result_root(data_root)
-    folder_scan = scan_data_result_folders(resolved_root)
+    resolved_roots = get_data_result_roots(data_root)
+    if not resolved_roots:
+        resolved_roots = [get_data_result_root(data_root)]
+    folder_scan = scan_data_result_folders(data_root)
 
     header("1) Inventario data_result")
-    print(f"  Raíz: {CYAN}{resolved_root}{RESET}")
+    print(f"  Raíces ({len(resolved_roots)}):")
+    for dr in resolved_roots:
+        print(f"    {CYAN}{dr}{RESET}")
     if not folder_scan:
         print(f"  {YELLOW}No hay categorías numéricas bajo data_result.{RESET}")
 
@@ -260,7 +266,7 @@ def build_training_plan(
         min_valid_frames=int(min_valid_frames),
         min_valid_pct=float(min_valid_pct),
         max_occlusion_ratio=float(max_occlusion_ratio),
-        data_root=resolved_root,
+        data_root=data_root,
     )
     if class_map_spec:
         try:
