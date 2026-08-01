@@ -2,28 +2,28 @@
 """
 Pre-chequeo antes de lanzar pose_extractor_clean.py.
 
-Modo CSV (por defecto): busca CSVs bajo PATH_ROOTS (o PATH_ROOT), cuenta clips y valida vídeos.
+Modo CSV (por defecto): busca CSVs bajo PATH_ROOTS, cuenta clips (sin ffprobe).
 Modo data_result (--from-data-result): recorre data_result existente (meta.json + clip.mp4).
 
-Uso (re-extracción desde data_result existente):
-  # Conteo + tiempo estimado (lee meta.json, NO ffprobe):
-  python pose_extractor_preflight.py --from-data-result /ruta/data_result --yolo-pose-model yolo26s-pose.pt
-
-  # Solo conteo instantáneo (sin meta, sin tiempo):
-  python pose_extractor_preflight.py --from-data-result /ruta/data_result --count-only
-
-  # ffprobe solo si meta no tiene frames (lento, evitar salvo necesidad):
-  python pose_extractor_preflight.py --from-data-result /ruta/data_result --probe-videos
-
-Modo CSV (extracción inicial desde CSVs):
+Uso rápido (CSV):
   python pose_extractor_preflight.py
-  python pose_extractor_preflight.py --path /ruta/alternativa
+  python pose_extractor_preflight.py --check-exists          # solo ¿existe el .mp4?
+  python pose_extractor_preflight.py --save-txt informe.txt  # guardar + pantalla
+  python pose_extractor_preflight.py --probe-videos          # ffprobe (lento, estimación precisa)
+
+Uso data_result:
+  python pose_extractor_preflight.py --from-data-result /ruta/data_result
+  python pose_extractor_preflight.py --from-data-result /ruta --count-only
+  python pose_extractor_preflight.py --from-data-result /ruta --probe-videos
 """
 import re
 import subprocess
 import sys
 import json
+from datetime import datetime
+from io import TextIOWrapper
 from pathlib import Path
+from typing import IO, List, TextIO
 
 # Sin cargar YOLO ni pose_extractor_clean (evitar carga pesada)
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -41,6 +41,63 @@ from security import validate_folder
 
 # Misma lógica que pose_extractor para detectar fila de inicio del CSV
 HMS_PATTERN = re.compile(r"^\d{1,2}:\d{2}:\d{2}$")
+DEFAULT_FPS = 12.0
+DEFAULT_MAX_CLIP_SEC = 10.0
+
+
+class _ReportTee:
+    """Escribe en terminal y opcionalmente en un fichero de texto."""
+
+    def __init__(self, stdout: TextIO, report_path: Path | None):
+        self.stdout = stdout
+        self.report_path = report_path
+        self._file: TextIOWrapper | None = None
+        if report_path is not None:
+            report_path.parent.mkdir(parents=True, exist_ok=True)
+            self._file = report_path.open("w", encoding="utf-8")
+            self._file.write(f"# pose_extractor_preflight — {datetime.now().isoformat(timespec='seconds')}\n\n")
+
+    def write(self, data: str) -> int:
+        self.stdout.write(data)
+        if self._file is not None:
+            self._file.write(data)
+        return len(data)
+
+    def flush(self) -> None:
+        self.stdout.flush()
+        if self._file is not None:
+            self._file.flush()
+
+    def close(self) -> None:
+        if self._file is not None:
+            self._file.flush()
+            self._file.close()
+            self._file = None
+
+
+def _setup_report_tee(save_txt: Path) -> tuple[TextIO, _ReportTee]:
+    original = sys.stdout
+    tee = _ReportTee(original, save_txt.expanduser().resolve())
+    sys.stdout = tee  # type: ignore[assignment]
+    return original, tee
+
+
+def _restore_stdout(original: TextIO, tee: _ReportTee | None) -> None:
+    if tee is not None:
+        sys.stdout = original
+        tee.close()
+        print(f"Informe guardado en: {tee.report_path}")
+
+
+def _resolve_video_path(video_rel: str, base_dir: Path) -> Path:
+    p = Path(str(video_rel).strip().strip('"').strip("'"))
+    if p.is_absolute():
+        return p.resolve()
+    return (base_dir / p).resolve()
+
+
+def _is_full_clip_range(inicio: str, fin: str) -> bool:
+    return inicio == "00:00:00" and fin == "00:00:00"
 
 
 def is_hms_format(val) -> bool:
@@ -562,6 +619,303 @@ def estimate_time(
     return inference_sec, ffmpeg_sec, sec_per_frame
 
 
+def _scan_csv_inventory(
+    csv_files: List[Path],
+    experiments: list,
+    root: Path | None,
+    *,
+    check_exists_only: bool = False,
+    probe_videos: bool = False,
+) -> dict:
+    """
+    Recorre CSVs y cuenta clips. Por defecto sin ffprobe (rápido).
+    check_exists_only: solo comprueba existencia del fichero de vídeo.
+    probe_videos: usa ffprobe para duración/FPS (lento).
+    """
+    import pandas as pd
+
+    category_limits = _load_category_limits()
+    category_counters: dict[str, int] = {}
+
+    total_clips = 0
+    by_category: dict[int, int] = {}
+    total_seconds_of_video = 0.0
+    total_frames_approx = 0
+    fps_cache: dict = {}
+    exists_count = 0
+    missing_count = 0
+    missing_paths: list[str] = []
+    full_clip_without_probe = 0
+
+    for csv_path in csv_files:
+        start_row = find_start_row(str(csv_path))
+        try:
+            df = pd.read_csv(str(csv_path), skiprows=range(0, start_row - 1), header=None)
+        except Exception as e:
+            warn(f"CSV no legible: {csv_path.name} — {e}")
+            continue
+
+        base_dir = Path(csv_path).resolve().parent
+        n_clips = 0
+        cat_counts: dict[int, int] = {}
+
+        for row_idx, row in df.iterrows():
+            if len(row) < 4 or pd.isna(row.iloc[0]):
+                continue
+            try:
+                cat = int(row.iloc[3])
+            except (ValueError, TypeError):
+                continue
+            if cat < 0:
+                continue
+
+            cat_str = str(cat)
+            limit = category_limits.get(cat_str) if category_limits else None
+            if limit is not None and category_counters.get(cat_str, 0) >= limit:
+                continue
+
+            inicio_s = str(row.iloc[1]).strip().strip('"').strip("'")
+            fin_s = str(row.iloc[2]).strip().strip('"').strip("'")
+            if not is_hms_format(inicio_s) or not is_hms_format(fin_s):
+                continue
+
+            video_rel = str(row.iloc[0]).strip().strip('"').strip("'")
+            video_full_path = _resolve_video_path(video_rel, base_dir)
+
+            if check_exists_only:
+                if video_full_path.is_file():
+                    exists_count += 1
+                else:
+                    missing_count += 1
+                    missing_paths.append(str(video_full_path))
+                n_clips += 1
+                cat_counts[cat] = cat_counts.get(cat, 0) + 1
+                category_counters[cat_str] = category_counters.get(cat_str, 0) + 1
+                continue
+
+            if not video_full_path.is_file():
+                continue
+
+            if _is_full_clip_range(inicio_s, fin_s):
+                if probe_videos:
+                    fps = get_video_fps(video_full_path, fps_cache)
+                    try:
+                        out = subprocess.run(
+                            [
+                                "ffprobe", "-v", "error", "-show_entries", "format=duration",
+                                "-of", "csv=p=0", str(video_full_path),
+                            ],
+                            capture_output=True, text=True, timeout=10, check=False,
+                        )
+                        dur = float(out.stdout.strip()) if out.returncode == 0 and out.stdout.strip() else 0.0
+                    except Exception:
+                        dur = 0.0
+                    if dur <= 0:
+                        continue
+                else:
+                    dur = DEFAULT_MAX_CLIP_SEC
+                    fps = DEFAULT_FPS
+                    full_clip_without_probe += 1
+            else:
+                dur = hms_to_seconds(fin_s) - hms_to_seconds(inicio_s)
+                fps = DEFAULT_FPS
+                if probe_videos:
+                    fps = get_video_fps(video_full_path, fps_cache)
+
+            if dur <= 0:
+                continue
+
+            n_clips += 1
+            total_seconds_of_video += dur
+            total_frames_approx += int(min(dur, DEFAULT_MAX_CLIP_SEC) * fps + 0.5)
+            cat_counts[cat] = cat_counts.get(cat, 0) + 1
+            category_counters[cat_str] = category_counters.get(cat_str, 0) + 1
+
+        for k, v in cat_counts.items():
+            by_category[k] = by_category.get(k, 0) + v
+        total_clips += n_clips
+
+        rel = csv_path.name
+        if root is not None:
+            try:
+                rel = csv_path.relative_to(root)
+            except ValueError:
+                if experiments:
+                    for e in experiments:
+                        if Path(e["csv"]).resolve() == csv_path.resolve():
+                            rel = e.get("rel_path", csv_path.name)
+                            break
+        if check_exists_only:
+            print(f"  {rel}: {n_clips} filas CSV")
+        else:
+            print(f"  {rel}: {n_clips} clips")
+
+    return {
+        "total_clips": total_clips,
+        "by_category": by_category,
+        "total_seconds_of_video": total_seconds_of_video,
+        "total_frames_approx": total_frames_approx,
+        "exists_count": exists_count,
+        "missing_count": missing_count,
+        "missing_paths": missing_paths,
+        "full_clip_without_probe": full_clip_without_probe,
+        "check_exists_only": check_exists_only,
+        "probe_videos": probe_videos,
+    }
+
+
+def run_preflight_csv(
+    *,
+    path: str | None,
+    yolo_pose_model: str | None,
+    check_exists_only: bool = False,
+    probe_videos: bool = False,
+) -> int:
+    path_roots = get_path_roots()
+    path_to_scan = path or (str(path_roots[0]) if path_roots else None)
+    if not path_to_scan and CSV_PATH:
+        path_to_scan = str(Path(CSV_PATH).resolve().parent)
+
+    header("1) Configuración")
+    if path_roots:
+        print(f"  PATH_ROOTS ({len(path_roots)}):")
+        for pr in path_roots:
+            print(f"    - {pr}")
+    else:
+        print(f"  PATH_ROOT / CSV: {path_to_scan or PATH_ROOT or CSV_PATH}")
+    print(f"  OUTPUT_BASE:     {OUTPUT_BASE or '(script dir)/output'}")
+    dr_roots = get_data_result_roots()
+    if dr_roots:
+        print(f"  data_result ({len(dr_roots)}):")
+        for dr in dr_roots:
+            print(f"    - {dr}")
+    print(f"  Escala clips:    {CLIP_SCALE_HEIGHT or 'original'} px altura")
+    if check_exists_only:
+        print(f"  Modo:            {CYAN}--check-exists{RESET} (solo existencia de vídeos, sin ffprobe)")
+    elif probe_videos:
+        print(f"  Modo:            ffprobe por vídeo (lento)")
+    else:
+        print(f"  Modo:            rápido (sin ffprobe; FPS={DEFAULT_FPS:g}, clip completo≈{DEFAULT_MAX_CLIP_SEC:g}s)")
+
+    header("2) CSVs y clips por categoría")
+    experiments = get_experiments()
+    if path_to_scan and not experiments:
+        root = Path(path_to_scan).resolve()
+        csv_files = sorted(root.rglob("*.csv")) if root.is_dir() else []
+    elif experiments:
+        csv_files = [Path(e["csv"]) for e in experiments]
+        root = Path(experiments[0]["path_root"]).resolve() if experiments[0].get("path_root") else None
+    else:
+        csv_files = [Path(CSV_PATH).resolve()] if CSV_PATH and Path(CSV_PATH).exists() else []
+        root = csv_files[0].parent if csv_files else None
+
+    if not csv_files:
+        fail("No se encontraron CSVs. Revisa PATH_ROOTS o CSV_PATH en config.py.")
+        return 1
+
+    category_limits = _load_category_limits()
+    if category_limits:
+        print(f"Límites por categoría (config_pose_extraction.json): {category_limits}")
+    else:
+        print("Límites por categoría: sin límites (no hay config_pose_extraction.json o está vacío).")
+
+    inv = _scan_csv_inventory(
+        csv_files,
+        experiments,
+        root,
+        check_exists_only=check_exists_only,
+        probe_videos=probe_videos,
+    )
+
+    if inv["total_clips"] == 0:
+        fail("No hay filas de clips válidas en los CSVs.")
+        return 1
+
+    if check_exists_only:
+        print(f"\n  {BOLD}Filas CSV analizadas:{RESET} {inv['total_clips']}")
+        print(f"  {GREEN}Vídeos encontrados:{RESET}  {inv['exists_count']}")
+        if inv["missing_count"]:
+            fail(f"Vídeos NO encontrados: {inv['missing_count']}")
+            print("\n  Primeros ficheros ausentes:")
+            for p in inv["missing_paths"][:30]:
+                print(f"    - {p}")
+            if len(inv["missing_paths"]) > 30:
+                print(f"    ... y {len(inv['missing_paths']) - 30} más")
+        else:
+            ok("Todos los vídeos referenciados existen en disco.")
+        if inv["by_category"]:
+            print(f"  Por categoría (filas CSV): {dict(sorted(inv['by_category'].items()))}")
+        header("RESUMEN")
+        print(f"  Filas: {inv['total_clips']} | Existen: {inv['exists_count']} | Faltan: {inv['missing_count']}")
+        print()
+        return 1 if inv["missing_count"] else 0
+
+    print(f"\n  {BOLD}Total clips:{RESET} {inv['total_clips']}")
+    print(f"  Por categoría: {dict(sorted(inv['by_category'].items()))}")
+    if probe_videos:
+        print(f"  Duración total vídeo (ffprobe + CSV): {inv['total_seconds_of_video']/60:.1f} min")
+    else:
+        print(f"  Duración estimada (CSV, sin ffprobe): {inv['total_seconds_of_video']/60:.1f} min")
+        if inv["full_clip_without_probe"]:
+            warn(
+                f"{inv['full_clip_without_probe']} clips completos (00:00:00–00:00:00) "
+                f"contados con {DEFAULT_MAX_CLIP_SEC:g}s de estimación; usa --probe-videos para duración real"
+            )
+    fps_label = "real" if probe_videos else f"{DEFAULT_FPS:g}"
+    print(
+        f"  Frames estimados (FPS={fps_label}, "
+        f"≤{DEFAULT_MAX_CLIP_SEC:g} s/clip): {inv['total_frames_approx']}"
+    )
+
+    header("3) Validación de CSV (estructura y vídeos)")
+    if path_roots:
+        all_ok = True
+        for pr in path_roots:
+            print(f"  Validando {pr} ...")
+            validation = validate_folder(str(pr))
+            if not validation.get("ok"):
+                all_ok = False
+        if not all_ok:
+            warn("Hay errores en CSVs o vídeos. Corrígelos antes de ejecutar pose_extractor_clean.")
+        else:
+            ok("Todos los PATH_ROOTS validados correctamente.")
+    elif path_to_scan:
+        validation = validate_folder(path_to_scan)
+        if not validation.get("ok"):
+            warn("Hay errores en CSVs o vídeos. Corrígelos antes de ejecutar pose_extractor_clean.")
+    else:
+        ok("Omisión de validación (sin PATH_ROOTS ni CSV_PATH).")
+
+    header("4) Dispositivo y modelo")
+    device = get_device()
+    model_stem = Path(yolo_pose_model or YOLO_POSE_MODEL).stem
+    if device == "cuda":
+        try:
+            import torch
+            name = torch.cuda.get_device_name(0)
+            ok(f"GPU: {name}")
+        except Exception:
+            ok("GPU: CUDA disponible")
+    else:
+        warn("CPU: CUDA no disponible. La extracción será lenta.")
+    print(f"  Modelo (estimación): {model_stem}")
+
+    header("5) Estimación de tiempo total")
+    _print_time_estimates(
+        total_clips=inv["total_clips"],
+        total_frames=inv["total_frames_approx"],
+        device=device,
+        model_stem=model_stem,
+        ffmpeg_sec_per_clip=FFMPEG_SEC_PER_CLIP,
+    )
+    if not probe_videos:
+        warn("Estimación de frames aproximada (sin ffprobe). Usa --probe-videos si necesitas precisión.")
+    else:
+        warn("Estimación aproximada (CPU/GPU y carga del sistema pueden variar).")
+    print()
+    return 0
+
+
 def main():
     import argparse
     parser = argparse.ArgumentParser(description="Pre-chequeo para pose_extractor_clean")
@@ -595,208 +949,51 @@ def main():
     parser.add_argument(
         "--probe-videos",
         action="store_true",
-        help="Usar ffprobe en cada clip si meta no tiene duración/frames (lento, ~minutos en datasets grandes)",
+        help="Usar ffprobe por vídeo/clip para duración y FPS (lento; solo si necesitas estimación precisa)",
+    )
+    parser.add_argument(
+        "--check-exists",
+        action="store_true",
+        help="Solo comprobar si existe cada fichero de vídeo del CSV (sin ffprobe, sin estimación de tiempo)",
+    )
+    parser.add_argument(
+        "--save-txt",
+        type=Path,
+        default=None,
+        metavar="FILE",
+        help="Guardar el informe completo en un fichero .txt además de mostrarlo en pantalla",
     )
     args = parser.parse_args()
 
-    if args.from_data_result:
-        out = Path(args.output_base).expanduser().resolve() if args.output_base else None
-        sys.exit(
-            run_preflight_data_result(
+    original_stdout = sys.stdout
+    tee: _ReportTee | None = None
+    if args.save_txt:
+        original_stdout, tee = _setup_report_tee(args.save_txt)
+
+    exit_code = 0
+    try:
+        if args.from_data_result:
+            out = Path(args.output_base).expanduser().resolve() if args.output_base else None
+            exit_code = run_preflight_data_result(
                 Path(args.from_data_result),
                 output_base=out,
                 yolo_pose_model=args.yolo_pose_model,
                 count_only=args.count_only,
                 probe_videos=args.probe_videos,
             )
-        )
-
-    path_roots = get_path_roots()
-    path_to_scan = args.path or (str(path_roots[0]) if path_roots else None)
-    if not path_to_scan and CSV_PATH:
-        path_to_scan = str(Path(CSV_PATH).resolve().parent)
-
-    header("1) Configuración")
-    if path_roots:
-        print(f"  PATH_ROOTS ({len(path_roots)}):")
-        for pr in path_roots:
-            print(f"    - {pr}")
-    else:
-        print(f"  PATH_ROOT / CSV: {path_to_scan or PATH_ROOT or CSV_PATH}")
-    print(f"  OUTPUT_BASE:     {OUTPUT_BASE or '(script dir)/output'}")
-    dr_roots = get_data_result_roots()
-    if dr_roots:
-        print(f"  data_result ({len(dr_roots)}):")
-        for dr in dr_roots:
-            print(f"    - {dr}")
-    print(f"  Escala clips:    {CLIP_SCALE_HEIGHT or 'original'} px altura")
-
-    header("2) CSVs y clips por categoría")
-    experiments = get_experiments()
-    if path_to_scan and not experiments:
-        root = Path(path_to_scan).resolve()
-        csv_files = sorted(root.rglob("*.csv")) if root.is_dir() else []
-    elif experiments:
-        csv_files = [Path(e["csv"]) for e in experiments]
-        root = Path(experiments[0]["path_root"]).resolve() if experiments[0].get("path_root") else None
-    else:
-        csv_files = [Path(CSV_PATH).resolve()] if CSV_PATH and Path(CSV_PATH).exists() else []
-        root = csv_files[0].parent if csv_files else None
-
-    if not csv_files:
-        fail("No se encontraron CSVs. Revisa PATH_ROOTS o CSV_PATH en config.py.")
-        sys.exit(1)
-
-    total_clips = 0
-    by_category: dict[int, int] = {}
-    total_seconds_of_video = 0.0
-    total_frames_approx = 0
-    max_clip_sec = 10.0
-    fps_cache = {}
-
-    # Límite global opcional por categoría (máx. clips a considerar por clase),
-    # compartido con pose_extractor_clean (mismos números que luego se procesarán).
-    category_limits = _load_category_limits()
-    category_counters: dict[str, int] = {}
-    if category_limits:
-        print(f"Límites por categoría (config_pose_extraction.json): {category_limits}")
-    else:
-        print("Límites por categoría: sin límites (no hay config_pose_extraction.json o está vacío).")
-
-    for csv_path in csv_files:
-        start_row = find_start_row(str(csv_path))
-        try:
-            import pandas as pd
-            df = pd.read_csv(str(csv_path), skiprows=range(0, start_row - 1), header=None)
-        except Exception as e:
-            warn(f"CSV no legible: {csv_path.name} — {e}")
-            continue
-
-        base_dir = Path(csv_path).resolve().parent
-        n_clips = 0
-        cat_counts: dict[int, int] = {}
-        for _, row in df.iterrows():
-            if len(row) < 4 or pd.isna(row.iloc[0]):
-                continue
-            try:
-                cat = int(row.iloc[3])
-            except (ValueError, TypeError):
-                continue
-            if cat < 0:
-                continue
-            cat_str = str(cat)
-            # Respetar límite por categoría si existe (mismos N primeros que procesará pose_extractor_clean)
-            limit = category_limits.get(cat_str) if category_limits else None
-            if limit is not None and category_counters.get(cat_str, 0) >= limit:
-                continue
-            if not is_hms_format(str(row.iloc[1]).strip()) or not is_hms_format(str(row.iloc[2]).strip()):
-                continue
-            inicio_s = str(row.iloc[1]).strip()
-            fin_s = str(row.iloc[2]).strip()
-            if inicio_s == "00:00:00" and fin_s == "00:00:00":
-                video_rel = str(row.iloc[0]).strip().strip('"').strip("'")
-                video_full_path = Path(video_rel) if Path(video_rel).is_absolute() else (base_dir / video_rel)
-                video_full_path = video_full_path.resolve()
-                fps = get_video_fps(video_full_path, fps_cache)
-                try:
-                    out = subprocess.run(
-                        [
-                            "ffprobe", "-v", "error", "-show_entries", "format=duration",
-                            "-of", "csv=p=0", str(video_full_path),
-                        ],
-                        capture_output=True, text=True, timeout=10, check=False,
-                    )
-                    dur = float(out.stdout.strip()) if out.returncode == 0 and out.stdout.strip() else 0.0
-                except Exception:
-                    dur = 0.0
-                if dur <= 0:
-                    continue
-            else:
-                dur = hms_to_seconds(fin_s) - hms_to_seconds(inicio_s)
-            if dur <= 0:
-                continue
-            video_rel = str(row.iloc[0]).strip().strip('"').strip("'")
-            video_full_path = Path(video_rel) if Path(video_rel).is_absolute() else (base_dir / video_rel)
-            video_full_path = video_full_path.resolve()
-            fps = get_video_fps(video_full_path, fps_cache)
-            n_clips += 1
-            total_seconds_of_video += dur
-            total_frames_approx += int(min(dur, max_clip_sec) * fps + 0.5)
-            cat_counts[cat] = cat_counts.get(cat, 0) + 1
-            category_counters[cat_str] = category_counters.get(cat_str, 0) + 1
-
-        for k, v in cat_counts.items():
-            by_category[k] = by_category.get(k, 0) + v
-        total_clips += n_clips
-        rel = csv_path.name
-        if root is not None:
-            try:
-                rel = csv_path.relative_to(root)
-            except ValueError:
-                if experiments:
-                    for e in experiments:
-                        if Path(e["csv"]).resolve() == csv_path.resolve():
-                            rel = e.get("rel_path", csv_path.name)
-                            break
-        print(f"  {rel}: {n_clips} clips")
-
-    if total_clips == 0:
-        fail("No hay filas de clips válidas en los CSVs.")
-        sys.exit(1)
-
-    print(f"\n  {BOLD}Total clips: {total_clips}{RESET}")
-    print(f"  Por categoría: {dict(sorted(by_category.items()))}")
-    print(f"  Duración total vídeo (suma CSV): {total_seconds_of_video/60:.1f} min")
-    print(f"  Frames totales (FPS real por vídeo, ≤{max_clip_sec:.0f} s/clip): {total_frames_approx}")
-
-    header("3) Validación de vídeos y CSV")
-    if path_roots:
-        all_ok = True
-        for pr in path_roots:
-            print(f"  Validando {pr} ...")
-            validation = validate_folder(str(pr))
-            if not validation.get("ok"):
-                all_ok = False
-        if not all_ok:
-            warn("Hay errores en CSVs o vídeos. Corrígelos antes de ejecutar pose_extractor_clean.")
         else:
-            ok("Todos los PATH_ROOTS validados correctamente.")
-    elif path_to_scan:
-        validation = validate_folder(path_to_scan)
-        if not validation.get("ok"):
-            warn("Hay errores en CSVs o vídeos. Corrígelos antes de ejecutar pose_extractor_clean.")
-    else:
-        ok("Omisión de validación (sin PATH_ROOTS ni CSV_PATH).")
+            if args.check_exists and args.probe_videos:
+                warn("--check-exists ignora --probe-videos (no se usa ffprobe).")
+            exit_code = run_preflight_csv(
+                path=args.path,
+                yolo_pose_model=args.yolo_pose_model,
+                check_exists_only=args.check_exists,
+                probe_videos=args.probe_videos and not args.check_exists,
+            )
+    finally:
+        _restore_stdout(original_stdout, tee)
 
-    header("4) Dispositivo y modelo")
-    device = get_device()
-    model_stem = Path(YOLO_POSE_MODEL).stem
-    if device == "cuda":
-        try:
-            import torch
-            name = torch.cuda.get_device_name(0)
-            ok(f"GPU: {name}")
-        except Exception:
-            ok("GPU: CUDA disponible")
-    else:
-        warn("CPU: CUDA no disponible. La extracción será lenta.")
-    print(f"  Modelo (estimación): {model_stem}")
-
-    header("5) Estimación de tiempo total")
-    model_stem = Path(YOLO_POSE_MODEL).stem
-    if args.yolo_pose_model:
-        model_stem = Path(args.yolo_pose_model).stem
-    _print_time_estimates(
-        total_clips=total_clips,
-        total_frames=total_frames_approx,
-        device=device,
-        model_stem=model_stem,
-        ffmpeg_sec_per_clip=FFMPEG_SEC_PER_CLIP,
-    )
-
-    warn("Estimación aproximada (CPU/GPU y carga del sistema pueden variar).")
-
-    print()
+    sys.exit(exit_code)
 
 
 if __name__ == "__main__":
