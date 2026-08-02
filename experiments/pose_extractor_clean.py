@@ -1203,6 +1203,13 @@ def main():
         help="En --from-data-result: omitir clips con más de un track",
     )
     parser.add_argument("--output", "-o", dest="output_dir", default=None, metavar="DIR", help="Directorio donde guardar los .npy en modo debug. Sobrescribe la ruta por defecto de config.py")
+    parser.add_argument(
+        "--continue-on-missing",
+        "--skip-missing-videos",
+        dest="continue_on_missing",
+        action="store_true",
+        help="Si hay vídeos no encontrados en los CSV, omitirlos y continuar con los que sí existen",
+    )
     args = parser.parse_args()
 
     output_root = Path(args.output_base).expanduser().resolve() if args.output_base else OUTPUT
@@ -1276,12 +1283,15 @@ def main():
         return
 
     # 2. Validación previa (security): comprobar CSVs y vídeos en cada PATH_ROOT
+    allow_missing = args.continue_on_missing
+    if allow_missing:
+        print("Modo --continue-on-missing: los vídeos no encontrados se omitirán.")
     path_roots = get_path_roots()
     if path_roots:
         validation_ok = True
         for pr in path_roots:
             print(f"Validando PATH_ROOT: {pr}")
-            validation = validate_folder(str(pr))
+            validation = validate_folder(str(pr), allow_missing_videos=allow_missing)
             if not validation.get("ok"):
                 validation_ok = False
         if not validation_ok:
@@ -1293,7 +1303,7 @@ def main():
             return
     else:
         path_to_validate = os.path.dirname(os.path.abspath(CSV_PATH or "."))
-        validation = validate_folder(path_to_validate)
+        validation = validate_folder(path_to_validate, allow_missing_videos=allow_missing)
         if not validation.get("ok"):
             print("Abortando: hay errores en los CSVs. Corrígelos antes de ejecutar el extractor.")
             if log_file:

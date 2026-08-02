@@ -31,11 +31,20 @@ def _hms_to_seconds(val: str) -> int:
     return h * 3600 + m * 60 + sec
 
 
+def _resolve_video_path(base_dir: str, video: str) -> str:
+    """Resuelve ruta de vídeo (absoluta o relativa al CSV)."""
+    p = Path(str(video).strip().strip('"').strip("'"))
+    if p.is_absolute():
+        return str(p.resolve())
+    return str((Path(base_dir) / p).resolve())
+
+
 def validate_csv(
     csv_path: str,
     base_dir: str | None = None,
     min_clas: int = DEFAULT_MIN_CLAS,
     max_clas: int = DEFAULT_MAX_CLAS,
+    allow_missing_videos: bool = False,
 ) -> dict:
     """
     Valida un CSV con columnas: video, inicio, fin, clasificacion.
@@ -51,6 +60,7 @@ def validate_csv(
     """
     base_dir = base_dir or os.path.dirname(os.path.abspath(csv_path))
     errors = []
+    missing_videos = []
     last_video = None
 
     try:
@@ -119,9 +129,17 @@ def validate_csv(
         # 1) Video existe (solo cuando cambia)
         if video != last_video:
             last_video = video
-            full_path = os.path.join(base_dir, video)
+            full_path = _resolve_video_path(base_dir, video)
             if not os.path.isfile(full_path):
-                row_errors.append({"row": row_num, "msg": f"Vídeo no encontrado: {full_path}", "video": video})
+                entry = {
+                    "row": row_num,
+                    "msg": f"Vídeo no encontrado: {full_path}",
+                    "video": video,
+                }
+                if allow_missing_videos:
+                    missing_videos.append(entry)
+                else:
+                    row_errors.append(entry)
 
         errors.extend(row_errors)
         if not row_errors:
@@ -129,20 +147,29 @@ def validate_csv(
             by_type[c] = by_type.get(c, 0) + 1
 
     if errors:
-        return {"ok": False, "errors": errors, "file": csv_path}
+        return {
+            "ok": False,
+            "errors": errors,
+            "missing_videos": missing_videos,
+            "file": csv_path,
+        }
 
-    return {
+    result = {
         "ok": True,
         "file": csv_path,
         "total_rows": len(df),
         "by_type": dict(sorted(by_type.items())),
     }
+    if missing_videos:
+        result["missing_videos"] = missing_videos
+    return result
 
 
 def validate_folder(
     folder_path: str,
     min_clas: int = DEFAULT_MIN_CLAS,
     max_clas: int = DEFAULT_MAX_CLAS,
+    allow_missing_videos: bool = False,
 ) -> dict:
     """
     Recorre recursivamente folder_path, valida cada CSV y concatena resultados.
@@ -156,19 +183,32 @@ def validate_folder(
     results = []
     all_ok = True
     total_clips = 0
+    total_missing_rows = 0
     global_by_type = {}
 
     for csv_path in csv_files:
-        rel_path = csv_path.relative_to(folder) if folder != csv_path.parent else csv_path.name
         base_dir = str(csv_path.parent)
 
-        result = validate_csv(str(csv_path), base_dir=base_dir, min_clas=min_clas, max_clas=max_clas)
+        result = validate_csv(
+            str(csv_path),
+            base_dir=base_dir,
+            min_clas=min_clas,
+            max_clas=max_clas,
+            allow_missing_videos=allow_missing_videos,
+        )
         results.append(result)
 
         print(f"\n--- CSV: {csv_path} ---")
         if result["ok"]:
-            print("  Estado: OK")
-            total_clips += result["total_rows"]
+            missing = result.get("missing_videos", [])
+            if missing:
+                print(f"  Estado: OK ({len(missing)} fila(s) con vídeo no encontrado; se omitirán)")
+                for e in missing:
+                    print(f"  - [OMITIR] Fila {e.get('row', '?')}: {e.get('msg', e)}")
+                total_missing_rows += len(missing)
+            else:
+                print("  Estado: OK")
+            total_clips += sum(result["by_type"].values())
             for k, v in result["by_type"].items():
                 global_by_type[k] = global_by_type.get(k, 0) + v
         else:
@@ -186,6 +226,8 @@ def validate_folder(
         "total_clips": total_clips,
         "by_type": dict(sorted(global_by_type.items())),
     }
+    if total_missing_rows:
+        summary["missing_video_rows"] = total_missing_rows
     if not all_ok:
         summary["csvs"] = [{"file": r["file"], "ok": r["ok"]} for r in results]
 
@@ -194,7 +236,14 @@ def validate_folder(
     print("=" * 60)
     if all_ok:
         by_type_str = ", ".join(f"tipo {k}={v}" for k, v in summary["by_type"].items())
-        print(f"Todos los ficheros son coherentes. Existen un total de {total_clips} clips ({by_type_str}).")
+        print(
+            f"Todos los ficheros son coherentes. Se procesarán {total_clips} clips ({by_type_str})."
+        )
+        if total_missing_rows and allow_missing_videos:
+            print(
+                f"Se omitirán {total_missing_rows} fila(s) cuyo vídeo no existe "
+                f"(flag --continue-on-missing)."
+            )
     else:
         print("Hay errores en uno o más CSVs. Revisa los mensajes anteriores.")
     print(f"\nJSON resumen:\n{json.dumps(summary, indent=2, ensure_ascii=False)}")
@@ -263,6 +312,13 @@ def main():
     parser.add_argument("--min-clas", type=int, default=DEFAULT_MIN_CLAS, help="Clasificación mínima (default 0)")
     parser.add_argument("--max-clas", type=int, default=DEFAULT_MAX_CLAS, help="Clasificación máxima (default 13)")
     parser.add_argument("--count", "-c", type=int, default=None, metavar="N", help="Solo contar clips de categoría N en la carpeta")
+    parser.add_argument(
+        "--continue-on-missing",
+        "--skip-missing-videos",
+        dest="continue_on_missing",
+        action="store_true",
+        help="No fallar si faltan vídeos; omitir esas filas en la validación",
+    )
     args = parser.parse_args()
 
     path = Path(args.path)
@@ -272,7 +328,12 @@ def main():
         return
 
     if path.is_file():
-        result = validate_csv(str(path), min_clas=args.min_clas, max_clas=args.max_clas)
+        result = validate_csv(
+            str(path),
+            min_clas=args.min_clas,
+            max_clas=args.max_clas,
+            allow_missing_videos=args.continue_on_missing,
+        )
         if not result["ok"]:
             print("Estado: ERROR")
             for e in result["errors"]:
@@ -282,7 +343,12 @@ def main():
                     print(f"  {e}")
         print(json.dumps(result, indent=2, ensure_ascii=False))
     elif path.is_dir():
-        validate_folder(str(path), min_clas=args.min_clas, max_clas=args.max_clas)
+        validate_folder(
+            str(path),
+            min_clas=args.min_clas,
+            max_clas=args.max_clas,
+            allow_missing_videos=args.continue_on_missing,
+        )
     else:
         print(f"Error: no existe {path}")
 
