@@ -17,10 +17,10 @@ from typing import List, Optional
 
 # --- RUTAS DE ENTRADA ---
 PATH_ROOTS: List[str] = [
-    #"/media/8TB/DatosEntrenamiento/datos_2/csv_buenos",
-    #"/media/8TB/DatosEntrenamiento/datos_1",
+    "/media/8TB/DatosEntrenamiento/datos_2/csv_buenos",
+    "/media/8TB/DatosEntrenamiento/datos_1"
     #"/home/angel/videos"
-    "/home/angel/videos"
+    #"/home/angel/videos"
 ]
 PATH_ROOT = PATH_ROOTS[0] if PATH_ROOTS else None  # Legacy: primer root
 CSV_PATH = None    # Usado solo si no hay PATH_ROOTS ni PATH_ROOT
@@ -30,8 +30,8 @@ TEMP_CLIPS = None  # Solo modo CSV_PATH: None = temp_clips en dir del CSV
 
 # --- SALIDA ---
 # OUTPUT_BASE = carpeta donde van temp_clips/ y data_result/ (recomendado con varios PATH_ROOTS)
-#OUTPUT_BASE = "/media/8TB/DatosEntrenamiento/data_clips/data_yolo26s_010826"
-OUTPUT_BASE="/home/angel/videos_output"
+OUTPUT_BASE = "/media/8TB/DatosEntrenamiento/data_clips/data_yolo26s_010826"
+#OUTPUT_BASE="/home/angel/videos_output"
 # Subcarpeta bajo cada PATH_ROOT cuando OUTPUT_BASE es None y hay varios PATH_ROOTS
 DEFAULT_OUTPUT_SUBDIR = "data_yolo26s"
 TEMP_BASE = None     # Legacy: solo para get_experiments si no usas OUTPUT_BASE unificado.
