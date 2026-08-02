@@ -283,6 +283,35 @@ def _resolve_video_path(videos_dir: str, video_rel_path: str) -> str:
     return str((Path(videos_dir) / p).resolve())
 
 
+def _safe_copy_file(src: str | os.PathLike, dst: str | os.PathLike) -> None:
+    """
+    Copia solo el contenido del fichero (sin metadatos del origen).
+    shutil.copy2 puede fallar con EPERM al copiar entre usuarios o montajes
+    distintos porque intenta reproducir permisos/propietario del origen.
+    """
+    src_p = Path(src)
+    dst_p = Path(dst)
+    if not src_p.is_file():
+        raise FileNotFoundError(f"Origen no encontrado: {src_p}")
+    dst_p.parent.mkdir(parents=True, exist_ok=True)
+    if dst_p.exists():
+        if not dst_p.is_file():
+            raise IsADirectoryError(f"Destino ocupado por un directorio: {dst_p}")
+        try:
+            dst_p.unlink()
+        except OSError as err:
+            raise PermissionError(
+                f"No se puede sobrescribir {dst_p}. "
+                f"Puede pertenecer a otro usuario; bórralo o ejecuta con permisos suficientes."
+            ) from err
+    try:
+        shutil.copyfile(src_p, dst_p)
+        return
+    except OSError:
+        with open(src_p, "rb") as fsrc, open(dst_p, "wb") as fdst:
+            shutil.copyfileobj(fsrc, fdst, length=1024 * 1024)
+
+
 def _video_duration_from_file(video_path: str) -> float:
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
@@ -564,7 +593,7 @@ def run_debug_extract(video_path: str, yolo_pose_model: str | None = None, outpu
 
     clip_mp4 = out_dir / "clip.mp4"
     if temp_clip.exists():
-        shutil.copy2(temp_clip, clip_mp4)
+        _safe_copy_file(temp_clip, clip_mp4)
         temp_clip.unlink()
     else:
         scale_video(str(video_path), str(clip_mp4))
@@ -840,17 +869,20 @@ def _save_clip_pose_artifacts(
         "users": users_meta,
         **meta_fields,
     }
-    if copy_clip and SAVE_PROCESSED_CLIP and clip_path and os.path.exists(clip_path):
-        meta["clip_video"] = "clip.mp4"
-    with open(data_dir / "meta.json", "w", encoding="utf-8") as f:
-        json.dump(meta, f, indent=4, ensure_ascii=False)
 
+    clip_copied = False
     if copy_clip and SAVE_PROCESSED_CLIP and clip_path and os.path.exists(clip_path):
         dest_clip = data_dir / "clip.mp4"
         try:
-            shutil.copy2(clip_path, dest_clip)
+            _safe_copy_file(clip_path, dest_clip)
+            clip_copied = True
         except Exception as e:
             print(f"[AVISO] No se pudo copiar clip en data_result: {e}")
+
+    if clip_copied:
+        meta["clip_video"] = "clip.mp4"
+    with open(data_dir / "meta.json", "w", encoding="utf-8") as f:
+        json.dump(meta, f, indent=4, ensure_ascii=False)
 
     return users_meta
 
