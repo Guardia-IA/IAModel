@@ -37,7 +37,7 @@ from config import (
     get_path_roots,
     get_data_result_roots,
 )
-from security import validate_folder
+from security import validate_csv_files
 
 # Misma lógica que pose_extractor para detectar fila de inicio del CSV
 HMS_PATTERN = re.compile(r"^\d{1,2}:\d{2}:\d{2}$")
@@ -150,6 +150,10 @@ def find_start_row(csv_path: str) -> int:
 def hms_to_seconds(t: str) -> float:
     h, m, s = map(int, str(t).split(":"))
     return h * 3600 + m * 60 + s
+
+
+def _is_full_clip_range(t_start: str, t_end: str) -> bool:
+    return t_start == "00:00:00" and t_end == "00:00:00"
 
 
 def get_video_fps(video_path: Path, cache: dict) -> float:
@@ -717,8 +721,11 @@ def _scan_csv_inventory(
             fila_csv = _csv_display_row(start_row, row_idx)
 
             if check_exists_only:
+                n_clips += 1
                 if video_full_path.is_file():
                     exists_count += 1
+                    cat_counts[cat] = cat_counts.get(cat, 0) + 1
+                    category_counters[cat_str] = category_counters.get(cat_str, 0) + 1
                 else:
                     missing_count += 1
                     missing_entries.append({
@@ -729,9 +736,6 @@ def _scan_csv_inventory(
                         "video_rel": video_rel,
                         "video_path": str(video_full_path),
                     })
-                n_clips += 1
-                cat_counts[cat] = cat_counts.get(cat, 0) + 1
-                category_counters[cat_str] = category_counters.get(cat_str, 0) + 1
                 continue
 
             if not video_full_path.is_file():
@@ -902,8 +906,12 @@ def run_preflight_csv(
         else:
             ok("Todos los vídeos referenciados existen en disco.")
         header("RESUMEN")
-        print(f"  Filas: {inv['total_clips']} | Existen: {inv['exists_count']} | Faltan: {inv['missing_count']}")
-        _print_by_category(inv["by_category"], title="Clips por categoría (filas CSV)")
+        print(
+            f"  Filas CSV totales: {inv['total_clips']} | "
+            f"Procesables (vídeo existe): {inv['exists_count']} | "
+            f"Faltan: {inv['missing_count']}"
+        )
+        _print_by_category(inv["by_category"], title="Clips por categoría (vídeo existente)")
         print()
         return 1 if inv["missing_count"] else 0
 
@@ -928,23 +936,18 @@ def run_preflight_csv(
     )
 
     header("3) Validación de CSV (estructura y vídeos)")
-    if path_roots:
-        all_ok = True
-        for pr in path_roots:
-            print(f"  Validando {pr} ...")
-            validation = validate_folder(str(pr))
-            if not validation.get("ok"):
-                all_ok = False
-        if not all_ok:
-            warn("Hay errores en CSVs o vídeos. Corrígelos antes de ejecutar pose_extractor_clean.")
-        else:
-            ok("Todos los PATH_ROOTS validados correctamente.")
-    elif path_to_scan:
-        validation = validate_folder(path_to_scan)
+    if csv_files:
+        print(f"  Validando {len(csv_files)} CSV(s)...")
+        validation = validate_csv_files(
+            [str(p) for p in csv_files],
+            allow_missing_videos=True,
+        )
         if not validation.get("ok"):
-            warn("Hay errores en CSVs o vídeos. Corrígelos antes de ejecutar pose_extractor_clean.")
+            warn("Hay errores en CSVs (no relacionados con vídeos faltantes). Corrígelos antes de ejecutar.")
+        else:
+            ok("Todos los CSVs validados (vídeos faltantes omitidos del conteo).")
     else:
-        ok("Omisión de validación (sin PATH_ROOTS ni CSV_PATH).")
+        ok("Omisión de validación (sin CSVs).")
 
     header("4) Dispositivo y modelo")
     device = get_device()

@@ -19,7 +19,7 @@ from config import (
     get_experiments, get_path_roots, PATH_ROOT, CSV_PATH, OUTPUT_BASE, LOGS_SUBDIR,
     CLIP_SCALE_HEIGHT, VAAPI_DEVICE, YOLO_POSE_MODEL,
 )
-from security import validate_folder
+from security import validate_csv_files, validate_folder
 
 # Base de salida: OUTPUT_BASE de config (temp_clips/ y data_result/ dentro)
 OUTPUT = Path(OUTPUT_BASE) if OUTPUT_BASE else Path(__file__).parent / "output"
@@ -1282,19 +1282,27 @@ def main():
             log_file.close()
         return
 
-    # 2. Validación previa (security): comprobar CSVs y vídeos en cada PATH_ROOT
+    # 2. Validación previa (security): un único resumen sobre todos los CSVs a procesar
     allow_missing = args.continue_on_missing
     if allow_missing:
         print("Modo --continue-on-missing: los vídeos no encontrados se omitirán.")
-    path_roots = get_path_roots()
-    if path_roots:
-        validation_ok = True
-        for pr in path_roots:
-            print(f"Validando PATH_ROOT: {pr}")
-            validation = validate_folder(str(pr), allow_missing_videos=allow_missing)
-            if not validation.get("ok"):
-                validation_ok = False
-        if not validation_ok:
+
+    experiments_for_validation = get_experiments()
+    if experiments_for_validation:
+        csv_paths = [exp["csv"] for exp in experiments_for_validation]
+        path_roots = get_path_roots()
+        if path_roots:
+            print(
+                f"Validando {len(csv_paths)} CSV(s) en "
+                f"{len(path_roots)} PATH_ROOT(S)..."
+            )
+        else:
+            print(f"Validando {len(csv_paths)} CSV(s)...")
+        validation = validate_csv_files(
+            csv_paths,
+            allow_missing_videos=allow_missing,
+        )
+        if not validation.get("ok"):
             print("Abortando: hay errores en los CSVs. Corrígelos antes de ejecutar el extractor.")
             if log_file:
                 if original_stdout is not None:
