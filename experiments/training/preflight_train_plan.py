@@ -250,6 +250,10 @@ def build_training_plan(
     resolved_roots = get_data_result_roots(data_root)
     if not resolved_roots:
         resolved_roots = [get_data_result_root(data_root)]
+    if data_root is not None:
+        resolved_root = Path(data_root).expanduser().resolve()
+    else:
+        resolved_root = resolved_roots[0]
     folder_scan = scan_data_result_folders(data_root)
 
     header("1) Inventario data_result")
@@ -401,6 +405,7 @@ def build_training_plan(
         "positive_class": int(positive_class),
         "campaign_class_map_id": (class_map_spec or {}).get("id"),
         "data_root": str(resolved_root),
+        "data_roots": [str(r) for r in resolved_roots],
         "pose_source": pose_source,
         "single_user_only": bool(single_user_only),
         "filters": {

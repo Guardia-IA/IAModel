@@ -277,6 +277,10 @@ def run_preflight(
     resolved_roots = get_data_result_roots(data_root)
     if not resolved_roots:
         resolved_roots = [get_data_result_root(data_root)]
+    if data_root is not None:
+        resolved_root = Path(data_root).expanduser().resolve()
+    else:
+        resolved_root = resolved_roots[0]
     folder_scan = scan_data_result_folders(data_root)
     _print_folder_inventory(folder_scan, resolved_roots)
 
