@@ -25,6 +25,7 @@ YOLO_PT="yolo26s-pose.pt"
 OUT_NAME="yolo26s-pose.triton.plan"
 IMGSZ=640
 FP16="--fp16"
+AUTO_DOWNLOAD=1
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -33,6 +34,7 @@ while [[ $# -gt 0 ]]; do
     --output-name) OUT_NAME="$2"; shift 2 ;;
     --imgsz) IMGSZ="$2"; shift 2 ;;
     --no-fp16) FP16=""; shift ;;
+    --no-download) AUTO_DOWNLOAD=0; shift ;;
     *) echo "Arg desconocido: $1"; exit 1 ;;
   esac
 done
@@ -48,8 +50,55 @@ PT_PATH="$WORK/$YOLO_PT"
 ONNX_PATH="$WORK/${YOLO_PT%.pt}.onnx"
 PLAN_PATH="$WORK/$OUT_NAME"
 
+download_pt_to_host_dir() {
+  echo "=== Descargando pesos $YOLO_PT → $HOST_DIR (Ultralytics) ==="
+  docker run --rm \
+    -v "$HOST_DIR:$WORK" \
+    "$TRITON_IMAGE" \
+    bash -lc "
+      pip install -q ultralytics 2>/dev/null || pip install ultralytics
+      python3 - <<'PY'
+import shutil
+from pathlib import Path
+work = Path('$WORK')
+work.mkdir(parents=True, exist_ok=True)
+target = work / '$YOLO_PT'
+name = '$YOLO_PT'
+from ultralytics import YOLO
+import os
+os.chdir(work)
+m = YOLO(name)
+candidates = [
+    target,
+    work / name,
+    Path(getattr(m, 'ckpt_path', None) or ''),
+    Path(getattr(m, 'model', m)).yaml.get('yaml_file', '') if hasattr(m, 'model') else Path(),
+]
+for p in candidates:
+    if p and Path(p).is_file() and Path(p).suffix == '.pt':
+        if Path(p).resolve() != target.resolve():
+            shutil.copy2(p, target)
+        break
+else:
+    found = list(work.rglob('*.pt'))
+    if not found:
+        raise SystemExit('No se encontró .pt tras YOLO(name); comprobar red y nombre del modelo.')
+    shutil.copy2(found[0], target)
+print('OK:', target, 'size', target.stat().st_size)
+PY
+    "
+}
+
 if [[ ! -f "$HOST_DIR/$YOLO_PT" ]]; then
-  echo "ERROR: no existe $HOST_DIR/$YOLO_PT"
+  if [[ "$AUTO_DOWNLOAD" -eq 1 ]]; then
+    download_pt_to_host_dir
+  else
+    echo "ERROR: no existe $HOST_DIR/$YOLO_PT (usa --no-download solo si ya tienes el .pt)"
+    exit 1
+  fi
+fi
+if [[ ! -f "$HOST_DIR/$YOLO_PT" ]]; then
+  echo "ERROR: sigue sin existir $HOST_DIR/$YOLO_PT tras descarga"
   exit 1
 fi
 
