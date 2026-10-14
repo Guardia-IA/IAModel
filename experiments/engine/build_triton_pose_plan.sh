@@ -20,6 +20,8 @@
 set -euo pipefail
 
 TRITON_IMAGE="${TRITON_IMAGE:-nvcr.io/nvidia/tritonserver:25.02-py3}"
+PYTHON_IMAGE="${PYTHON_IMAGE:-python:3.12-slim}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 HOST_DIR=""
 YOLO_PT="yolo26s-pose.pt"
 OUT_NAME="yolo26s-pose.triton.plan"
@@ -50,48 +52,9 @@ PT_PATH="$WORK/$YOLO_PT"
 ONNX_PATH="$WORK/${YOLO_PT%.pt}.onnx"
 PLAN_PATH="$WORK/$OUT_NAME"
 
-download_pt_to_host_dir() {
-  echo "=== Descargando pesos $YOLO_PT → $HOST_DIR (Ultralytics) ==="
-  docker run --rm \
-    -v "$HOST_DIR:$WORK" \
-    "$TRITON_IMAGE" \
-    bash -lc "
-      pip install -q ultralytics 2>/dev/null || pip install ultralytics
-      python3 - <<'PY'
-import shutil
-from pathlib import Path
-work = Path('$WORK')
-work.mkdir(parents=True, exist_ok=True)
-target = work / '$YOLO_PT'
-name = '$YOLO_PT'
-from ultralytics import YOLO
-import os
-os.chdir(work)
-m = YOLO(name)
-candidates = [
-    target,
-    work / name,
-    Path(getattr(m, 'ckpt_path', None) or ''),
-    Path(getattr(m, 'model', m)).yaml.get('yaml_file', '') if hasattr(m, 'model') else Path(),
-]
-for p in candidates:
-    if p and Path(p).is_file() and Path(p).suffix == '.pt':
-        if Path(p).resolve() != target.resolve():
-            shutil.copy2(p, target)
-        break
-else:
-    found = list(work.rglob('*.pt'))
-    if not found:
-        raise SystemExit('No se encontró .pt tras YOLO(name); comprobar red y nombre del modelo.')
-    shutil.copy2(found[0], target)
-print('OK:', target, 'size', target.stat().st_size)
-PY
-    "
-}
-
 if [[ ! -f "$HOST_DIR/$YOLO_PT" ]]; then
   if [[ "$AUTO_DOWNLOAD" -eq 1 ]]; then
-    download_pt_to_host_dir
+    "$SCRIPT_DIR/download_yolo_pose_pt.sh" "$HOST_DIR" "$YOLO_PT"
   else
     echo "ERROR: no existe $HOST_DIR/$YOLO_PT (usa --no-download solo si ya tienes el .pt)"
     exit 1
@@ -102,28 +65,43 @@ if [[ ! -f "$HOST_DIR/$YOLO_PT" ]]; then
   exit 1
 fi
 
-echo "=== 1/2 Export ONNX (Ultralytics en contenedor Triton image + pip ultralytics) ==="
-docker run --rm --gpus all \
-  -v "$HOST_DIR:$WORK" \
-  "$TRITON_IMAGE" \
-  bash -lc "
-    pip install -q ultralytics onnx 2>/dev/null || pip install ultralytics onnx
-    python3 - <<'PY'
+echo "=== 1/2 Export ONNX (python slim / host; no imagen Triton — evita libxcb/cv2) ==="
+if command -v python3 >/dev/null 2>&1 && python3 -c "import ultralytics" 2>/dev/null; then
+  python3 - <<PY
+from ultralytics import YOLO
+from pathlib import Path
+pt = Path("$HOST_DIR/$YOLO_PT")
+onnx = Path("$HOST_DIR/${YOLO_PT%.pt}.onnx")
+m = YOLO(str(pt))
+m.export(format="onnx", imgsz=$IMGSZ, simplify=True, opset=17)
+gen = pt.with_suffix(".onnx")
+if gen != onnx and gen.exists():
+    gen.replace(onnx)
+print("ONNX:", onnx, onnx.exists())
+PY
+else
+  docker run --rm \
+    -v "$HOST_DIR:$WORK" \
+    "$PYTHON_IMAGE" \
+    bash -lc "
+      apt-get update -qq && apt-get install -y -qq libglib2.0-0 libgomp1 >/dev/null
+      pip install -q 'numpy<2' ultralytics onnx opencv-python-headless
+      python3 - <<'PY'
 from ultralytics import YOLO
 from pathlib import Path
 pt = Path('$PT_PATH')
 onnx = Path('$ONNX_PATH')
 m = YOLO(str(pt))
 m.export(format='onnx', imgsz=$IMGSZ, simplify=True, opset=17)
-# Ultralytics escribe junto al .pt
-generated = pt.with_suffix('.onnx')
-if generated != onnx and generated.exists():
-    generated.replace(onnx)
-print('ONNX:', onnx, 'exists=', onnx.exists())
+gen = pt.with_suffix('.onnx')
+if gen != onnx and gen.exists():
+    gen.replace(onnx)
+print('ONNX:', onnx, onnx.exists())
 PY
-  "
+    "
+fi
 
-echo "=== 2/2 trtexec → plan TensorRT (misma imagen Triton) ==="
+echo "=== 2/2 trtexec → plan TensorRT (imagen Triton; requiere --gpus all y driver NVIDIA) ==="
 docker run --rm --gpus all \
   -v "$HOST_DIR:$WORK" \
   "$TRITON_IMAGE" \
