@@ -25,6 +25,19 @@ sudo apt install nvidia-tensorrt
 
 ## Uso
 
+### Un solo engine en ruta del host (C1 / contenedores compartidos)
+
+```bash
+cd IAModel/experiments
+python engine/export_yolo_pose_engine.py \
+  --output-dir /opt/kanvis/models/yolo26s-pose/v1 \
+  --yolo yolo26s-pose
+```
+
+Genera `yolo26s-pose.engine` y `yolo26s-pose.engine.manifest.json` (hash, GPU, imgsz, versiones).
+
+### Varios modelos (carpeta `engine/` local)
+
 ```bash
 # Generar engines por defecto (n y m)
 python engine/build_engines.py
