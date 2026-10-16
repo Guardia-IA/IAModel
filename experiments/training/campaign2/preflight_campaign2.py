@@ -34,6 +34,7 @@ from gpu_scheduler import JobSpec  # noqa: E402
 from time_estimate import build_time_estimate_report  # noqa: E402
 from campaign2_paths import parallel_recommendation_path  # noqa: E402
 from training_time_estimate import fmt_duration  # noqa: E402
+from preflight_display import render_preflight_summary  # noqa: E402
 
 BOLD = "\033[1m"
 CYAN = "\033[96m"
@@ -323,9 +324,13 @@ def main() -> int:
         json.dump(meta, f, indent=2)
         f.write("\n")
 
-    log(f"\n{BOLD}Resumen JSON:{RESET} {report_path}")
-    log(f"Total preflight: {preflight_report['wall_seconds']}s")
-    log(json.dumps(preflight_report, indent=2, ensure_ascii=False))
+    preflight_report["_json_path"] = str(report_path)
+    pretty = render_preflight_summary(
+        preflight_report,
+        robbery_class=int(cfg.get("robbery_class", 6)),
+    )
+    log(pretty)
+    log(f"{DIM}(JSON guardado en {report_path}){RESET}")
     return 0
 
 

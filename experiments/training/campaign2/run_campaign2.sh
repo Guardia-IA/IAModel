@@ -50,6 +50,7 @@ Uso: $0 <comando> [args...]
   probe [--run-id ID]  gpu_probe_campaign2.py
   preflight            Inventario + caché 12Hz (NO entrena Kanvis)
   train                Ejecuta jobs/queue.json (vacío salvo --smoke-test)
+  summary              Muestra tablas/tiempos del último preflight (sin recomputar)
   pipeline             new-run + probe + preflight (sin train; Sprint 1)
   smoke-pipeline       new-run + probe + preflight --smoke-test + train
 
@@ -95,6 +96,11 @@ EOF
     "$0" probe --run-id "$RUN_ID"
     "$0" preflight --run-id "$RUN_ID" "${EXTRA_ARGS[@]}"
     echo "[pipeline] Sprint 1 termina aquí (sin train). Usa smoke-pipeline para probar scheduler."
+    ;;
+  summary)
+    parse_run_id_from_args "${EXTRA_ARGS[@]}" || true
+    ensure_run_id
+    "$PY" show_preflight_summary.py --run-id "$RUN_ID" "${EXTRA_ARGS[@]}"
     ;;
   smoke-pipeline)
     "$0" new-run
