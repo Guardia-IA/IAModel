@@ -4,6 +4,25 @@ Pipeline **nuevo e independiente** de `../campaign/`. No modifica el entrenamien
 
 **Plan maestro:** [`IAModel/docs/TRAINING2_CAMPAIGN2_MASTER_PLAN.md`](../../../docs/TRAINING2_CAMPAIGN2_MASTER_PLAN.md)
 
+## Sprint 3 — P1 train_v2 (implementado, MVP)
+
+Entrenamiento con **ventanas 8s/12Hz** sobre la caché mmap, modelos:
+
+- `masked_tcn64` (baseline)
+- `gru64_pooled`
+
+```bash
+# Prueba rápida (2 épocas, mismo RUN_ID con caché):
+./run_campaign2.sh p1-smoke --data-root /ruta/data_result
+
+# Campaña P1 (2 jobs × 3 semillas = 6 entrenamientos por defecto):
+./run_campaign2.sh preflight --p1 --skip-cache --data-root /ruta/data_result
+./run_campaign2.sh train
+# checkpoints: artifacts/runs/<RUN_ID>/jobs/v2_tcn64_baseline_s42/best.pt
+```
+
+Limitaciones MVP (mejora en sprints siguientes): etiqueta clip-level (MIL fino), norm isotrópica avanzada, split agrupado staged/real, eval P1 dedicada post-train.
+
 ## Sprint 2 — P0 baseline (implementado)
 
 Evalúa los incumbent **#41** y **#48** en el split `val_dev` del manifest Campaign2:

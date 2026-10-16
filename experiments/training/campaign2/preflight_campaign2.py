@@ -36,6 +36,7 @@ from campaign2_paths import parallel_recommendation_path  # noqa: E402
 from training_time_estimate import fmt_duration  # noqa: E402
 from preflight_display import render_preflight_summary  # noqa: E402
 from p0_jobs import build_p0_job_queue  # noqa: E402
+from p1_jobs import build_p1_job_queue  # noqa: E402
 
 BOLD = "\033[1m"
 DIM = "\033[2m"
@@ -121,6 +122,16 @@ def main() -> int:
         action="store_true",
         help="Sprint 2: encola eval P0 (#41/#48, P0.A clip + P0.B ventanas). Requiere rutas en p0_incumbent o env CAMPAIGN2_MODEL_*.",
     )
+    ap.add_argument(
+        "--p1",
+        action="store_true",
+        help="Sprint 3: encola entrenamiento train_v2 (matriz p1_job_matrix × semillas).",
+    )
+    ap.add_argument(
+        "--p1-smoke",
+        action="store_true",
+        help="Un job P1 mínimo (2 épocas) para validar train_v2 + GPU.",
+    )
     args = ap.parse_args()
 
     cfg = load_campaign2_config(Path(args.config) if args.config else None)
@@ -140,7 +151,9 @@ def main() -> int:
     log(f"{BOLD}{'=' * 72}{RESET}")
     log(f"{BOLD}Campaign2 PREFLIGHT — {phase}{RESET}")
     log(f"RUN_ID={CYAN}{run_id}{RESET}")
-    if args.p0 or phase.startswith("sprint2"):
+    if args.p1 or args.p1_smoke or phase.startswith("sprint3"):
+        log(f"{CYAN}Sprint 3 P1: caché + cola entrenamiento train_v2 (ventanas 8s/12Hz).{RESET}")
+    elif args.p0 or phase.startswith("sprint2"):
         log(f"{CYAN}Sprint 2 P0: inventario + caché + cola eval incumbent (no entrena v2 aún).{RESET}")
     else:
         log(f"{YELLOW}Sprint 1: inventario + caché 12 Hz. NO es entrenamiento del modelo Kanvis.{RESET}")
@@ -226,7 +239,7 @@ def main() -> int:
         cfg,
         manifest_path=manifest_path if manifest_path.is_file() else None,
         run_id=run_id,
-        enable_smoke=enable_smoke and not args.p0,
+        enable_smoke=enable_smoke and not args.p0 and not args.p1 and not args.p1_smoke,
     )
 
     p0_warnings: List[str] = []
@@ -256,6 +269,28 @@ def main() -> int:
                     log(f"    - {j.job_id} ({j.params.get('mode')}, model {j.params.get('model_id')})")
             else:
                 log(f"\n{YELLOW}--p0: cola vacía (configura rutas a modelo_41/modelo_48).{RESET}")
+
+    if (args.p1 or args.p1_smoke) and manifest_path.is_file():
+        p1_jobs, p1_warn = build_p1_job_queue(
+            cfg,
+            manifest_path=str(manifest_path),
+            run_id=run_id,
+            smoke=bool(args.p1_smoke),
+        )
+        for w in p1_warn:
+            log(f"  {YELLOW}P1: {w}{RESET}")
+        if p1_jobs:
+            jobs.extend(p1_jobs)
+            queue_purpose = "p1_train" if queue_purpose == "infra_only" else queue_purpose + "+p1"
+            queue_phase = "sprint3_p1"
+            log(f"\n{BOLD}7c) Cola P1 train_v2{RESET}")
+            log(f"  {GREEN}{len(p1_jobs)} jobs entrenamiento{RESET}")
+            for j in p1_jobs[:6]:
+                log(f"    - {j.job_id} ({j.params.get('arch')}, seed={j.params.get('seed')})")
+            if len(p1_jobs) > 6:
+                log(f"    … +{len(p1_jobs) - 6} más")
+    elif args.p1 or args.p1_smoke:
+        log(f"\n{YELLOW}--p1: falta manifest/caché (preflight con --data-root).{RESET}")
 
     manifest_entries: List[Dict[str, Any]] = []
     if manifest_path.is_file():
@@ -305,6 +340,8 @@ def main() -> int:
             log(f"  Scheduler: preflight --smoke-test && ./run_campaign2.sh train")
     elif queue_purpose == "p0_baseline":
         log(f"  Siguiente: ./run_campaign2.sh train && ./run_campaign2.sh p0-summary")
+    elif "p1" in queue_purpose:
+        log(f"  Siguiente: ./run_campaign2.sh train  (checkpoints en jobs/<job_id>/best.pt)")
     else:
         log(f"  {YELLOW}Modo smoke-test:{RESET} {len(jobs)} jobs (scheduler, NO modelo Kanvis)")
         for j in jobs:

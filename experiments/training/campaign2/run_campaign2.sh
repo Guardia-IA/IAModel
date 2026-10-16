@@ -53,6 +53,7 @@ Uso: $0 <comando> [args...]
   p0-summary           Agrega eval P0 → reports/p0_baseline.json
   summary              Muestra tablas/tiempos del último preflight (sin recomputar)
   p0-pipeline          new-run + probe + preflight --p0 + train + p0-summary
+  p1-smoke             preflight --p1-smoke + train (2 épocas, prueba train_v2)
   pipeline             new-run + probe + preflight (sin train; Sprint 1)
   smoke-pipeline       new-run + probe + preflight --smoke-test + train
 
@@ -119,6 +120,12 @@ EOF
     "$0" preflight --run-id "$RUN_ID" --p0 "${EXTRA_ARGS[@]}"
     "$0" train --run-id "$RUN_ID"
     "$0" p0-summary --run-id "$RUN_ID"
+    ;;
+  p1-smoke)
+    parse_run_id_from_args "${EXTRA_ARGS[@]}" || true
+    ensure_run_id
+    "$0" preflight --run-id "$RUN_ID" --p1-smoke --skip-cache "${EXTRA_ARGS[@]}"
+    "$0" train --run-id "$RUN_ID"
     ;;
   smoke-pipeline)
     "$0" new-run

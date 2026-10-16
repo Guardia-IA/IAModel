@@ -79,7 +79,18 @@ def main() -> int:
         )
         return 0
 
-    if purpose == "p0_baseline" or phase == "sprint2_p0":
+    if purpose == "p1_train" or "p1" in purpose or phase == "sprint3_p1":
+        print(
+            "\n"
+            + "=" * 72
+            + "\n"
+            "Campaign2 P1: entrenamiento train_v2 (ventanas, checkpoints por job).\n"
+            "Artefactos: artifacts/runs/<RUN_ID>/jobs/<job_id>/best.pt\n"
+            + "=" * 72
+            + "\n",
+            flush=True,
+        )
+    elif purpose == "p0_baseline" or phase == "sprint2_p0":
         print(
             "\n"
             + "=" * 72

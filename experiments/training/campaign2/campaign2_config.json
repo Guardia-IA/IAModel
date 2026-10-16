@@ -49,7 +49,13 @@
   },
   "phases": {
     "p0_baseline": { "enabled": true },
-    "p1_train_v2": { "enabled": false }
+    "p1_train_v2": { "enabled": true }
+  },
+  "p1_train": {
+    "max_windows_per_clip": 32,
+    "min_valid_joint_ratio": 0.25,
+    "val_threshold": 0.5,
+    "early_stop_patience": 15
   },
   "p0_incumbent": {
     "enabled": true,
@@ -73,8 +79,8 @@
     ]
   },
   "seeds": [17, 42, 103],
-  "phase": "sprint2_p0",
-  "_phase_comment": "sprint1_infra = caché+scheduler. sprint2_p0 = eval baseline #41/#48 (P0.A/P0.B). sprint3 = train_v2 P1.",
+  "phase": "sprint3_p1",
+  "_phase_comment": "sprint3_p1 = entrenamiento train_v2 (ventanas). Usa preflight --p1 o --p1-smoke.",
   "sprint1_smoke_jobs": 0,
   "_sprint1_smoke_jobs_comment": "Pon 3 solo para probar el scheduler (--smoke-test). 0 = cola vacía (recomendado hasta Sprint 2).",
   "time_estimate": {
