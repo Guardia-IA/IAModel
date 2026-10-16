@@ -29,7 +29,7 @@ from campaign2_paths import (  # noqa: E402
     run_layout,
     run_meta_path,
 )
-from dataset_cache import build_pose_cache, collect_clip_records  # noqa: E402
+from dataset_cache import build_pose_cache, collect_clip_records, subsample_records_stratified  # noqa: E402
 from gpu_scheduler import JobSpec  # noqa: E402
 from time_estimate import build_time_estimate_report  # noqa: E402
 from campaign2_paths import parallel_recommendation_path  # noqa: E402
@@ -37,6 +37,7 @@ from training_time_estimate import fmt_duration  # noqa: E402
 from preflight_display import render_preflight_summary  # noqa: E402
 from p0_jobs import build_p0_job_queue  # noqa: E402
 from p1_jobs import build_p1_job_queue  # noqa: E402
+from matrix_jobs import build_matrix_job_queue, cache_dir_for_pose, matrix_settings  # noqa: E402
 
 BOLD = "\033[1m"
 DIM = "\033[2m"
@@ -140,6 +141,12 @@ def main() -> int:
         default=None,
         help="Carpeta data_result(s) o carpeta principal (escanea hijos datos*/data_result)",
     )
+    ap.add_argument(
+        "--pose-source",
+        choices=("full", "filtered"),
+        default=None,
+        help="poses_full.npy vs poses.npy (default: campaign2_config pose_source). Legacy probaba ambas en celdas distintas.",
+    )
     ap.add_argument("--skip-cache", action="store_true")
     ap.add_argument("--max-clips", type=int, default=0, help="Limit clips (debug)")
     ap.add_argument(
@@ -166,6 +173,11 @@ def main() -> int:
         "--debug",
         action="store_true",
         help="Modo rápido: ~50 clips, P1 corto (ver debug en campaign2_config.json). Usa con --p1.",
+    )
+    ap.add_argument(
+        "--matrix",
+        action="store_true",
+        help="Campaña matriz: full+filtered, P0 legacy + P1 v2, una cola (ver campaign_matrix en config).",
     )
     args = ap.parse_args()
 
@@ -220,16 +232,75 @@ def main() -> int:
 
     records: List[Dict[str, Any]] = []
     cache_result = None
+    manifest_by_pose: Dict[str, Path] = {}
     t0 = time.perf_counter()
+    matrix_jobs_built = False
 
-    if data_roots and not args.skip_cache and cache_cfg.get("enabled", True):
+    if (
+        args.matrix
+        and data_roots
+        and not args.skip_cache
+        and cache_cfg.get("enabled", True)
+    ):
+        ms = matrix_settings(cfg)
+        log(f"\n{BOLD}2–3) Modo MATRIZ: caché por pose_source {ms['pose_sources']}{RESET}")
+        single_user_only = bool(cfg.get("single_user_only", False))
+        robbery_class = int(cfg.get("robbery_class", 6))
+        for ps in ms["pose_sources"]:
+            log(f"\n  {BOLD}pose_source={CYAN}{ps}{RESET}")
+            t_inv = time.perf_counter()
+            rec_ps = collect_clip_records(
+                data_roots,
+                pose_source=str(ps),
+                single_user_only=single_user_only,
+                robbery_class=robbery_class,
+                log_fn=log,
+            )
+            log(f"    Inventario {len(rec_ps)} clips en {time.perf_counter() - t_inv:.1f}s")
+            if args.max_clips > 0:
+                dbg = cfg.get("debug") or {}
+                min_rob = int(dbg.get("min_robbery_clips", 8)) if args.debug else 0
+                if min_rob > 0:
+                    rec_ps = subsample_records_stratified(
+                        rec_ps,
+                        args.max_clips,
+                        robbery_class=robbery_class,
+                        min_robbery=min_rob,
+                        seed=int(split_cfg.get("seed", 42)),
+                    )
+                else:
+                    rec_ps = rec_ps[: args.max_clips]
+            if not rec_ps:
+                log(f"    {YELLOW}WARN: 0 clips para {ps}{RESET}")
+                continue
+            cdir = cache_dir_for_pose(layout["cache_dir"], str(ps))
+            cr = build_pose_cache(
+                rec_ps,
+                cdir,
+                target_hz=float(temporal.get("target_hz", 12.0)),
+                split_ratios=dict(split_cfg.get("ratios") or {}),
+                split_seed=int(split_cfg.get("seed", 42)),
+                use_shm=bool(cache_cfg.get("use_shm", True)),
+                shm_basename=f"{cache_cfg.get('shm_basename', 'kanvis_pose_12hz')}_{ps}",
+                log_fn=log,
+            )
+            manifest_by_pose[str(ps)] = cr.manifest_path
+            if cache_result is None:
+                cache_result = cr
+            records.extend(rec_ps)
+        if manifest_by_pose:
+            manifest_path = next(iter(manifest_by_pose.values()))
+    elif data_roots and not args.skip_cache and cache_cfg.get("enabled", True):
         log(f"\n{BOLD}2) Inventario de clips (collect_examples legacy, solo lectura){RESET}")
         t_inv = time.perf_counter()
+        pose_source = str(args.pose_source or cfg.get("pose_source", "full"))
+        single_user_only = bool(cfg.get("single_user_only", False))
+        robbery_class = int(cfg.get("robbery_class", 6))
         records = collect_clip_records(
             data_roots,
-            pose_source=str(cfg.get("pose_source", "full")),
-            single_user_only=bool(cfg.get("single_user_only", False)),
-            robbery_class=int(cfg.get("robbery_class", 6)),
+            pose_source=pose_source,
+            single_user_only=single_user_only,
+            robbery_class=robbery_class,
             log_fn=log,
         )
         log(f"  Inventario en {time.perf_counter() - t_inv:.1f}s — {len(records)} registros")
@@ -237,8 +308,22 @@ def main() -> int:
             log(f"  Por categoría (label): {json.dumps(_category_table(records))}")
 
         if args.max_clips > 0:
-            records = records[: args.max_clips]
-            log(f"  {YELLOW}--max-clips={args.max_clips}{RESET}")
+            dbg = cfg.get("debug") or {}
+            min_rob = int(dbg.get("min_robbery_clips", 8)) if args.debug else 0
+            if min_rob > 0:
+                records = subsample_records_stratified(
+                    records,
+                    args.max_clips,
+                    robbery_class=robbery_class,
+                    min_robbery=min_rob,
+                    seed=int(split_cfg.get("seed", 42)),
+                )
+                log(
+                    f"  {YELLOW}--max-clips={args.max_clips} (estratificado, ≥{min_rob} robos cat.{robbery_class}){RESET}"
+                )
+            else:
+                records = records[: args.max_clips]
+                log(f"  {YELLOW}--max-clips={args.max_clips} (primeros N del inventario){RESET}")
 
         if not records:
             log(f"  {YELLOW}WARN: 0 clips; caché omitida.{RESET}")
@@ -285,13 +370,41 @@ def main() -> int:
         cfg,
         manifest_path=manifest_path if manifest_path.is_file() else None,
         run_id=run_id,
-        enable_smoke=enable_smoke and not args.p0 and not args.p1 and not args.p1_smoke,
+        enable_smoke=enable_smoke
+        and not args.p0
+        and not args.p1
+        and not args.p1_smoke
+        and not args.matrix,
     )
 
     p0_warnings: List[str] = []
     queue_purpose = "smoke_test" if jobs else "infra_only"
     queue_phase = phase
-    if args.p0:
+
+    if args.matrix and manifest_by_pose:
+        mx_jobs, mx_warn = build_matrix_job_queue(
+            cfg,
+            manifest_by_pose=manifest_by_pose,
+            data_roots=data_roots,
+            run_id=run_id,
+            smoke=bool(args.p1_smoke),
+            debug=bool(args.debug),
+        )
+        for w in mx_warn:
+            log(f"  {YELLOW}MATRIZ: {w}{RESET}")
+        if mx_jobs:
+            jobs = mx_jobs
+            matrix_jobs_built = True
+            queue_purpose = "campaign_matrix"
+            queue_phase = "campaign_matrix"
+            log(f"\n{BOLD}7m) Cola MATRIZ (full + filtered + …){RESET}")
+            log(f"  {GREEN}{len(jobs)} jobs totales{RESET} (P0 legacy eval + P1 train según config)")
+            for j in jobs[:10]:
+                log(f"    - {j.job_id} ({j.job_type})")
+            if len(jobs) > 10:
+                log(f"    … +{len(jobs) - 10} más")
+
+    if args.p0 and not args.matrix:
         if not manifest_path.is_file():
             log(f"\n{YELLOW}--p0: falta manifest (ejecuta preflight con --data-root y sin --skip-cache).{RESET}")
         elif not data_roots:
@@ -316,7 +429,7 @@ def main() -> int:
             else:
                 log(f"\n{YELLOW}--p0: cola vacía (configura rutas a modelo_41/modelo_48).{RESET}")
 
-    if (args.p1 or args.p1_smoke) and manifest_path.is_file():
+    if (args.p1 or args.p1_smoke) and manifest_path.is_file() and not args.matrix:
         p1_jobs, p1_warn = build_p1_job_queue(
             cfg,
             manifest_path=str(manifest_path),

@@ -59,6 +59,9 @@ Uso: $0 <comando> [args...]
   p1-eval              Cola eval sobre best.pt + train (paralelo)
   p1-eval-summary      Métricas eval clip-max
   debug-pipeline       new-run + probe + preflight --debug --p1 + train + eval + resúmenes
+  matrix-pipeline      full+filtered, legacy eval + train v2 + eval + ranking ensembles
+  debug-matrix         matrix-pipeline en modo debug (~50 clips)
+  ensemble-leaderboard Mejor par #A+#B por pose_source (tras eval)
   pipeline             new-run + probe + preflight (sin train; Sprint 1)
   smoke-pipeline       new-run + probe + preflight --smoke-test + train
 
@@ -165,6 +168,36 @@ EOF
     "$0" p1-eval --run-id "$RUN_ID"
     "$0" p1-eval-summary --run-id "$RUN_ID"
     echo "[debug-pipeline] OK — quita --debug y sube max_clips para campaña real."
+    ;;
+  matrix-pipeline)
+    "$0" new-run
+    RUN_ID="$(tr -d '[:space:]' < "$CURRENT_RUN_FILE")"
+    export RUN_ID
+    "$0" probe --run-id "$RUN_ID"
+    "$0" preflight --run-id "$RUN_ID" --matrix "${EXTRA_ARGS[@]}"
+    "$0" train --run-id "$RUN_ID"
+    "$0" p1-summary --run-id "$RUN_ID"
+    "$0" p0-summary --run-id "$RUN_ID" || true
+    "$0" p1-eval --run-id "$RUN_ID"
+    "$0" p1-eval-summary --run-id "$RUN_ID"
+    "$0" ensemble-leaderboard --run-id "$RUN_ID"
+    echo "[matrix-pipeline] Ver reports/ensemble_leaderboard.json"
+    ;;
+  debug-matrix)
+    "$0" new-run
+    RUN_ID="$(tr -d '[:space:]' < "$CURRENT_RUN_FILE")"
+    export RUN_ID
+    "$0" probe --run-id "$RUN_ID"
+    "$0" preflight --run-id "$RUN_ID" --matrix --debug "${EXTRA_ARGS[@]}"
+    "$0" train --run-id "$RUN_ID"
+    "$0" p1-eval --run-id "$RUN_ID"
+    "$0" ensemble-leaderboard --run-id "$RUN_ID"
+    echo "[debug-matrix] OK — para producción: ./run_campaign2.sh matrix-pipeline --data-root ..."
+    ;;
+  ensemble-leaderboard)
+    parse_run_id_from_args "${EXTRA_ARGS[@]}" || true
+    ensure_run_id
+    "$PY" ensemble_leaderboard.py --run-id "$RUN_ID" "${EXTRA_ARGS[@]}"
     ;;
   smoke-pipeline)
     "$0" new-run

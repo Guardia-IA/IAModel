@@ -5,8 +5,10 @@
   "_data_roots_comment": "Rutas a .../data_result. Override: preflight --data-root /path (repetible). Si vacío, preflight usa PATH_ROOTS de config.py del legacy si existe.",
   "class_maps_dir": "../campaign/class_maps",
   "robbery_class": 6,
-  "single_user_only": false,
   "pose_source": "full",
+  "_pose_source_comment": "full=poses_full.npy, filtered=poses.npy. Legacy usaba celdas bin_full vs bin_filtered. Campaign2: un valor por run; segunda campaña con pose_source filtered o --pose-source filtered.",
+  "single_user_only": false,
+  "_single_user_only_comment": "true=excluye clips cuyo meta.json tiene >1 user. Si tus npy ya son un track/clip, suele no cambiar nada; P0 legacy lo probaba por si quedaban mp4 multi-persona.",
   "temporal": {
     "window_seconds": 8.0,
     "target_hz": 12.0,
@@ -62,8 +64,23 @@
     "threshold": 0.5,
     "batch_size": 64
   },
+  "campaign_matrix": {
+    "enabled": true,
+    "pose_sources": ["full", "filtered"],
+    "run_p1_train": true,
+    "run_p0_legacy": true,
+    "p0_modes": ["windows"],
+    "single_user_variants": [false],
+    "ensemble_pairs": [
+      ["41", "48"],
+      ["33", "40"]
+    ],
+    "auto_pairs_from_incumbent_models": true,
+    "_comment": "Un run: caché full+filtered, eval legacy .pt + entrena v2; tras train: p1-eval + ensemble-leaderboard"
+  },
   "debug": {
     "max_clips": 50,
+    "min_robbery_clips": 8,
     "max_windows_per_clip": 8,
     "early_stop_patience": 2,
     "p1_job_matrix": [
@@ -102,6 +119,16 @@
         "id": "48",
         "path": "",
         "_path_comment": "Ruta a modelo_48.pt. Alternativa: export CAMPAIGN2_MODEL_48"
+      },
+      {
+        "id": "33",
+        "path": "",
+        "_path_comment": "Opcional: CAMPAIGN2_MODEL_33 (misma celda bin_full o la que corresponda)"
+      },
+      {
+        "id": "40",
+        "path": "",
+        "_path_comment": "Opcional: CAMPAIGN2_MODEL_40"
       }
     ]
   },

@@ -118,6 +118,35 @@ def _assign_split(group_id: str, ratios: Dict[str, float], seed: int) -> str:
     return keys[-1]
 
 
+def subsample_records_stratified(
+    records: List[Dict[str, Any]],
+    max_clips: int,
+    *,
+    robbery_class: int = 6,
+    min_robbery: int = 5,
+    seed: int = 42,
+) -> List[Dict[str, Any]]:
+    """Para debug: no tomar solo los N primeros (suele ser cat. 0); incluir robos."""
+    if max_clips <= 0 or len(records) <= max_clips:
+        return records
+    import random
+
+    rng = random.Random(int(seed))
+    rob = [r for r in records if int(r.get("label", -1)) == int(robbery_class)]
+    rest = [r for r in records if r not in rob]
+    rng.shuffle(rob)
+    rng.shuffle(rest)
+    want_rob = min(len(rob), max(min_robbery, max_clips // 8), max_clips - 1)
+    picked: List[Dict[str, Any]] = list(rob[:want_rob])
+    need = max_clips - len(picked)
+    if need > 0:
+        picked.extend(rest[:need])
+    if len(picked) < max_clips and len(rob) > want_rob:
+        picked.extend(rob[want_rob : want_rob + (max_clips - len(picked))])
+    rng.shuffle(picked)
+    return picked[:max_clips]
+
+
 def collect_clip_records(
     data_roots: List[Path],
     *,

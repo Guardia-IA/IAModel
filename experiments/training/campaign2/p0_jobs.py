@@ -37,6 +37,8 @@ def build_p0_job_queue(
     manifest_path: Path,
     data_roots: List[Path],
     run_id: str,
+    pose_source: Optional[str] = None,
+    id_suffix: str = "",
 ) -> Tuple[List[JobSpec], List[str]]:
     p0 = cfg.get("p0_incumbent") or {}
     if not p0.get("enabled", True):
@@ -59,7 +61,8 @@ def build_p0_job_queue(
     thresholds = p0.get("frozen_thresholds") or {}
     batch_size = int(p0.get("batch_size", 64))
     temporal = cfg.get("temporal") or {}
-    pose_source = str(cfg.get("pose_source", "full"))
+    pose_source = str(pose_source or cfg.get("pose_source", "full"))
+    id_suffix = str(id_suffix or "")
     robbery_class = int(cfg.get("robbery_class", 6))
 
     jobs: List[JobSpec] = []
@@ -73,7 +76,7 @@ def build_p0_job_queue(
                 continue
             for su in su_variants:
                 su_flag = 1 if bool(su) else 0
-                job_id = f"p0{mode_tag}_m{mid}_su{su_flag}"
+                job_id = f"p0{mode_tag}_m{mid}{id_suffix}_su{su_flag}"
                 params: Dict[str, Any] = {
                     "mode": mode,
                     "model_id": mid,

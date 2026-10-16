@@ -26,6 +26,8 @@ def build_p1_job_queue(
     run_id: str,
     smoke: bool = False,
     debug: bool = False,
+    id_suffix: str = "",
+    pose_source: str = "full",
 ) -> Tuple[List[JobSpec], List[str]]:
     p1_phase = (cfg.get("phases") or {}).get("p1_train_v2") or {}
     if not p1_phase.get("enabled", False) and not smoke and not debug:
@@ -60,11 +62,12 @@ def build_p1_job_queue(
         job_id = str(job.get("job_id", "v2_job"))
         seeds = _seeds_for_job(job, default_seeds)
         for seed in seeds:
-            sid = f"{job_id}_s{seed}"
+            sid = f"{job_id}{id_suffix}_s{seed}"
             params: Dict[str, Any] = {
                 "job_id": sid,
                 "run_id": run_id,
                 "manifest_path": manifest_path,
+                "pose_source": str(pose_source),
                 "arch": str(job.get("arch", "masked_tcn64")),
                 "epochs": int(job.get("epochs", 100)),
                 "batch_size": int(job.get("batch_size", 64)),

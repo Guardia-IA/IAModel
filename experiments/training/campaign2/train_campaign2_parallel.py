@@ -79,7 +79,18 @@ def main() -> int:
         )
         return 0
 
-    if purpose == "p1_eval" or phase == "sprint3_p1_eval":
+    if purpose == "campaign_matrix" or phase == "campaign_matrix":
+        print(
+            "\n"
+            + "=" * 72
+            + "\n"
+            "Campaign2 MATRIZ: jobs P0 (legacy .pt × full/filtered) + P1 train_v2 en paralelo.\n"
+            "Después: p1-eval + ensemble-leaderboard\n"
+            + "=" * 72
+            + "\n",
+            flush=True,
+        )
+    elif purpose == "p1_eval" or phase == "sprint3_p1_eval":
         print(
             "\n"
             + "=" * 72

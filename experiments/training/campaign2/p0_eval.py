@@ -273,6 +273,7 @@ def run_p0_eval(params: Dict[str, Any], output_dir: Path) -> Dict[str, Any]:
         "eval_split": eval_split,
         "single_user_only": single_user_only,
         "frozen_threshold": frozen_thr,
+        "pose_source": params.get("pose_source"),
         "metrics_at_frozen_threshold": metrics_thr,
         "metrics_softmax_0_5": metrics_argmax,
         "support": {"n_clips": len(clip_records), **extra_meta},
