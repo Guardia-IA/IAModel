@@ -14,6 +14,7 @@ class WindowRef:
     uid: str
     group_id: str
     label_theft: int
+    clip_label: int = 0
 
 
 def build_window_index(
@@ -36,7 +37,8 @@ def build_window_index(
         if max_windows_per_clip > 0 and len(starts) > max_windows_per_clip:
             step = max(1, len(starts) // max_windows_per_clip)
             starts = starts[::step][:max_windows_per_clip]
-        is_rob = bool(ent.get("is_robbery")) or int(ent.get("label", -1)) == int(robbery_class)
+        clip_label = int(ent.get("label", 0))
+        is_rob = bool(ent.get("is_robbery")) or clip_label == int(robbery_class)
         label = 1 if is_rob else 0
         uid = str(ent.get("uid") or idx)
         gid = str(ent.get("group_id") or uid)
@@ -48,6 +50,7 @@ def build_window_index(
                     uid=uid,
                     group_id=gid,
                     label_theft=label,
+                    clip_label=clip_label,
                 )
             )
     return out

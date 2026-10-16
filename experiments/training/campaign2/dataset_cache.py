@@ -103,6 +103,54 @@ def _clip_group_id(clip_dir: Path, meta: Dict[str, Any]) -> str:
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
 
 
+def assign_splits_stratified_group(
+    records: List[Dict[str, Any]],
+    ratios: Dict[str, float],
+    seed: int,
+    *,
+    min_robbery_per_eval_split: int = 5,
+) -> Dict[str, str]:
+    """
+    Reserva grupos con robo para val_dev / threshold_calib / frozen_test antes del hash
+    (experto: eval con mínimo de positivos por split).
+    """
+    from collections import defaultdict
+    import random
+
+    groups: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for rec in records:
+        groups[str(rec.get("group_id") or rec.get("uid"))].append(rec)
+
+    rob_groups: List[str] = []
+    neg_groups: List[str] = []
+    for gid, clips in groups.items():
+        if any(bool(c.get("is_robbery")) for c in clips):
+            rob_groups.append(gid)
+        else:
+            neg_groups.append(gid)
+
+    rng = random.Random(int(seed))
+    rng.shuffle(rob_groups)
+    rng.shuffle(neg_groups)
+
+    assignment: Dict[str, str] = {}
+    eval_splits = ("val_dev", "threshold_calib", "frozen_test")
+    min_r = max(0, int(min_robbery_per_eval_split))
+    idx = 0
+    for sp in eval_splits:
+        for _ in range(min_r):
+            if idx >= len(rob_groups):
+                break
+            assignment[rob_groups[idx]] = sp
+            idx += 1
+
+    for gid in rob_groups[idx:] + neg_groups:
+        if gid in assignment:
+            continue
+        assignment[gid] = _assign_split(gid, ratios, seed)
+    return assignment
+
+
 def _assign_split(group_id: str, ratios: Dict[str, float], seed: int) -> str:
     keys = ("train", "val_dev", "threshold_calib", "frozen_test")
     weights = [float(ratios.get(k, 0.0)) for k in keys]
@@ -204,6 +252,7 @@ def build_pose_cache(
     target_hz: float = 12.0,
     split_ratios: Optional[Dict[str, float]] = None,
     split_seed: int = 42,
+    min_robbery_per_eval_split: int = 5,
     use_shm: bool = True,
     shm_basename: str = "kanvis_pose_12hz",
     log_fn=None,
@@ -222,6 +271,13 @@ def build_pose_cache(
         "frozen_test": 0.1,
     }
 
+    split_by_group = assign_splits_stratified_group(
+        records,
+        split_ratios,
+        split_seed,
+        min_robbery_per_eval_split=min_robbery_per_eval_split,
+    )
+
     resampled: List[Tuple[np.ndarray, np.ndarray, Dict[str, Any]]] = []
     n_rec = len(records)
     _log(f"  Remuestreando {n_rec} clips a {target_hz} Hz (puede tardar varios minutos)...")
@@ -239,7 +295,8 @@ def build_pose_cache(
         rec2 = dict(rec)
         rec2["T_resampled"] = int(p2.shape[0])
         rec2["fps_source"] = fps
-        rec2["split"] = _assign_split(rec["group_id"], split_ratios, split_seed)
+        gid = str(rec.get("group_id") or rec.get("uid"))
+        rec2["split"] = split_by_group.get(gid, _assign_split(gid, split_ratios, split_seed))
         resampled.append((p2, valid, rec2))
 
     total_frames = sum(int(p.shape[0]) for p, _, _ in resampled)

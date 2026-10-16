@@ -53,11 +53,28 @@
     "p0_baseline": { "enabled": true },
     "p1_train_v2": { "enabled": true }
   },
+  "selection": {
+    "primary_metric": "event_recall_at_session_fp_budget",
+    "fp_budget_per_1000_sessions": 10.0,
+    "max_val_fp_clips": 11,
+    "threshold_selection": "order_statistic_negative_sessions",
+    "freeze_threshold_before_test": true
+  },
   "p1_train": {
     "max_windows_per_clip": 32,
     "min_valid_joint_ratio": 0.25,
     "val_threshold": 0.5,
-    "early_stop_patience": 15
+    "early_stop_patience": 15,
+    "selection_metric": "recall_at_fp",
+    "max_val_fp_clips": 11,
+    "warmup_epochs": 5,
+    "preprocess": "campaign2_windows_torso_v1",
+    "augment_enabled": true,
+    "hard_neg_classes": [2, 3, 4, 14]
+  },
+  "p1_calibrate": {
+    "split": "threshold_calib",
+    "batch_size": 64
   },
   "p1_eval": {
     "eval_split": "val_dev",
@@ -76,7 +93,9 @@
       ["33", "40"]
     ],
     "auto_pairs_from_incumbent_models": true,
-    "_comment": "Un run: caché full+filtered, eval legacy .pt + entrena v2; tras train: p1-eval + ensemble-leaderboard"
+    "legacy_models_dir": "",
+    "_legacy_models_dir_comment": "Si se rellena, auto-descubre modelo_*.pt (alternativa: p0_incumbent.models_dir o CAMPAIGN2_LEGACY_MODELS_DIR)",
+    "_comment": "Un run: caché full+filtered, eval legacy .pt + entrena v2; tras train: calibrate T + p1-eval + ensemble-leaderboard"
   },
   "debug": {
     "max_clips": 50,
@@ -102,6 +121,8 @@
     "_comment": "preflight --debug --p1: 2 jobs paralelos, pocas épocas, ~50 clips"
   },
   "p0_incumbent": {
+    "models_dir": "",
+    "auto_discover_from_env_dir": true,
     "enabled": true,
     "eval_split": "val_dev",
     "modes": ["legacy_clip", "windows"],

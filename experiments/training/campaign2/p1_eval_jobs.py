@@ -47,12 +47,17 @@ def build_p1_eval_job_queue(
     jobs: List[JobSpec] = []
     for job_id, ckpt_path in ckpts:
         eid = f"eval_{job_id}"
+        thr_path = ckpt_path.parent / "threshold.json"
+        thr = threshold
+        if thr_path.is_file():
+            with open(thr_path, "r", encoding="utf-8") as f:
+                thr = float(json.load(f).get("threshold", threshold))
         params: Dict[str, Any] = {
             "source_job_id": job_id,
             "checkpoint_path": str(ckpt_path),
             "manifest_path": manifest_path,
             "eval_split": eval_split,
-            "threshold": threshold,
+            "threshold": thr,
             "batch_size": batch_size,
             "temporal": temporal,
             "p1_train": p1_train,

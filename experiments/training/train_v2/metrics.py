@@ -32,6 +32,66 @@ def binary_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> Dict[str, Any]:
     }
 
 
+def aggregate_clip_scores(
+    uids: list[str],
+    y_true: np.ndarray,
+    probs: np.ndarray,
+) -> tuple[list[str], np.ndarray, np.ndarray]:
+    """Max prob por clip (uid)."""
+    by_uid: Dict[str, list[float]] = {}
+    by_y: Dict[str, int] = {}
+    for u, yt, p in zip(uids, y_true, probs):
+        by_uid.setdefault(u, []).append(float(p))
+        by_y[u] = int(yt)
+    clip_uids = sorted(by_uid.keys())
+    clip_y = np.array([by_y[u] for u in clip_uids], dtype=np.int64)
+    clip_p = np.array([max(by_uid[u]) for u in clip_uids], dtype=np.float64)
+    return clip_uids, clip_y, clip_p
+
+
+def threshold_from_negative_order_statistic(
+    clip_y: np.ndarray,
+    clip_probs: np.ndarray,
+    *,
+    max_fp_clips: int,
+) -> float:
+    """
+    Umbral en split T: ordena scores de sesiones/clips negativos (desc) y elige
+    el estadístico de orden que permite como máximo max_fp_clips FP en negativos.
+    """
+    neg = clip_probs[clip_y == 0]
+    if neg.size == 0:
+        return 0.5
+    k = int(max(0, max_fp_clips))
+    if k <= 0:
+        return float(np.nextafter(1.0, 0.0))
+    neg_sorted = np.sort(neg)[::-1]
+    if k >= neg_sorted.size:
+        return 0.0
+    return float(neg_sorted[k - 1])
+
+
+def clip_metrics_at_fp_budget(
+    uids: list[str],
+    y_true: np.ndarray,
+    probs: np.ndarray,
+    *,
+    max_fp_clips: int,
+    threshold: float | None = None,
+) -> Dict[str, Any]:
+    """Recall clip-level con umbral fijado por presupuesto FP en negativos."""
+    _, clip_y, clip_p = aggregate_clip_scores(uids, y_true, probs)
+    if threshold is None:
+        threshold = threshold_from_negative_order_statistic(clip_y, clip_p, max_fp_clips=max_fp_clips)
+    pred = (clip_p >= threshold).astype(np.int64)
+    m = binary_metrics(clip_y, pred)
+    fp = int(m["fp"])
+    m["threshold"] = float(threshold)
+    m["max_fp_clips"] = int(max_fp_clips)
+    m["selection_score"] = float(m["recall_pct"]) - max(0, fp - int(max_fp_clips)) * 5.0
+    return m
+
+
 def clip_metrics_from_window_probs(
     uids: list[str],
     y_true: np.ndarray,

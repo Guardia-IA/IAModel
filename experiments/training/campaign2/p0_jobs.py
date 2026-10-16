@@ -2,10 +2,26 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from gpu_scheduler import JobSpec
+
+_LEGACY_PT = re.compile(r"modelo_(\d+)\.pt$", re.I)
+
+
+def _discover_legacy_models(directory: Path) -> List[Tuple[str, Path]]:
+    if not directory.is_dir():
+        return []
+    found: Dict[str, Path] = {}
+    for p in sorted(directory.rglob("*.pt")):
+        m = _LEGACY_PT.search(p.name)
+        if not m:
+            continue
+        mid = m.group(1)
+        found[mid] = p
+    return sorted(found.items(), key=lambda x: int(x[0]))
 
 
 def _resolve_model_path(entry: Dict[str, Any]) -> Optional[Path]:
@@ -21,14 +37,27 @@ def _resolve_model_path(entry: Dict[str, Any]) -> Optional[Path]:
 
 def resolve_p0_models(cfg: Dict[str, Any]) -> List[Tuple[str, Path]]:
     p0 = cfg.get("p0_incumbent") or {}
+    mx = cfg.get("campaign_matrix") or {}
     models_cfg = p0.get("models") or []
-    resolved: List[Tuple[str, Path]] = []
+    resolved: Dict[str, Path] = {}
     for m in models_cfg:
         mid = str(m.get("id", ""))
         p = _resolve_model_path(m)
-        if p is not None:
-            resolved.append((mid, p))
-    return resolved
+        if p is not None and mid:
+            resolved[mid] = p
+
+    discover_dir = (p0.get("models_dir") or mx.get("legacy_models_dir") or "").strip()
+    if discover_dir:
+        for mid, p in _discover_legacy_models(Path(discover_dir).expanduser()):
+            resolved.setdefault(mid, p)
+
+    if p0.get("auto_discover_from_env_dir"):
+        env_dir = (os.environ.get("CAMPAIGN2_LEGACY_MODELS_DIR") or "").strip()
+        if env_dir:
+            for mid, p in _discover_legacy_models(Path(env_dir).expanduser()):
+                resolved.setdefault(mid, p)
+
+    return sorted(resolved.items(), key=lambda x: int(x[0]) if x[0].isdigit() else x[0])
 
 
 def build_p0_job_queue(

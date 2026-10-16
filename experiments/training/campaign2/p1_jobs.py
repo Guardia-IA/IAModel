@@ -78,6 +78,7 @@ def build_p1_job_queue(
                 "seed": seed,
                 "temporal": temporal,
                 "p1_train": p1_train,
+                "selection": dict(cfg.get("selection") or {}),
                 "robbery_class": robbery_class,
                 "num_workers": 0,
             }

@@ -2,6 +2,7 @@
 """Entrenamiento v2 (un job Campaign2 P1)."""
 from __future__ import annotations
 
+import copy
 import json
 import random
 import time
@@ -14,7 +15,12 @@ import torch.nn as nn
 from torch.utils.data import DataLoader, WeightedRandomSampler
 
 from train_v2.dataset_windows import WindowManifestDataset, make_datasets
-from train_v2.metrics import binary_metrics, clip_metrics_from_window_probs
+from train_v2.features import PREPROCESS_TORSO
+from train_v2.metrics import (
+    binary_metrics,
+    clip_metrics_at_fp_budget,
+    clip_metrics_from_window_probs,
+)
 from train_v2.models.gru_pooled import GRUPooledClassifier
 from train_v2.models.masked_tcn import MaskedTCNClassifier
 from train_v2.window_index import WindowRef
@@ -56,6 +62,7 @@ def _eval_loader(
     *,
     refs: List[WindowRef],
     threshold: float,
+    max_fp_clips: int = 11,
 ) -> Dict[str, Any]:
     model.eval()
     probs: List[float] = []
@@ -79,16 +86,48 @@ def _eval_loader(
     pred = (pr >= threshold).astype(np.int64)
     window_m = binary_metrics(yt, pred)
     clip_m = clip_metrics_from_window_probs(uids, yt, pr, threshold=threshold)
-    return {"window": window_m, "clip_max": clip_m, "threshold": threshold}
+    clip_budget = clip_metrics_at_fp_budget(uids, yt, pr, max_fp_clips=max_fp_clips)
+    return {
+        "window": window_m,
+        "clip_max": clip_m,
+        "clip_budget": clip_budget,
+        "threshold": threshold,
+    }
 
 
-def _train_sampler(ds: WindowManifestDataset) -> WeightedRandomSampler:
-    labels = [ds.refs[i].label_theft for i in range(len(ds))]
-    n_pos = max(sum(labels), 1)
-    n_neg = max(len(labels) - n_pos, 1)
-    w_pos = 0.5 / n_pos
-    w_neg = 0.5 / n_neg
-    weights = [w_pos if lb else w_neg for lb in labels]
+def _train_sampler(
+    ds: WindowManifestDataset,
+    *,
+    hard_neg_classes: List[int] | None = None,
+) -> WeightedRandomSampler:
+    """25% pos / 25% hard neg / 50% neg ordinario (experto P3-lite)."""
+    hard_neg_classes = hard_neg_classes or [2, 3, 4, 14]
+    hard_set = {int(x) for x in hard_neg_classes}
+    pos_idx: List[int] = []
+    hard_idx: List[int] = []
+    neg_idx: List[int] = []
+    for i, ref in enumerate(ds.refs):
+        if ref.label_theft:
+            pos_idx.append(i)
+        elif int(ref.clip_label) in hard_set:
+            hard_idx.append(i)
+        else:
+            neg_idx.append(i)
+    n_pos = max(len(pos_idx), 1)
+    n_hard = max(len(hard_idx), 1)
+    n_neg = max(len(neg_idx), 1)
+    w_pos = 0.25 / n_pos
+    w_hard = 0.25 / n_hard
+    w_neg = 0.50 / n_neg
+    weights = [0.0] * len(ds.refs)
+    for i in pos_idx:
+        weights[i] = w_pos
+    for i in hard_idx:
+        weights[i] = w_hard
+    for i in neg_idx:
+        weights[i] = w_neg
+    if sum(weights) <= 0:
+        return WeightedRandomSampler([1.0] * len(ds), num_samples=len(ds), replacement=True)
     return WeightedRandomSampler(weights, num_samples=len(weights), replacement=True)
 
 
@@ -111,6 +150,17 @@ def run_p1_train(params: Dict[str, Any], output_dir: Path) -> Dict[str, Any]:
     val_threshold = float(p1_cfg.get("val_threshold", 0.5))
     early_patience = int(p1_cfg.get("early_stop_patience", 15))
     robbery_class = int(params.get("robbery_class", 6))
+    selection_cfg = dict(params.get("selection") or {})
+    max_fp_clips = int(
+        p1_cfg.get("max_val_fp_clips")
+        or selection_cfg.get("max_val_fp_clips")
+        or 11
+    )
+    selection_metric = str(p1_cfg.get("selection_metric", "recall_at_fp"))
+    warmup_epochs = int(p1_cfg.get("warmup_epochs", 5))
+    normalize_mode = str(p1_cfg.get("preprocess", PREPROCESS_TORSO))
+    augment_cfg = dict(p1_cfg.get("augment") or {})
+    hard_neg_classes = [int(x) for x in (p1_cfg.get("hard_neg_classes") or [2, 3, 4, 14])]
 
     train_ds, val_ds, meta = make_datasets(
         manifest_path,
@@ -118,6 +168,10 @@ def run_p1_train(params: Dict[str, Any], output_dir: Path) -> Dict[str, Any]:
         robbery_class=robbery_class,
         max_windows_per_clip=max_wpc,
         min_valid_joint_ratio=min_valid,
+        train_augment=bool(p1_cfg.get("augment_enabled", True)),
+        augment_cfg=augment_cfg,
+        normalize_mode=normalize_mode,
+        augment_seed=seed,
     )
     input_dim = int(meta["input_dim"])
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -125,7 +179,7 @@ def run_p1_train(params: Dict[str, Any], output_dir: Path) -> Dict[str, Any]:
     train_loader = DataLoader(
         train_ds,
         batch_size=batch_size,
-        sampler=_train_sampler(train_ds),
+        sampler=_train_sampler(train_ds, hard_neg_classes=hard_neg_classes),
         num_workers=int(params.get("num_workers", 0)),
         pin_memory=torch.cuda.is_available(),
     )
@@ -139,7 +193,19 @@ def run_p1_train(params: Dict[str, Any], output_dir: Path) -> Dict[str, Any]:
 
     model = _build_model(arch, input_dim, params).to(device)
     opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
-    sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=max(epochs, 1))
+    warmup_epochs = max(0, min(warmup_epochs, epochs - 1))
+    if warmup_epochs > 0:
+        warm = torch.optim.lr_scheduler.LinearLR(
+            opt, start_factor=0.1, end_factor=1.0, total_iters=warmup_epochs
+        )
+        cosine = torch.optim.lr_scheduler.CosineAnnealingLR(
+            opt, T_max=max(epochs - warmup_epochs, 1)
+        )
+        sched = torch.optim.lr_scheduler.SequentialLR(
+            opt, schedulers=[warm, cosine], milestones=[warmup_epochs]
+        )
+    else:
+        sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=max(epochs, 1))
     loss_fn = nn.BCEWithLogitsLoss()
 
     best_score = -1.0
@@ -158,7 +224,8 @@ def run_p1_train(params: Dict[str, Any], output_dir: Path) -> Dict[str, Any]:
             f"[P1 {params.get('job_id')}] epoch {row.get('epoch')}/{epochs} "
             f"loss={row.get('train_loss', 0):.4f} "
             f"val_rec={row.get('val_clip_recall_pct', 0):.1f}% "
-            f"val_FP={row.get('val_clip_fp')} score={row.get('score', 0):.2f}",
+            f"val_FP={row.get('val_clip_fp')} score={row.get('score', 0):.2f} "
+            f"thr={row.get('val_threshold', 0):.3f}",
             flush=True,
         )
 
@@ -187,17 +254,26 @@ def run_p1_train(params: Dict[str, Any], output_dir: Path) -> Dict[str, Any]:
             device,
             refs=val_ds.refs,
             threshold=val_threshold,
+            max_fp_clips=max_fp_clips,
         )
         clip = val_stats["clip_max"]
-        score = float(clip["recall_pct"]) - 0.5 * float(clip["fp_rate_pct"])
+        clip_budget = val_stats.get("clip_budget") or clip
+        if selection_metric == "recall_at_fp":
+            score = float(clip_budget.get("selection_score", clip_budget["recall_pct"]))
+        else:
+            score = float(clip["recall_pct"]) - 0.5 * float(clip["fp_rate_pct"])
         row = {
             "epoch": epoch,
             "train_loss": running / max(n_batches, 1),
             "val_clip_recall_pct": clip["recall_pct"],
             "val_clip_fp": clip["fp"],
             "val_clip_fp_rate_pct": clip["fp_rate_pct"],
+            "val_clip_recall_at_fp_pct": clip_budget.get("recall_pct"),
+            "val_clip_fp_at_budget": clip_budget.get("fp"),
+            "val_threshold": clip_budget.get("threshold", val_threshold),
             "val_window_f1_pct": val_stats["window"]["f1_pct"],
             "score": score,
+            "max_fp_clips": max_fp_clips,
         }
         history.append(row)
         _log_progress(row)
@@ -208,7 +284,7 @@ def run_p1_train(params: Dict[str, Any], output_dir: Path) -> Dict[str, Any]:
             torch.save(
                 {
                     "job_id": params.get("job_id"),
-                    "model_state_dict": model.state_dict(),
+                    "model_state_dict": copy.deepcopy(model.state_dict()),
                     "config": {
                         "arch": arch,
                         "hidden_dim": params.get("hidden_dim", 64),
@@ -220,7 +296,12 @@ def run_p1_train(params: Dict[str, Any], output_dir: Path) -> Dict[str, Any]:
                     "seq_len": meta["seq_len"],
                     "seed": seed,
                     "job_id": params.get("job_id"),
-                    "preprocess": "campaign2_windows_legacy_norm_v1",
+                    "preprocess": normalize_mode,
+                    "selection": {
+                        "metric": selection_metric,
+                        "max_fp_clips": max_fp_clips,
+                        "val_score": score,
+                    },
                 },
                 best_path,
             )

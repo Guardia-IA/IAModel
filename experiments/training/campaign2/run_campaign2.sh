@@ -47,6 +47,7 @@ case "$CMD" in
 Uso: $0 <comando> [args...]
 
   new-run              Crea RUN_ID campaign2_YYYYMMDD_HHMMSS
+  validate             Tests rápidos (~5 s, sin GPU ni datos)
   probe [--run-id ID]  gpu_probe_campaign2.py
   preflight            Inventario + caché 12Hz (añade --p0 para cola baseline)
   train                Ejecuta jobs/queue.json (P0 tras preflight --p0)
@@ -56,8 +57,10 @@ Uso: $0 <comando> [args...]
   p1-smoke             preflight --p1-smoke + train (2 épocas, prueba train_v2)
   p1-status            Progreso de jobs P1 (época, val rec/FP)
   p1-summary           Tabla final tras train P1
+  p1-calibrate         Umbral en split threshold_calib (T) + threshold.json
   p1-eval              Cola eval sobre best.pt + train (paralelo)
   p1-eval-summary      Métricas eval clip-max
+  p1-seed-ensemble     Media prob entre semillas v2 (mismo job base)
   debug-pipeline       new-run + probe + preflight --debug --p1 + train + eval + resúmenes
   matrix-pipeline      full+filtered, legacy eval + train v2 + eval + ranking ensembles
   debug-matrix         matrix-pipeline en modo debug (~50 clips)
@@ -82,6 +85,9 @@ EOF
     echo "$RUN_ID" > "$CURRENT_RUN_FILE"
     mkdir -p "${SCRIPT_DIR}/artifacts/runs/${RUN_ID}"
     echo "RUN_ID=${RUN_ID}"
+    ;;
+  validate)
+    "$PY" validate_campaign2.py
     ;;
   probe)
     parse_run_id_from_args "${EXTRA_ARGS[@]}" || true
@@ -146,11 +152,22 @@ EOF
     ensure_run_id
     "$PY" p1_summarize.py --run-id "$RUN_ID" "${EXTRA_ARGS[@]}"
     ;;
+  p1-calibrate)
+    parse_run_id_from_args "${EXTRA_ARGS[@]}" || true
+    ensure_run_id
+    "$PY" prepare_p1_calibrate.py --run-id "$RUN_ID" "${EXTRA_ARGS[@]}"
+    "$PY" train_campaign2_parallel.py --run-id "$RUN_ID" "${EXTRA_ARGS[@]}"
+    ;;
   p1-eval)
     parse_run_id_from_args "${EXTRA_ARGS[@]}" || true
     ensure_run_id
     "$PY" prepare_p1_eval.py --run-id "$RUN_ID" "${EXTRA_ARGS[@]}"
     "$PY" train_campaign2_parallel.py --run-id "$RUN_ID" "${EXTRA_ARGS[@]}"
+    ;;
+  p1-seed-ensemble)
+    parse_run_id_from_args "${EXTRA_ARGS[@]}" || true
+    ensure_run_id
+    "$PY" p1_seed_ensemble.py --run-id "$RUN_ID" "${EXTRA_ARGS[@]}"
     ;;
   p1-eval-summary)
     parse_run_id_from_args "${EXTRA_ARGS[@]}" || true
@@ -178,8 +195,10 @@ EOF
     "$0" train --run-id "$RUN_ID"
     "$0" p1-summary --run-id "$RUN_ID"
     "$0" p0-summary --run-id "$RUN_ID" || true
+    "$0" p1-calibrate --run-id "$RUN_ID"
     "$0" p1-eval --run-id "$RUN_ID"
     "$0" p1-eval-summary --run-id "$RUN_ID"
+    "$0" p1-seed-ensemble --run-id "$RUN_ID" || true
     "$0" ensemble-leaderboard --run-id "$RUN_ID"
     echo "[matrix-pipeline] Ver reports/ensemble_leaderboard.json"
     ;;

@@ -4,6 +4,10 @@ from __future__ import annotations
 import numpy as np
 
 from train_v2.legacy_preprocess import add_velocity, normalize_sequence
+from train_v2.normalize import normalize_torso_isotropic
+
+PREPROCESS_LEGACY = "campaign2_windows_legacy_norm_v1"
+PREPROCESS_TORSO = "campaign2_windows_torso_v1"
 
 
 def window_to_features(
@@ -12,6 +16,7 @@ def window_to_features(
     *,
     seq_len: int,
     min_valid_joint_ratio: float = 0.25,
+    normalize_mode: str = PREPROCESS_TORSO,
 ) -> tuple[np.ndarray, np.ndarray, bool]:
     """
     poses: [T, J, 2], valid: [T, J] bool/0-1.
@@ -30,7 +35,10 @@ def window_to_features(
     if vr < min_valid_joint_ratio:
         return np.zeros((seq_len, j * 5), dtype=np.float32), np.zeros(seq_len, dtype=np.float32), False
 
-    poses = normalize_sequence(poses)
+    if normalize_mode in (PREPROCESS_LEGACY, "legacy_mean", "legacy"):
+        poses = normalize_sequence(poses)
+    else:
+        poses = normalize_torso_isotropic(poses, valid)
     poses = add_velocity(poses)
     valid_t = valid.mean(axis=1).astype(np.float32)
     if t != seq_len:

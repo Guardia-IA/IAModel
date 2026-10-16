@@ -117,6 +117,18 @@ def _job_p1_train(params: Dict[str, Any], output_dir: Path) -> Dict[str, Any]:
     return run_p1_train(params, output_dir)
 
 
+def _job_p1_calibrate(params: Dict[str, Any], output_dir: Path) -> Dict[str, Any]:
+    import sys
+    from pathlib import Path as P
+
+    training_dir = P(__file__).resolve().parent.parent
+    if str(training_dir) not in sys.path:
+        sys.path.insert(0, str(training_dir))
+    from train_v2.calibrate_job import run_p1_calibrate
+
+    return run_p1_calibrate(params, output_dir)
+
+
 HANDLERS = {
     "smoke": _job_smoke,
     "cache_touch": _job_cache_touch,
@@ -124,6 +136,7 @@ HANDLERS = {
     "p0_eval": _job_p0_eval,
     "p1_train": _job_p1_train,
     "p1_eval": _job_p1_eval,
+    "p1_calibrate": _job_p1_calibrate,
 }
 
 

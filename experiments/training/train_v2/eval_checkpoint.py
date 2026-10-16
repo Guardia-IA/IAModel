@@ -10,7 +10,7 @@ import torch
 import torch.nn.functional as F
 
 from train_v2.dataset_windows import load_manifest, manifest_entries_for_split
-from train_v2.features import window_to_features
+from train_v2.features import PREPROCESS_TORSO, window_to_features
 from train_v2.metrics import binary_metrics, clip_metrics_from_window_probs
 from train_v2.models.gru_pooled import GRUPooledClassifier
 from train_v2.models.masked_tcn import MaskedTCNClassifier
@@ -51,6 +51,7 @@ def run_v2_window_eval(
     num_joints = int(manifest["num_joints"])
 
     model = _load_v2_model(checkpoint, device)
+    normalize_mode = str(checkpoint.get("preprocess") or PREPROCESS_TORSO)
 
     poses_path = Path(manifest["poses_mmap"])
     valid_path = Path(manifest["valid_mmap"])
@@ -92,7 +93,11 @@ def run_v2_window_eval(
                 chunk = np.concatenate([chunk, np.repeat(chunk[-1:], pad, axis=0)], axis=0)
                 vchunk = np.concatenate([vchunk, np.repeat(vchunk[-1:], pad, axis=0)], axis=0)
             x_np, fmask, ok = window_to_features(
-                chunk, vchunk, seq_len=seq_len, min_valid_joint_ratio=min_valid_joint_ratio
+                chunk,
+                vchunk,
+                seq_len=seq_len,
+                min_valid_joint_ratio=min_valid_joint_ratio,
+                normalize_mode=normalize_mode,
             )
             if not ok:
                 continue

@@ -9,7 +9,10 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
-from train_v2.features import window_to_features
+import random
+
+from train_v2.augment import augment_pose_window
+from train_v2.features import PREPROCESS_TORSO, window_to_features
 from train_v2.window_index import WindowRef, build_window_index
 
 
@@ -22,12 +25,20 @@ class WindowManifestDataset(Dataset):
         window_frames: int,
         seq_len: int,
         min_valid_joint_ratio: float = 0.25,
+        train_augment: bool = False,
+        augment_cfg: Dict[str, Any] | None = None,
+        normalize_mode: str = PREPROCESS_TORSO,
+        augment_seed: int = 0,
     ) -> None:
         self.manifest = manifest
         self.refs = window_refs
         self.window_frames = window_frames
         self.seq_len = seq_len
         self.min_valid_joint_ratio = min_valid_joint_ratio
+        self.train_augment = train_augment
+        self.augment_cfg = dict(augment_cfg or {})
+        self.normalize_mode = normalize_mode
+        self._rng = random.Random(int(augment_seed))
 
         poses_path = Path(manifest["poses_mmap"])
         valid_path = Path(manifest["valid_mmap"])
@@ -54,11 +65,15 @@ class WindowManifestDataset(Dataset):
             poses = np.concatenate([poses, np.repeat(poses[-1:], pad, axis=0)], axis=0)
             valid = np.concatenate([valid, np.repeat(valid[-1:], pad, axis=0)], axis=0)
 
+        if self.train_augment:
+            poses, valid = augment_pose_window(poses, valid, self._rng, self.augment_cfg)
+
         x, fmask, ok = window_to_features(
             poses,
             valid,
             seq_len=self.seq_len,
             min_valid_joint_ratio=self.min_valid_joint_ratio,
+            normalize_mode=self.normalize_mode,
         )
         y = float(ref.label_theft)
         if not ok:
@@ -88,6 +103,10 @@ def make_datasets(
     robbery_class: int = 6,
     max_windows_per_clip: int = 32,
     min_valid_joint_ratio: float = 0.25,
+    train_augment: bool = True,
+    augment_cfg: Dict[str, Any] | None = None,
+    normalize_mode: str = PREPROCESS_TORSO,
+    augment_seed: int = 42,
 ) -> Tuple[WindowManifestDataset, WindowManifestDataset, Dict[str, Any]]:
     manifest = load_manifest(manifest_path)
     hz = float(temporal.get("target_hz", 12.0))
@@ -118,6 +137,10 @@ def make_datasets(
         window_frames=window_frames,
         seq_len=seq_len,
         min_valid_joint_ratio=min_valid_joint_ratio,
+        train_augment=train_augment,
+        augment_cfg=augment_cfg,
+        normalize_mode=normalize_mode,
+        augment_seed=augment_seed,
     )
     val_ds = WindowManifestDataset(
         manifest,
@@ -125,6 +148,8 @@ def make_datasets(
         window_frames=window_frames,
         seq_len=seq_len,
         min_valid_joint_ratio=min_valid_joint_ratio,
+        train_augment=False,
+        normalize_mode=normalize_mode,
     )
     meta = {
         "train_windows": len(train_refs),
