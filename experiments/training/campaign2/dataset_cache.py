@@ -124,16 +124,26 @@ def collect_clip_records(
     pose_source: str = "full",
     single_user_only: bool = False,
     robbery_class: int = 6,
+    log_fn=None,
 ) -> List[Dict[str, Any]]:
     from train_model_operations import collect_examples, _example_uid  # type: ignore
 
+    def _log(msg: str) -> None:
+        if log_fn:
+            log_fn(msg)
+        else:
+            print(msg, flush=True)
+
     records: List[Dict[str, Any]] = []
     for root in data_roots:
+        _log(f"  Escaneando data_result: {root}")
+        _log(f"    pose_source={pose_source!r} single_user_only={single_user_only}")
         examples = collect_examples(
             pose_source=pose_source,
             single_user_only=single_user_only,
             data_root=str(root),
         )
+        _log(f"    → {len(examples)} ejemplos (tracks/clips) en esta raíz")
         for ex in examples:
             clip_dir = Path(ex.pose_path).parent.parent
             meta_path = clip_dir / "meta.json"
@@ -154,6 +164,7 @@ def collect_clip_records(
                     "group_id": _clip_group_id(clip_dir, meta),
                 }
             )
+    _log(f"  Total registros agregados: {len(records)}")
     return records
 
 
@@ -166,7 +177,14 @@ def build_pose_cache(
     split_seed: int = 42,
     use_shm: bool = True,
     shm_basename: str = "kanvis_pose_12hz",
+    log_fn=None,
 ) -> CacheBuildResult:
+    def _log(msg: str) -> None:
+        if log_fn:
+            log_fn(msg)
+        else:
+            print(msg, flush=True)
+
     cache_dir.mkdir(parents=True, exist_ok=True)
     split_ratios = split_ratios or {
         "train": 0.7,
@@ -176,7 +194,11 @@ def build_pose_cache(
     }
 
     resampled: List[Tuple[np.ndarray, np.ndarray, Dict[str, Any]]] = []
-    for rec in records:
+    n_rec = len(records)
+    _log(f"  Remuestreando {n_rec} clips a {target_hz} Hz (puede tardar varios minutos)...")
+    for idx, rec in enumerate(records):
+        if n_rec >= 200 and (idx == 0 or (idx + 1) % 500 == 0 or idx + 1 == n_rec):
+            _log(f"    clip {idx + 1}/{n_rec}")
         poses = np.load(rec["pose_path"])
         if rec.get("valid_mask_path") and Path(rec["valid_mask_path"]).is_file():
             vm = np.load(rec["valid_mask_path"])
@@ -195,6 +217,7 @@ def build_pose_cache(
     if total_frames == 0:
         raise RuntimeError("Caché vacía: ningún clip válido")
 
+    _log(f"  Escribiendo mmap: {total_frames} frames totales...")
     j = resampled[0][0].shape[1]
     poses_path = cache_dir / "poses.f32.mmap"
     valid_path = cache_dir / "valid.u8.mmap"

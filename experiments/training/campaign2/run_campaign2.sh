@@ -48,9 +48,10 @@ Uso: $0 <comando> [args...]
 
   new-run              Crea RUN_ID campaign2_YYYYMMDD_HHMMSS
   probe [--run-id ID]  gpu_probe_campaign2.py
-  preflight            preflight_campaign2.py (+ --data-root PATH repetible)
-  train                train_campaign2_parallel.py
-  pipeline             new-run + probe + preflight + train (smoke)
+  preflight            Inventario + caché 12Hz (NO entrena Kanvis)
+  train                Ejecuta jobs/queue.json (vacío salvo --smoke-test)
+  pipeline             new-run + probe + preflight (sin train; Sprint 1)
+  smoke-pipeline       new-run + probe + preflight --smoke-test + train
 
 Variables:
   RUN_ID, CAMPAIGN2_MAX_PARALLEL, PYTHON
@@ -93,6 +94,14 @@ EOF
     export RUN_ID
     "$0" probe --run-id "$RUN_ID"
     "$0" preflight --run-id "$RUN_ID" "${EXTRA_ARGS[@]}"
+    echo "[pipeline] Sprint 1 termina aquí (sin train). Usa smoke-pipeline para probar scheduler."
+    ;;
+  smoke-pipeline)
+    "$0" new-run
+    RUN_ID="$(tr -d '[:space:]' < "$CURRENT_RUN_FILE")"
+    export RUN_ID
+    "$0" probe --run-id "$RUN_ID"
+    "$0" preflight --run-id "$RUN_ID" --smoke-test "${EXTRA_ARGS[@]}"
     "$0" train --run-id "$RUN_ID"
     ;;
   *)

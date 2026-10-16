@@ -67,9 +67,29 @@ def main() -> int:
         )
         for j in queue.get("jobs", [])
     ]
+    purpose = queue.get("purpose", "unknown")
+    phase = queue.get("phase", "sprint1_infra")
+
     if not jobs:
-        print("WARN: cola vacía")
+        print(
+            "\n=== Campaign2 TRAIN (scheduler) ===\n"
+            "Cola vacía — no hay nada que ejecutar.\n"
+            "Sprint 1 solo prepara caché/inventario; el entrenamiento Kanvis llega en Sprint 2.\n"
+            "Para probar GPU en paralelo: preflight --smoke-test && train\n"
+        )
         return 0
+
+    if purpose == "smoke_test" or phase == "sprint1_infra":
+        print(
+            "\n"
+            + "=" * 72
+            + "\n"
+            "AVISO: estos jobs son PRUEBA DE INFRA (smoke/smoke_train/cache_touch).\n"
+            "NO entrenan el modelo Kanvis ni guardan modelo_41/modelo_48.\n"
+            + "=" * 72
+            + "\n",
+            flush=True,
+        )
 
     max_par = _load_max_parallel(cfg, run_id, args.max_parallel)
     par_cfg = cfg.get("parallelism") or {}

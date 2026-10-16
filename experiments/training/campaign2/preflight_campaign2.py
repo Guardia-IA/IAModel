@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """
-Preflight Campaign2: inventario, caché 12 Hz (mmap), cola de jobs Sprint 1.
+Preflight Campaign2 (Sprint 1): inventario, caché 12 Hz (mmap), cola de jobs opcional.
 
-No escribe en campaign/ ni modifica datos de entrenamiento legacy.
+NO entrena modelos Kanvis. El entrenamiento real llega en Sprint 2 (train_v2 + jobs P0/P1).
 """
 from __future__ import annotations
 
 import argparse
 import json
 import sys
+import time
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -30,6 +32,19 @@ from campaign2_paths import (  # noqa: E402
 from dataset_cache import build_pose_cache, collect_clip_records  # noqa: E402
 from gpu_scheduler import JobSpec  # noqa: E402
 
+BOLD = "\033[1m"
+CYAN = "\033[96m"
+YELLOW = "\033[93m"
+GREEN = "\033[92m"
+RESET = "\033[0m"
+
+
+def _log_line(log_path: Optional[Path], msg: str) -> None:
+    print(msg, flush=True)
+    if log_path:
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(msg + "\n")
+
 
 def _split_summary(entries: List[Dict[str, Any]]) -> Dict[str, Any]:
     out: Dict[str, Any] = {}
@@ -42,13 +57,19 @@ def _split_summary(entries: List[Dict[str, Any]]) -> Dict[str, Any]:
     return out
 
 
+def _category_table(records: List[Dict[str, Any]]) -> Dict[str, int]:
+    c = Counter(int(r["label"]) for r in records)
+    return {str(k): v for k, v in sorted(c.items())}
+
+
 def build_smoke_job_queue(
     cfg: Dict[str, Any],
     *,
     manifest_path: Optional[Path],
     run_id: str,
+    enable_smoke: bool,
 ) -> List[JobSpec]:
-    n = int(cfg.get("sprint1_smoke_jobs", 3))
+    n = int(cfg.get("sprint1_smoke_jobs", 0)) if enable_smoke else 0
     jobs: List[JobSpec] = []
     for i in range(n):
         jtype = "smoke_train" if i == 0 else "smoke"
@@ -65,7 +86,7 @@ def build_smoke_job_queue(
             params = {"sleep_seconds": 0.5 + 0.1 * i}
         jobs.append(JobSpec(job_id=f"smoke_{i+1:02d}", job_type=jtype, params=params, priority=0))
 
-    if manifest_path and manifest_path.is_file():
+    if manifest_path and manifest_path.is_file() and enable_smoke:
         jobs.append(
             JobSpec(
                 job_id="cache_touch_01",
@@ -78,27 +99,47 @@ def build_smoke_job_queue(
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Preflight Campaign2")
+    ap = argparse.ArgumentParser(description="Preflight Campaign2 (Sprint 1 — infra, no entrenamiento Kanvis)")
     ap.add_argument("--config", type=str, default=None)
     ap.add_argument("--run-id", type=str, default=None)
     ap.add_argument("--data-root", action="append", default=None, help="Override data_result (repetible)")
     ap.add_argument("--skip-cache", action="store_true")
     ap.add_argument("--max-clips", type=int, default=0, help="Limit clips (debug)")
+    ap.add_argument(
+        "--smoke-test",
+        action="store_true",
+        help="Añade jobs smoke al scheduler (probar paralelismo). No entrena el modelo de producción.",
+    )
     args = ap.parse_args()
 
     cfg = load_campaign2_config(Path(args.config) if args.config else None)
+    phase = str(cfg.get("phase") or "sprint1_infra")
     run_id = args.run_id or read_current_run_id()
     if not run_id:
         print("ERROR: sin RUN_ID. Ejecuta: ./run_campaign2.sh new-run", file=sys.stderr)
         return 2
 
     layout = run_layout(run_id)
+    log_path = layout["logs_dir"] / "preflight.log"
+    log_path.write_text("", encoding="utf-8")
+
+    def log(msg: str) -> None:
+        _log_line(log_path, msg)
+
+    log(f"{BOLD}{'=' * 72}{RESET}")
+    log(f"{BOLD}Campaign2 PREFLIGHT — {phase}{RESET}")
+    log(f"RUN_ID={CYAN}{run_id}{RESET}")
+    log(f"{YELLOW}Sprint 1: inventario + caché 12 Hz. NO es entrenamiento del modelo Kanvis.{RESET}")
+    log(f"Log: {log_path}")
+    log(f"{BOLD}{'=' * 72}{RESET}")
+
     data_roots = resolve_data_roots(cfg, args.data_root)
+    log(f"\n{BOLD}1) Raíces de datos{RESET}")
     if not data_roots:
-        print(
-            "WARN: no hay data_roots. Añade rutas en campaign2_config.json o --data-root.",
-            file=sys.stderr,
-        )
+        log(f"  {YELLOW}WARN: sin data_roots. Usa --data-root o campaign2_config.json → data_roots{RESET}")
+    else:
+        for r in data_roots:
+            log(f"  {CYAN}{r}{RESET}")
 
     temporal = cfg.get("temporal") or {}
     cache_cfg = cfg.get("cache") or {}
@@ -106,18 +147,31 @@ def main() -> int:
 
     records: List[Dict[str, Any]] = []
     cache_result = None
+    t0 = time.perf_counter()
+
     if data_roots and not args.skip_cache and cache_cfg.get("enabled", True):
+        log(f"\n{BOLD}2) Inventario de clips (collect_examples legacy, solo lectura){RESET}")
+        t_inv = time.perf_counter()
         records = collect_clip_records(
             data_roots,
             pose_source=str(cfg.get("pose_source", "full")),
             single_user_only=bool(cfg.get("single_user_only", False)),
             robbery_class=int(cfg.get("robbery_class", 6)),
+            log_fn=log,
         )
+        log(f"  Inventario en {time.perf_counter() - t_inv:.1f}s — {len(records)} registros")
+        if records:
+            log(f"  Por categoría (label): {json.dumps(_category_table(records))}")
+
         if args.max_clips > 0:
             records = records[: args.max_clips]
+            log(f"  {YELLOW}--max-clips={args.max_clips}{RESET}")
+
         if not records:
-            print("WARN: 0 clips encontrados; caché omitida.", file=sys.stderr)
-        elif records:
+            log(f"  {YELLOW}WARN: 0 clips; caché omitida.{RESET}")
+        else:
+            log(f"\n{BOLD}3) Caché poses @ {temporal.get('target_hz', 12)} Hz (mmap){RESET}")
+            t_cache = time.perf_counter()
             cache_result = build_pose_cache(
                 records,
                 layout["cache_dir"],
@@ -126,15 +180,55 @@ def main() -> int:
                 split_seed=int(split_cfg.get("seed", 42)),
                 use_shm=bool(cache_cfg.get("use_shm", True)),
                 shm_basename=str(cache_cfg.get("shm_basename", "kanvis_pose_12hz")),
+                log_fn=log,
             )
+            mb = cache_result.bytes_on_disk / (1024 * 1024)
+            log(
+                f"  {GREEN}OK{RESET} clips={cache_result.num_clips} frames={cache_result.total_frames} "
+                f"size≈{mb:.1f} MiB"
+            )
+            log(f"  manifest: {cache_result.manifest_path}")
+            log(f"  poses mmap: {cache_result.poses_mmap_path}")
+            log(f"  Caché en {time.perf_counter() - t_cache:.1f}s")
+    elif args.skip_cache:
+        log(f"\n{YELLOW}--skip-cache: no se construye caché.{RESET}")
 
     manifest_path = layout["cache_dir"] / "manifest.json"
     if cache_result:
         manifest_path = cache_result.manifest_path
 
-    jobs = build_smoke_job_queue(cfg, manifest_path=manifest_path if manifest_path.is_file() else None, run_id=run_id)
+    split_sum = _split_summary(
+        json.loads(manifest_path.read_text(encoding="utf-8")).get("entries", [])
+        if manifest_path.is_file()
+        else []
+    )
+    if split_sum:
+        log(f"\n{BOLD}4) Split (provisional Sprint 1, por group_id hash){RESET}")
+        for sp, counts in sorted(split_sum.items()):
+            log(f"  {sp}: clips={counts['clips']} robbery={counts['robbery']}")
+
+    enable_smoke = args.smoke_test or int(cfg.get("sprint1_smoke_jobs", 0)) > 0
+    jobs = build_smoke_job_queue(
+        cfg,
+        manifest_path=manifest_path if manifest_path.is_file() else None,
+        run_id=run_id,
+        enable_smoke=enable_smoke,
+    )
+
+    log(f"\n{BOLD}5) Cola de jobs{RESET}")
+    if not jobs:
+        log(f"  {GREEN}Cola vacía (normal en Sprint 1).{RESET}")
+        log(f"  El comando «train» no entrenará Kanvis hasta Sprint 2.")
+        log(f"  Para probar el scheduler: preflight --smoke-test && ./run_campaign2.sh train")
+    else:
+        log(f"  {YELLOW}Modo smoke-test:{RESET} {len(jobs)} jobs (scheduler, NO modelo Kanvis)")
+        for j in jobs:
+            log(f"    - {j.job_id} ({j.job_type})")
+
     queue_payload = {
         "run_id": run_id,
+        "phase": phase,
+        "purpose": "smoke_test" if jobs else "infra_only",
         "created_at": datetime.now(timezone.utc).isoformat(),
         "jobs": [
             {"job_id": j.job_id, "job_type": j.job_type, "params": j.params, "priority": j.priority}
@@ -148,8 +242,11 @@ def main() -> int:
 
     preflight_report = {
         "run_id": run_id,
+        "phase": phase,
+        "purpose": queue_payload["purpose"],
         "data_roots": [str(p) for p in data_roots],
         "num_clip_records": len(records),
+        "category_counts": _category_table(records) if records else {},
         "cache": None
         if not cache_result
         else {
@@ -159,13 +256,11 @@ def main() -> int:
             "bytes_on_disk": cache_result.bytes_on_disk,
             "poses_mmap": str(cache_result.poses_mmap_path),
         },
-        "split_summary": _split_summary(
-            json.loads(manifest_path.read_text(encoding="utf-8")).get("entries", [])
-            if manifest_path.is_file()
-            else []
-        ),
+        "split_summary": split_sum,
         "job_queue": str(qpath),
         "num_jobs": len(jobs),
+        "wall_seconds": round(time.perf_counter() - t0, 2),
+        "log_file": str(log_path),
     }
     report_path = layout["reports_dir"] / "preflight_summary.json"
     with open(report_path, "w", encoding="utf-8") as f:
@@ -175,6 +270,7 @@ def main() -> int:
     meta = {
         "run_id": run_id,
         "phase": "preflight_done",
+        "campaign_phase": phase,
         "updated_at": datetime.now(timezone.utc).isoformat(),
         "config": str(Path(args.config) if args.config else "campaign2_config.json"),
     }
@@ -182,7 +278,9 @@ def main() -> int:
         json.dump(meta, f, indent=2)
         f.write("\n")
 
-    print(json.dumps(preflight_report, indent=2, ensure_ascii=False))
+    log(f"\n{BOLD}Resumen JSON:{RESET} {report_path}")
+    log(f"Total preflight: {preflight_report['wall_seconds']}s")
+    log(json.dumps(preflight_report, indent=2, ensure_ascii=False))
     return 0
 
 

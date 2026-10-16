@@ -4,6 +4,15 @@ Pipeline **nuevo e independiente** de `../campaign/`. No modifica el entrenamien
 
 **Plan maestro:** [`IAModel/docs/TRAINING2_CAMPAIGN2_MASTER_PLAN.md`](../../../docs/TRAINING2_CAMPAIGN2_MASTER_PLAN.md)
 
+## ¿Qué hace cada comando? (importante)
+
+| Comando | ¿Entrena Kanvis? |
+|---------|------------------|
+| `preflight` | **No.** Escanea clips, construye caché 12 Hz, escribe informe. Puede tardar minutos con ~19k clips. |
+| `train` | **No** (Sprint 1). Solo ejecuta la cola JSON; por defecto **vacía**. |
+| `train` tras `preflight --smoke-test` | **No.** Prueba GPU/scheduler (mini Conv1d de 8 pasos). |
+| Entrenamiento real | **Sprint 2+** (`train_v2`, jobs P0/P1). |
+
 ## Sprint 1 (implementado)
 
 | Componente | Rol |
