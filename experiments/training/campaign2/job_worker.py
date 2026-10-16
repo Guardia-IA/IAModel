@@ -93,6 +93,18 @@ def _job_p0_eval(params: Dict[str, Any], output_dir: Path) -> Dict[str, Any]:
     return run_p0_eval(params, output_dir)
 
 
+def _job_p1_eval(params: Dict[str, Any], output_dir: Path) -> Dict[str, Any]:
+    import sys
+    from pathlib import Path as P
+
+    training_dir = P(__file__).resolve().parent.parent
+    if str(training_dir) not in sys.path:
+        sys.path.insert(0, str(training_dir))
+    from train_v2.eval_checkpoint import run_p1_eval_job
+
+    return run_p1_eval_job(params, output_dir)
+
+
 def _job_p1_train(params: Dict[str, Any], output_dir: Path) -> Dict[str, Any]:
     import sys
     from pathlib import Path as P
@@ -111,6 +123,7 @@ HANDLERS = {
     "smoke_train": _job_smoke_train,
     "p0_eval": _job_p0_eval,
     "p1_train": _job_p1_train,
+    "p1_eval": _job_p1_eval,
 }
 
 

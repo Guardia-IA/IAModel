@@ -54,6 +54,11 @@ Uso: $0 <comando> [args...]
   summary              Muestra tablas/tiempos del último preflight (sin recomputar)
   p0-pipeline          new-run + probe + preflight --p0 + train + p0-summary
   p1-smoke             preflight --p1-smoke + train (2 épocas, prueba train_v2)
+  p1-status            Progreso de jobs P1 (época, val rec/FP)
+  p1-summary           Tabla final tras train P1
+  p1-eval              Cola eval sobre best.pt + train (paralelo)
+  p1-eval-summary      Métricas eval clip-max
+  debug-pipeline       new-run + probe + preflight --debug --p1 + train + eval + resúmenes
   pipeline             new-run + probe + preflight (sin train; Sprint 1)
   smoke-pipeline       new-run + probe + preflight --smoke-test + train
 
@@ -126,6 +131,40 @@ EOF
     ensure_run_id
     "$0" preflight --run-id "$RUN_ID" --p1-smoke --skip-cache "${EXTRA_ARGS[@]}"
     "$0" train --run-id "$RUN_ID"
+    "$0" p1-summary --run-id "$RUN_ID"
+    ;;
+  p1-status)
+    parse_run_id_from_args "${EXTRA_ARGS[@]}" || true
+    ensure_run_id
+    "$PY" p1_status.py --run-id "$RUN_ID" "${EXTRA_ARGS[@]}"
+    ;;
+  p1-summary)
+    parse_run_id_from_args "${EXTRA_ARGS[@]}" || true
+    ensure_run_id
+    "$PY" p1_summarize.py --run-id "$RUN_ID" "${EXTRA_ARGS[@]}"
+    ;;
+  p1-eval)
+    parse_run_id_from_args "${EXTRA_ARGS[@]}" || true
+    ensure_run_id
+    "$PY" prepare_p1_eval.py --run-id "$RUN_ID" "${EXTRA_ARGS[@]}"
+    "$PY" train_campaign2_parallel.py --run-id "$RUN_ID" "${EXTRA_ARGS[@]}"
+    ;;
+  p1-eval-summary)
+    parse_run_id_from_args "${EXTRA_ARGS[@]}" || true
+    ensure_run_id
+    "$PY" p1_eval_summarize.py --run-id "$RUN_ID" "${EXTRA_ARGS[@]}"
+    ;;
+  debug-pipeline)
+    "$0" new-run
+    RUN_ID="$(tr -d '[:space:]' < "$CURRENT_RUN_FILE")"
+    export RUN_ID
+    "$0" probe --run-id "$RUN_ID"
+    "$0" preflight --run-id "$RUN_ID" --debug --p1 "${EXTRA_ARGS[@]}"
+    "$0" train --run-id "$RUN_ID"
+    "$0" p1-summary --run-id "$RUN_ID"
+    "$0" p1-eval --run-id "$RUN_ID"
+    "$0" p1-eval-summary --run-id "$RUN_ID"
+    echo "[debug-pipeline] OK — quita --debug y sube max_clips para campaña real."
     ;;
   smoke-pipeline)
     "$0" new-run

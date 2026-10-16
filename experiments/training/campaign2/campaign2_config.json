@@ -57,6 +57,33 @@
     "val_threshold": 0.5,
     "early_stop_patience": 15
   },
+  "p1_eval": {
+    "eval_split": "val_dev",
+    "threshold": 0.5,
+    "batch_size": 64
+  },
+  "debug": {
+    "max_clips": 50,
+    "max_windows_per_clip": 8,
+    "early_stop_patience": 2,
+    "p1_job_matrix": [
+      {
+        "job_id": "dbg_tcn",
+        "arch": "masked_tcn64",
+        "epochs": 4,
+        "batch_size": 16,
+        "seeds": 1
+      },
+      {
+        "job_id": "dbg_gru",
+        "arch": "gru64_pooled",
+        "epochs": 4,
+        "batch_size": 16,
+        "seeds": 1
+      }
+    ],
+    "_comment": "preflight --debug --p1: 2 jobs paralelos, pocas épocas, ~50 clips"
+  },
   "p0_incumbent": {
     "enabled": true,
     "eval_split": "val_dev",

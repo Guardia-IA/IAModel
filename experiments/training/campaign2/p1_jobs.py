@@ -25,12 +25,15 @@ def build_p1_job_queue(
     manifest_path: str,
     run_id: str,
     smoke: bool = False,
+    debug: bool = False,
 ) -> Tuple[List[JobSpec], List[str]]:
     p1_phase = (cfg.get("phases") or {}).get("p1_train_v2") or {}
-    if not p1_phase.get("enabled", False) and not smoke:
+    if not p1_phase.get("enabled", False) and not smoke and not debug:
         return [], ["phases.p1_train_v2.enabled=false"]
 
     matrix = list((cfg.get("time_estimate") or {}).get("p1_job_matrix") or [])
+    if debug:
+        matrix = list((cfg.get("debug") or {}).get("p1_job_matrix") or matrix[:1])
     if smoke:
         matrix = [
             {
@@ -44,7 +47,11 @@ def build_p1_job_queue(
 
     default_seeds = [int(s) for s in (cfg.get("seeds") or [42])]
     temporal = cfg.get("temporal") or {}
-    p1_train = cfg.get("p1_train") or {}
+    p1_train = dict(cfg.get("p1_train") or {})
+    if debug:
+        dbg = cfg.get("debug") or {}
+        p1_train["max_windows_per_clip"] = int(dbg.get("max_windows_per_clip", 8))
+        p1_train["early_stop_patience"] = int(dbg.get("early_stop_patience", 3))
     robbery_class = int(cfg.get("robbery_class", 6))
     warnings: List[str] = []
     jobs: List[JobSpec] = []

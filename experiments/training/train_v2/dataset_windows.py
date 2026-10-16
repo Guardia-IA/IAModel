@@ -75,6 +75,10 @@ def load_manifest(path: Path) -> Dict[str, Any]:
         return json.load(f)
 
 
+def manifest_entries_for_split(manifest: Dict[str, Any], split_name: str) -> List[Dict[str, Any]]:
+    return [e for e in (manifest.get("entries") or []) if str(e.get("split")) == split_name]
+
+
 def make_datasets(
     manifest_path: Path,
     *,

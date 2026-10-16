@@ -96,9 +96,18 @@ def scheduler_log_path(run_id: str) -> Path:
 
 
 def resolve_data_roots(config: Dict[str, Any], cli_roots: Optional[List[str]] = None) -> List[Path]:
+    from data_roots import discover_data_result_roots
+
     if cli_roots:
+        discovered = discover_data_result_roots(cli_roots)
+        if discovered:
+            return discovered
         return [Path(r).expanduser().resolve() for r in cli_roots]
     roots_cfg = config.get("data_roots") or []
+    if roots_cfg:
+        discovered = discover_data_result_roots(roots_cfg)
+        if discovered:
+            return discovered
     out = [Path(r).expanduser().resolve() for r in roots_cfg if str(r).strip()]
     if out:
         return out

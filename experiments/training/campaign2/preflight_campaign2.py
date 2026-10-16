@@ -43,6 +43,7 @@ DIM = "\033[2m"
 CYAN = "\033[96m"
 YELLOW = "\033[93m"
 GREEN = "\033[92m"
+MAGENTA = "\033[95m"
 RESET = "\033[0m"
 
 
@@ -67,6 +68,30 @@ def _split_summary(entries: List[Dict[str, Any]]) -> Dict[str, Any]:
 def _category_table(records: List[Dict[str, Any]]) -> Dict[str, int]:
     c = Counter(int(r["label"]) for r in records)
     return {str(k): v for k, v in sorted(c.items())}
+
+
+def _category_table_from_manifest(entries: List[Dict[str, Any]]) -> Dict[str, int]:
+    c = Counter(int(e.get("label", -1)) for e in entries)
+    return {str(k): v for k, v in sorted(c.items()) if k >= 0}
+
+
+def _cache_info_from_manifest(manifest_path: Path) -> Optional[Dict[str, Any]]:
+    if not manifest_path.is_file():
+        return None
+    man = json.loads(manifest_path.read_text(encoding="utf-8"))
+    poses = man.get("poses_mmap", "")
+    try:
+        sz = Path(poses).stat().st_size if poses and Path(poses).is_file() else 0
+    except OSError:
+        sz = 0
+    return {
+        "manifest": str(manifest_path),
+        "num_clips": man.get("num_clips"),
+        "total_frames": man.get("total_frames"),
+        "bytes_on_disk": sz,
+        "poses_mmap": poses,
+        "reused": True,
+    }
 
 
 def build_smoke_job_queue(
@@ -109,7 +134,12 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Preflight Campaign2 (Sprint 1 — infra, no entrenamiento Kanvis)")
     ap.add_argument("--config", type=str, default=None)
     ap.add_argument("--run-id", type=str, default=None)
-    ap.add_argument("--data-root", action="append", default=None, help="Override data_result (repetible)")
+    ap.add_argument(
+        "--data-root",
+        action="append",
+        default=None,
+        help="Carpeta data_result(s) o carpeta principal (escanea hijos datos*/data_result)",
+    )
     ap.add_argument("--skip-cache", action="store_true")
     ap.add_argument("--max-clips", type=int, default=0, help="Limit clips (debug)")
     ap.add_argument(
@@ -132,10 +162,24 @@ def main() -> int:
         action="store_true",
         help="Un job P1 mínimo (2 épocas) para validar train_v2 + GPU.",
     )
+    ap.add_argument(
+        "--debug",
+        action="store_true",
+        help="Modo rápido: ~50 clips, P1 corto (ver debug en campaign2_config.json). Usa con --p1.",
+    )
     args = ap.parse_args()
 
+    if args.debug and not args.p1 and not args.p1_smoke:
+        args.p1 = True
+
     cfg = load_campaign2_config(Path(args.config) if args.config else None)
+    if args.debug:
+        dbg = cfg.get("debug") or {}
+        if args.max_clips <= 0:
+            args.max_clips = int(dbg.get("max_clips", 50))
     phase = str(cfg.get("phase") or "sprint1_infra")
+    if args.debug:
+        phase = "debug_p1"
     run_id = args.run_id or read_current_run_id()
     if not run_id:
         print("ERROR: sin RUN_ID. Ejecuta: ./run_campaign2.sh new-run", file=sys.stderr)
@@ -158,6 +202,8 @@ def main() -> int:
     else:
         log(f"{YELLOW}Sprint 1: inventario + caché 12 Hz. NO es entrenamiento del modelo Kanvis.{RESET}")
     log(f"Log: {log_path}")
+    if args.debug:
+        log(f"{MAGENTA}DEBUG: max_clips={args.max_clips} — pipeline rápido (métricas no representativas).{RESET}")
     log(f"{BOLD}{'=' * 72}{RESET}")
 
     data_roots = resolve_data_roots(cfg, args.data_root)
@@ -218,7 +264,7 @@ def main() -> int:
             log(f"  poses mmap: {cache_result.poses_mmap_path}")
             log(f"  Caché en {time.perf_counter() - t_cache:.1f}s")
     elif args.skip_cache:
-        log(f"\n{YELLOW}--skip-cache: no se construye caché.{RESET}")
+        log(f"\n{YELLOW}--skip-cache: reutiliza manifest/mmap existente si hay.{RESET}")
 
     manifest_path = layout["cache_dir"] / "manifest.json"
     if cache_result:
@@ -276,6 +322,7 @@ def main() -> int:
             manifest_path=str(manifest_path),
             run_id=run_id,
             smoke=bool(args.p1_smoke),
+            debug=bool(args.debug),
         )
         for w in p1_warn:
             log(f"  {YELLOW}P1: {w}{RESET}")
@@ -295,6 +342,12 @@ def main() -> int:
     manifest_entries: List[Dict[str, Any]] = []
     if manifest_path.is_file():
         manifest_entries = json.loads(manifest_path.read_text(encoding="utf-8")).get("entries", [])
+
+    category_counts = _category_table(records) if records else _category_table_from_manifest(manifest_entries)
+    if not cache_result and manifest_path.is_file():
+        cache_result_reuse = _cache_info_from_manifest(manifest_path)
+    else:
+        cache_result_reuse = None
 
     max_parallel = int((cfg.get("parallelism") or {}).get("max_parallel_jobs", 8))
     rec_path = parallel_recommendation_path(run_id)
@@ -367,17 +420,26 @@ def main() -> int:
         "phase": phase,
         "purpose": queue_purpose,
         "data_roots": [str(p) for p in data_roots],
-        "num_clip_records": len(records),
-        "category_counts": _category_table(records) if records else {},
-        "cache": None
-        if not cache_result
-        else {
-            "manifest": str(cache_result.manifest_path),
-            "total_frames": cache_result.total_frames,
-            "num_clips": cache_result.num_clips,
-            "bytes_on_disk": cache_result.bytes_on_disk,
-            "poses_mmap": str(cache_result.poses_mmap_path),
+        "num_clip_records": len(records) or len(manifest_entries),
+        "category_counts": category_counts,
+        "job_queue_summary": {
+            "purpose": queue_purpose,
+            "num_jobs": len(jobs),
+            "job_ids": [j.job_id for j in jobs[:12]],
         },
+        "cache": None
+        if not cache_result and not cache_result_reuse
+        else (
+            {
+                "manifest": str(cache_result.manifest_path),
+                "total_frames": cache_result.total_frames,
+                "num_clips": cache_result.num_clips,
+                "bytes_on_disk": cache_result.bytes_on_disk,
+                "poses_mmap": str(cache_result.poses_mmap_path),
+            }
+            if cache_result
+            else cache_result_reuse
+        ),
         "split_summary": split_sum,
         "job_queue": str(qpath),
         "num_jobs": len(jobs),

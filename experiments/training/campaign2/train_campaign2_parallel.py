@@ -79,7 +79,18 @@ def main() -> int:
         )
         return 0
 
-    if purpose == "p1_train" or "p1" in purpose or phase == "sprint3_p1":
+    if purpose == "p1_eval" or phase == "sprint3_p1_eval":
+        print(
+            "\n"
+            + "=" * 72
+            + "\n"
+            "Campaign2 P1 eval: forward ventanas sobre best.pt\n"
+            "Tras terminar: ./run_campaign2.sh p1-eval-summary\n"
+            + "=" * 72
+            + "\n",
+            flush=True,
+        )
+    elif purpose == "p1_train" or ("p1" in purpose and "eval" not in purpose) or phase == "sprint3_p1":
         print(
             "\n"
             + "=" * 72

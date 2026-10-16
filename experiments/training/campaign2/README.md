@@ -4,24 +4,39 @@ Pipeline **nuevo e independiente** de `../campaign/`. No modifica el entrenamien
 
 **Plan maestro:** [`IAModel/docs/TRAINING2_CAMPAIGN2_MASTER_PLAN.md`](../../../docs/TRAINING2_CAMPAIGN2_MASTER_PLAN.md)
 
-## Sprint 3 — P1 train_v2 (implementado, MVP)
+## Raíz de datos (`--data-root`)
 
-Entrenamiento con **ventanas 8s/12Hz** sobre la caché mmap, modelos:
+Puedes pasar:
 
-- `masked_tcn64` (baseline)
-- `gru64_pooled`
+- Una carpeta `.../data_result` (o `data_results`) directamente, **o**
+- Una **carpeta principal** que contenga hijos `datos1/data_result`, `datos2/data_result`, etc.
+
+El preflight lista todas las raíces descubiertas y fusiona clips en una sola caché.
+
+## Pipeline debug (~minutos, 50 clips)
+
+Valida caché + train paralelo + eval sin esperar horas:
 
 ```bash
-# Prueba rápida (2 épocas, mismo RUN_ID con caché):
-./run_campaign2.sh p1-smoke --data-root /ruta/data_result
-
-# Campaña P1 (2 jobs × 3 semillas = 6 entrenamientos por defecto):
-./run_campaign2.sh preflight --p1 --skip-cache --data-root /ruta/data_result
-./run_campaign2.sh train
-# checkpoints: artifacts/runs/<RUN_ID>/jobs/v2_tcn64_baseline_s42/best.pt
+./run_campaign2.sh debug-pipeline --data-root /ruta/principal/
+# o solo: preflight --debug --p1 --data-root ...
 ```
 
-Limitaciones MVP (mejora en sprints siguientes): etiqueta clip-level (MIL fino), norm isotrópica avanzada, split agrupado staged/real, eval P1 dedicada post-train.
+Ajusta `debug` en `campaign2_config.json` (clips, épocas, 2 modelos). Para producción: **sin `--debug`**, sin `--max-clips`.
+
+## Sprint 3 — P1 train_v2 + eval
+
+```bash
+./run_campaign2.sh new-run && ./run_campaign2.sh probe
+./run_campaign2.sh preflight --p1 --data-root /ruta/principal/
+./run_campaign2.sh train
+./run_campaign2.sh p1-summary
+./run_campaign2.sh p1-eval          # eval ventanas sobre cada best.pt
+./run_campaign2.sh p1-eval-summary
+watch -n 5 ./run_campaign2.sh p1-status   # durante train
+```
+
+Limitaciones MVP: MIL fino, norm avanzada, split staged/real, calibración T, ensemble semillas.
 
 ## Sprint 2 — P0 baseline (implementado)
 

@@ -109,6 +109,13 @@ def format_cache_block(cache: Optional[Dict[str, Any]], wall_preflight_s: float)
     lines.append(_box_title("Caché 12 Hz (preflight)", w))
     if not cache:
         lines.append(_row("Estado", "no construida (--skip-cache o sin datos)", w, YELLOW))
+    elif cache.get("reused"):
+        mb = int(cache.get("bytes_on_disk", 0)) / (1024 * 1024)
+        lines.append(_row("Estado", "reutilizada (manifest existente)", w, GREEN))
+        lines.append(_row("Clips en caché", f"{cache.get('num_clips', 0):,}", w, GREEN))
+        lines.append(_row("Frames totales", f"{cache.get('total_frames', 0):,}", w, GREEN))
+        if mb > 0:
+            lines.append(_row("Tamaño mmap", f"{mb:.1f} MiB", w, CYAN))
     else:
         mb = int(cache.get("bytes_on_disk", 0)) / (1024 * 1024)
         lines.append(_row("Clips en caché", f"{cache.get('num_clips', 0):,}", w, GREEN))
@@ -127,7 +134,7 @@ def format_time_estimate_block(te: Dict[str, Any]) -> List[str]:
     lines: List[str] = []
     w = 72
     lines.append("")
-    lines.append(_box_title("Tiempo estimado — plan Sprint 2 P1 (aún NO entrena)", w))
+    lines.append(_box_title("Tiempo estimado — plan P1 train_v2", w))
     lines.append(
         f"{DIM}│{RESET}  {YELLOW}Heurística + calibración ×{te.get('calibration_factor_applied', 1)}{RESET}"
         f"  ·  paralelo ×{te.get('max_parallel_jobs', '?')} jobs  {DIM}│{RESET}"
@@ -190,7 +197,27 @@ def format_time_estimate_block(te: Dict[str, Any]) -> List[str]:
             f"par {GREEN}{fmt_duration(leg.get('parallel_seconds', 0))}{RESET}  {DIM}│{RESET}"
         )
 
-    lines.append(_row("Nota", "Sprint 1 solo caché; train Kanvis en Sprint 2", w, YELLOW))
+    note = te.get("note") or "Heurística; confirma con p1-smoke antes de campaña larga."
+    lines.append(_row("Nota", note[:52], w, YELLOW))
+    lines.append(_box_end(w))
+    return lines
+
+
+def format_queue_block(qs: Optional[Dict[str, Any]]) -> List[str]:
+    lines: List[str] = []
+    if not qs or not qs.get("num_jobs"):
+        return lines
+    w = 72
+    lines.append("")
+    lines.append(_box_title("Cola de jobs (próximo train)", w))
+    lines.append(_row("Propósito", str(qs.get("purpose", "?")), w, CYAN))
+    lines.append(_row("Nº jobs", str(qs.get("num_jobs", 0)), w, GREEN))
+    for jid in qs.get("job_ids") or []:
+        lines.append(f"{DIM}│{RESET}    • {CYAN}{jid}{RESET}{' ' * max(0, 50 - len(str(jid)))}{DIM}│{RESET}")
+    extra = int(qs.get("num_jobs", 0)) - len(qs.get("job_ids") or [])
+    if extra > 0:
+        lines.append(_row("…", f"+{extra} más", w, DIM))
+    lines.append(_row("Monitor", "./run_campaign2.sh p1-status", w, GREEN))
     lines.append(_box_end(w))
     return lines
 
@@ -212,6 +239,7 @@ def render_preflight_summary(
     parts.extend(format_cache_block(report.get("cache"), float(report.get("wall_seconds", 0))))
     if report.get("time_estimate"):
         parts.extend(format_time_estimate_block(report["time_estimate"]))
+    parts.extend(format_queue_block(report.get("job_queue_summary")))
 
     parts.append("")
     parts.append(

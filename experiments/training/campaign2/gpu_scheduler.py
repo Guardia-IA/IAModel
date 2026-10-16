@@ -147,6 +147,24 @@ class GpuJobScheduler:
             for fut in as_completed(futures):
                 res = fut.result()
                 results.append(res)
+                mark = "OK" if res.status == "ok" else "FAIL"
+                print(
+                    f"[scheduler] {mark} {res.job_id} "
+                    f"{res.wall_seconds:.1f}s → {res.output_dir}",
+                    flush=True,
+                )
+                if res.status != "ok" and res.error:
+                    print(f"  error: {res.error[:300]}", flush=True)
+                elif res.status != "ok":
+                    err_file = Path(res.output_dir) / "result.json"
+                    if err_file.is_file():
+                        try:
+                            wrap = json.loads(err_file.read_text(encoding="utf-8"))
+                            err = wrap.get("error") or (wrap.get("result") or {}).get("error")
+                            if err:
+                                print(f"  error: {str(err)[:300]}", flush=True)
+                        except Exception:
+                            pass
                 if on_complete:
                     on_complete(res)
         return results

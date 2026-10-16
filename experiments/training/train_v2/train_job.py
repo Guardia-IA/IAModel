@@ -146,6 +146,21 @@ def run_p1_train(params: Dict[str, Any], output_dir: Path) -> Dict[str, Any]:
     best_path = output_dir / "best.pt"
     bad_epochs = 0
     history: List[Dict[str, Any]] = []
+    progress_path = output_dir / "progress.jsonl"
+
+    def _log_progress(row: Dict[str, Any]) -> None:
+        row = dict(row)
+        row["job_id"] = params.get("job_id")
+        row["epochs_total"] = epochs
+        with open(progress_path, "a", encoding="utf-8") as pf:
+            pf.write(json.dumps(row, ensure_ascii=False) + "\n")
+        print(
+            f"[P1 {params.get('job_id')}] epoch {row.get('epoch')}/{epochs} "
+            f"loss={row.get('train_loss', 0):.4f} "
+            f"val_rec={row.get('val_clip_recall_pct', 0):.1f}% "
+            f"val_FP={row.get('val_clip_fp')} score={row.get('score', 0):.2f}",
+            flush=True,
+        )
 
     for epoch in range(1, epochs + 1):
         model.train()
@@ -185,12 +200,14 @@ def run_p1_train(params: Dict[str, Any], output_dir: Path) -> Dict[str, Any]:
             "score": score,
         }
         history.append(row)
+        _log_progress(row)
 
         if score > best_score:
             best_score = score
             bad_epochs = 0
             torch.save(
                 {
+                    "job_id": params.get("job_id"),
                     "model_state_dict": model.state_dict(),
                     "config": {
                         "arch": arch,
