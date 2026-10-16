@@ -1,0 +1,5 @@
+{
+  "run_id": "campaign2_20261016_100203",
+  "max_parallel_jobs": 1,
+  "source": "gpu_probe_campaign2.py"
+}

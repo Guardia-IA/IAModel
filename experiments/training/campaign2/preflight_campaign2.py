@@ -31,6 +31,9 @@ from campaign2_paths import (  # noqa: E402
 )
 from dataset_cache import build_pose_cache, collect_clip_records  # noqa: E402
 from gpu_scheduler import JobSpec  # noqa: E402
+from time_estimate import build_time_estimate_report  # noqa: E402
+from campaign2_paths import parallel_recommendation_path  # noqa: E402
+from training_time_estimate import fmt_duration  # noqa: E402
 
 BOLD = "\033[1m"
 CYAN = "\033[96m"
@@ -215,7 +218,47 @@ def main() -> int:
         enable_smoke=enable_smoke,
     )
 
-    log(f"\n{BOLD}5) Cola de jobs{RESET}")
+    manifest_entries: List[Dict[str, Any]] = []
+    if manifest_path.is_file():
+        manifest_entries = json.loads(manifest_path.read_text(encoding="utf-8")).get("entries", [])
+
+    max_parallel = int((cfg.get("parallelism") or {}).get("max_parallel_jobs", 8))
+    rec_path = parallel_recommendation_path(run_id)
+    if rec_path.is_file():
+        with open(rec_path, "r", encoding="utf-8") as f:
+            max_parallel = int(json.load(f).get("max_parallel_jobs", max_parallel))
+        log(f"\n{BOLD}5) Paralelismo (desde probe){RESET}")
+        log(f"  max_parallel_jobs = {CYAN}{max_parallel}{RESET} (ejecuta ./run_campaign2.sh probe si aún no)")
+    else:
+        log(f"\n{BOLD}5) Paralelismo{RESET}")
+        log(f"  {YELLOW}Sin probe aún; uso config max_parallel_jobs={max_parallel}{RESET}")
+        log(f"  Recomendado: ./run_campaign2.sh probe antes del preflight para afinar slots GPU")
+
+    time_est = build_time_estimate_report(
+        cfg,
+        manifest_entries=manifest_entries,
+        max_parallel_jobs=max_parallel,
+        run_id=run_id,
+    )
+    log(f"\n{BOLD}6) Estimación tiempo entrenamiento (plan Sprint 2 P1, NO ejecutado aún){RESET}")
+    log(f"  Ventanas/época (train / val_dev): {time_est['window_train_rows_per_epoch']} / {time_est['window_val_rows_per_epoch']}")
+    log(f"  Jobs planificados: {time_est['p1_planned_jobs']} × semillas → {time_est['p1_planned_training_runs']} entrenamientos")
+    log(f"  Factor calibración (subestimación legacy): ×{time_est['calibration_factor_applied']}")
+    log(f"  {BOLD}P1 secuencial (1 GPU, 1 job):{RESET} {CYAN}{time_est['p1_serial_human']}{RESET}")
+    log(
+        f"  {BOLD}P1 paralelo ({max_parallel} jobs):{RESET} {GREEN}{time_est['p1_parallel_human']}{RESET} "
+        f"({time_est['p1_parallel_seconds'] / 3600:.2f} h)"
+    )
+    if time_est.get("legacy_campaign_20_models_reference"):
+        leg = time_est["legacy_campaign_20_models_reference"]
+        log(
+            f"  Referencia legacy (20 arq. #41-like, 1 celda, calibrado): "
+            f"secuencial {fmt_duration(leg['serial_seconds_calibrated'])} → "
+            f"paralelo×{max_parallel} {fmt_duration(leg['parallel_seconds'])}"
+        )
+    log(f"  {YELLOW}{time_est['note']}{RESET}")
+
+    log(f"\n{BOLD}7) Cola de jobs (Sprint 1){RESET}")
     if not jobs:
         log(f"  {GREEN}Cola vacía (normal en Sprint 1).{RESET}")
         log(f"  El comando «train» no entrenará Kanvis hasta Sprint 2.")
@@ -261,6 +304,8 @@ def main() -> int:
         "num_jobs": len(jobs),
         "wall_seconds": round(time.perf_counter() - t0, 2),
         "log_file": str(log_path),
+        "max_parallel_jobs": max_parallel,
+        "time_estimate": time_est,
     }
     report_path = layout["reports_dir"] / "preflight_summary.json"
     with open(report_path, "w", encoding="utf-8") as f:

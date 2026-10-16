@@ -55,5 +55,27 @@
   "phase": "sprint1_infra",
   "_phase_comment": "sprint1_infra = solo inventario+caché+paralelismo. El entrenamiento real Kanvis empieza en sprint2 (P0/P1).",
   "sprint1_smoke_jobs": 0,
-  "_sprint1_smoke_jobs_comment": "Pon 3 solo para probar el scheduler (--smoke-test). 0 = cola vacía (recomendado hasta Sprint 2)."
+  "_sprint1_smoke_jobs_comment": "Pon 3 solo para probar el scheduler (--smoke-test). 0 = cola vacía (recomendado hasta Sprint 2).",
+  "time_estimate": {
+    "legacy_calibration_factor": 7.0,
+    "_legacy_calibration_factor_comment": "Oct/2026: preflight ~57 min/celda vs ~6.9 h wall real en bin_full (20 modelos).",
+    "p1_job_matrix": [
+      {
+        "job_id": "v2_tcn64_baseline",
+        "arch": "masked_tcn64",
+        "epochs": 100,
+        "batch_size": 64,
+        "seq_len": 96,
+        "seeds": 3
+      },
+      {
+        "job_id": "v2_gru64_pooled",
+        "arch": "gru64_pooled",
+        "epochs": 100,
+        "batch_size": 64,
+        "seq_len": 96,
+        "seeds": 3
+      }
+    ]
+  }
 }

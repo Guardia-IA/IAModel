@@ -1,0 +1,12 @@
+{
+  "run_id": "campaign2_20261016_100203",
+  "probe": {
+    "cuda_available": false,
+    "message": "CUDA no disponible; max_parallel_jobs=1 (CPU)",
+    "vram_total_mb": 0,
+    "vram_per_job_mb": 0,
+    "recommended_max_parallel_jobs": 1
+  },
+  "config_max_parallel_jobs": 8,
+  "chosen_max_parallel_jobs": 1
+}

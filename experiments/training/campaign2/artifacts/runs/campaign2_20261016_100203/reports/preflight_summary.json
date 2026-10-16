@@ -1,0 +1,59 @@
+{
+  "run_id": "campaign2_20261016_100203",
+  "phase": "sprint1_infra",
+  "purpose": "infra_only",
+  "data_roots": [],
+  "num_clip_records": 0,
+  "category_counts": {},
+  "cache": null,
+  "split_summary": {},
+  "job_queue": "/home/debian/dev/Proyectos/GuadIA-IAModel/IAModel/experiments/training/campaign2/artifacts/runs/campaign2_20261016_100203/jobs/queue.json",
+  "num_jobs": 0,
+  "wall_seconds": 0.0,
+  "log_file": "/home/debian/dev/Proyectos/GuadIA-IAModel/IAModel/experiments/training/campaign2/artifacts/runs/campaign2_20261016_100203/logs/preflight.log",
+  "max_parallel_jobs": 1,
+  "time_estimate": {
+    "run_id": "campaign2_20261016_100203",
+    "max_parallel_jobs": 1,
+    "window_train_rows_per_epoch": 0,
+    "window_val_rows_per_epoch": 0,
+    "p1_planned_jobs": 2,
+    "p1_planned_training_runs": 6,
+    "calibration_factor_applied": 7.0,
+    "note": "Heurística + factor calibración campaña Oct 2026 (estimador legacy subestima ~7×). Sprint 2 no implementado aún; esto es plan P1.",
+    "p1_serial_seconds": 529.2,
+    "p1_parallel_seconds": 582.1200000000001,
+    "p1_serial_human": "~8m 49s",
+    "p1_parallel_human": "~9m 42s",
+    "per_job": [
+      {
+        "job_id": "v2_tcn64_baseline",
+        "arch": "masked_tcn64",
+        "epochs": 100,
+        "batch_size": 64,
+        "seq_len": 96,
+        "seeds": 3,
+        "gpu_seconds_per_seed": 10.5,
+        "cpu_seconds_per_seed": 84.0,
+        "gpu_seconds_all_seeds": 31.5
+      },
+      {
+        "job_id": "v2_gru64_pooled",
+        "arch": "gru64_pooled",
+        "epochs": 100,
+        "batch_size": 64,
+        "seq_len": 96,
+        "seeds": 3,
+        "gpu_seconds_per_seed": 11.55,
+        "cpu_seconds_per_seed": 92.4,
+        "gpu_seconds_all_seeds": 34.650000000000006
+      }
+    ],
+    "legacy_campaign_20_models_reference": {
+      "experiments": 20,
+      "serial_seconds_calibrated": 113108.23999999999,
+      "parallel_seconds": 124419.064
+    },
+    "phase": "sprint1_infra"
+  }
+}
