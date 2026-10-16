@@ -209,7 +209,11 @@ EOF
     "$0" probe --run-id "$RUN_ID"
     "$0" preflight --run-id "$RUN_ID" --matrix --debug "${EXTRA_ARGS[@]}"
     "$0" train --run-id "$RUN_ID"
+    "$0" p1-summary --run-id "$RUN_ID"
+    "$0" p1-calibrate --run-id "$RUN_ID"
     "$0" p1-eval --run-id "$RUN_ID"
+    "$0" p1-eval-summary --run-id "$RUN_ID"
+    "$0" p1-seed-ensemble --run-id "$RUN_ID" || true
     "$0" ensemble-leaderboard --run-id "$RUN_ID"
     echo "[debug-matrix] OK — para producción: ./run_campaign2.sh matrix-pipeline --data-root ..."
     ;;
