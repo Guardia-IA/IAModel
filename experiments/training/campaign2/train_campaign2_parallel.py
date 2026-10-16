@@ -24,6 +24,7 @@ from campaign2_paths import (  # noqa: E402
     scheduler_log_path,
 )
 from gpu_scheduler import GpuJobScheduler, JobSpec  # noqa: E402
+from live_status import LiveStatusThread  # noqa: E402
 
 
 def _load_max_parallel(cfg: dict, run_id: str, override: Optional[int]) -> int:
@@ -42,6 +43,11 @@ def main() -> int:
     ap.add_argument("--config", type=str, default=None)
     ap.add_argument("--run-id", type=str, default=None)
     ap.add_argument("--max-parallel", type=int, default=None)
+    ap.add_argument(
+        "--no-live-status",
+        action="store_true",
+        help="No mostrar panel de progreso periódico en stderr",
+    )
     args = ap.parse_args()
 
     cfg = load_campaign2_config(Path(args.config) if args.config else None)
@@ -147,7 +153,18 @@ def main() -> int:
     )
 
     print(f"Campaign2 train-parallel run_id={run_id} jobs={len(jobs)} max_parallel={max_par}")
-    results = scheduler.run_queue(jobs, layout["jobs_dir"])
+    live = LiveStatusThread(run_id, interval_sec=4.0)
+    if not args.no_live_status:
+        live.start()
+        if live.active:
+            print(
+                "(Panel de jobs cada ~4s arriba; logs con prefijo [job_id] en stdout)\n",
+                flush=True,
+            )
+    try:
+        results = scheduler.run_queue(jobs, layout["jobs_dir"])
+    finally:
+        live.stop()
 
     summary = {
         "run_id": run_id,

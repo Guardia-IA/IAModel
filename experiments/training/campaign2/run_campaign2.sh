@@ -55,7 +55,8 @@ Uso: $0 <comando> [args...]
   summary              Muestra tablas/tiempos del último preflight (sin recomputar)
   p0-pipeline          new-run + probe + preflight --p0 + train + p0-summary
   p1-smoke             preflight --p1-smoke + train (2 épocas, prueba train_v2)
-  p1-status            Progreso de jobs P1 (época, val rec/FP)
+  p1-status            Snapshot de jobs (época, rec@FP, FP)
+  p1-status --watch    Refresco en bucle en el mismo terminal (Ctrl+C)
   p1-summary           Tabla final tras train P1
   p1-calibrate         Umbral en split threshold_calib (T) + threshold.json
   p1-eval              Cola eval sobre best.pt + train (paralelo)

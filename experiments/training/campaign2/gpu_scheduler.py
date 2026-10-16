@@ -99,16 +99,25 @@ class GpuJobScheduler:
         t0 = time.perf_counter()
         self._log("job_start", {"job_id": job.job_id, "cmd": cmd})
         try:
-            proc = subprocess.run(
+            proc = subprocess.Popen(
                 cmd,
                 cwd=str(self.campaign2_dir.parent),
                 env=env,
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
                 text=True,
+                bufsize=1,
             )
+            stdout_chunks: List[str] = []
+            assert proc.stdout is not None
+            for line in proc.stdout:
+                stdout_chunks.append(line)
+                print(f"[{job.job_id}] {line}", end="", flush=True)
+            proc.wait()
             wall = time.perf_counter() - t0
-            (out_dir / "stdout.txt").write_text(proc.stdout or "", encoding="utf-8")
-            (out_dir / "stderr.txt").write_text(proc.stderr or "", encoding="utf-8")
+            combined = "".join(stdout_chunks)
+            (out_dir / "stdout.txt").write_text(combined, encoding="utf-8")
+            (out_dir / "stderr.txt").write_text("", encoding="utf-8")
             status = "ok" if proc.returncode == 0 else "failed"
             self._log(
                 "job_end",
@@ -120,7 +129,7 @@ class GpuJobScheduler:
                 returncode=proc.returncode,
                 wall_seconds=wall,
                 output_dir=str(out_dir),
-                error=None if proc.returncode == 0 else (proc.stderr or "")[:2000],
+                error=None if proc.returncode == 0 else combined[-2000:],
             )
         except Exception as exc:
             wall = time.perf_counter() - t0
