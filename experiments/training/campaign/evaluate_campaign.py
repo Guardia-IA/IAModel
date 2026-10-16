@@ -87,6 +87,7 @@ def collect_binary_predictions(
     training_plan_path: Path,
     split_name: str = "val",
     batch_size: int = 64,
+    num_workers: int = 2,
 ) -> Tuple[List[Dict[str, Any]], np.ndarray, np.ndarray, np.ndarray]:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     checkpoint = torch.load(model_path, map_location=device, weights_only=False)
@@ -104,7 +105,7 @@ def collect_binary_predictions(
         dataset_split=split_name,
         checkpoint=checkpoint,
     )
-    loader = DataLoader(ds, batch_size=batch_size, shuffle=False, num_workers=2)
+    loader = DataLoader(ds, batch_size=batch_size, shuffle=False, num_workers=int(num_workers))
 
     model = build_model(arch, input_dim, num_classes, cfg).to(device)
     model.load_state_dict(checkpoint["model_state_dict"])

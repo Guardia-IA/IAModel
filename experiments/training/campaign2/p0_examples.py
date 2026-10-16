@@ -10,7 +10,41 @@ TRAINING_DIR = Path(__file__).resolve().parent.parent
 if str(TRAINING_DIR) not in sys.path:
     sys.path.insert(0, str(TRAINING_DIR))
 
+from dataclasses import replace
+
 from train_model_operations import PoseExample, _example_uid, collect_examples  # type: ignore
+
+
+def map_examples_to_checkpoint_labels(
+    examples: List[PoseExample],
+    label_to_idx: Dict[int, int],
+    *,
+    robbery_class: int = 6,
+) -> List[PoseExample]:
+    """
+    Modelos binarios (#41/#48): label_to_idx suele ser {0, 6}.
+    Categorías fuera del checkpoint (p. ej. 12) se mapean a la clase negativa del .pt.
+    """
+    allowed = set(int(k) for k in label_to_idx.keys())
+    if not allowed:
+        return list(examples)
+    neg_keys = sorted(k for k in allowed if int(k) != int(robbery_class))
+    neg_label = int(neg_keys[0]) if neg_keys else int(min(allowed))
+    rob_label = int(robbery_class) if int(robbery_class) in allowed else neg_label
+
+    mapped: List[PoseExample] = []
+    for ex in examples:
+        raw = int(ex.label)
+        if raw in allowed:
+            new_lab = raw
+        elif raw == int(robbery_class):
+            new_lab = rob_label
+        else:
+            new_lab = neg_label
+        if new_lab != raw:
+            ex = replace(ex, label=new_lab, action_label=ex.action_label or raw)
+        mapped.append(ex)
+    return mapped
 
 
 def load_manifest(manifest_path: Path) -> Dict[str, Any]:

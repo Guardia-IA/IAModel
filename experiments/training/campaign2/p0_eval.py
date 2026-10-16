@@ -23,6 +23,7 @@ from p0_examples import (  # noqa: E402
     collect_examples_for_manifest,
     load_manifest,
     manifest_entries_for_split,
+    map_examples_to_checkpoint_labels,
 )
 from train_model_operations import build_model  # noqa: E402
 from train_v2.legacy_preprocess import poses_to_model_input, window_starts  # noqa: E402
@@ -208,12 +209,19 @@ def run_p0_eval(params: Dict[str, Any], output_dir: Path) -> Dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     if mode == "legacy_clip":
+        device_peek = torch.device("cpu")
+        ck_peek = torch.load(model_path, map_location=device_peek, weights_only=False)
+        label_to_idx = ck_peek["label_to_idx"]
+        robbery_class = int(params.get("robbery_class", 6))
         examples = collect_examples_for_manifest(
             data_roots,
             manifest,
             eval_split=eval_split,
             pose_source=pose_source,
             single_user_only=single_user_only,
+        )
+        examples = map_examples_to_checkpoint_labels(
+            examples, label_to_idx, robbery_class=robbery_class
         )
         collect_binary_predictions = _import_collect_binary()
         plan = _dummy_plan_path(output_dir)
@@ -223,6 +231,7 @@ def run_p0_eval(params: Dict[str, Any], output_dir: Path) -> Dict[str, Any]:
             training_plan_path=plan,
             split_name="val",
             batch_size=batch_size,
+            num_workers=0,
         )
         clip_records = [
             {
