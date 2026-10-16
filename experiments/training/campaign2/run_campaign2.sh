@@ -48,9 +48,11 @@ Uso: $0 <comando> [args...]
 
   new-run              Crea RUN_ID campaign2_YYYYMMDD_HHMMSS
   probe [--run-id ID]  gpu_probe_campaign2.py
-  preflight            Inventario + caché 12Hz (NO entrena Kanvis)
-  train                Ejecuta jobs/queue.json (vacío salvo --smoke-test)
+  preflight            Inventario + caché 12Hz (añade --p0 para cola baseline)
+  train                Ejecuta jobs/queue.json (P0 tras preflight --p0)
+  p0-summary           Agrega eval P0 → reports/p0_baseline.json
   summary              Muestra tablas/tiempos del último preflight (sin recomputar)
+  p0-pipeline          new-run + probe + preflight --p0 + train + p0-summary
   pipeline             new-run + probe + preflight (sin train; Sprint 1)
   smoke-pipeline       new-run + probe + preflight --smoke-test + train
 
@@ -60,7 +62,9 @@ Variables:
 Ejemplo:
   $0 new-run
   $0 preflight --data-root /media/8TB/.../data_result
-  $0 probe && $0 train
+  export CAMPAIGN2_MODEL_41=/ruta/modelo_41.pt CAMPAIGN2_MODEL_48=/ruta/modelo_48.pt
+  $0 preflight --p0 --data-root /media/8TB/.../data_result
+  $0 probe && $0 train && $0 p0-summary
 EOF
     ;;
   new-run)
@@ -101,6 +105,20 @@ EOF
     parse_run_id_from_args "${EXTRA_ARGS[@]}" || true
     ensure_run_id
     "$PY" show_preflight_summary.py --run-id "$RUN_ID" "${EXTRA_ARGS[@]}"
+    ;;
+  p0-summary)
+    parse_run_id_from_args "${EXTRA_ARGS[@]}" || true
+    ensure_run_id
+    "$PY" p0_summarize.py --run-id "$RUN_ID" "${EXTRA_ARGS[@]}"
+    ;;
+  p0-pipeline)
+    "$0" new-run
+    RUN_ID="$(tr -d '[:space:]' < "$CURRENT_RUN_FILE")"
+    export RUN_ID
+    "$0" probe --run-id "$RUN_ID"
+    "$0" preflight --run-id "$RUN_ID" --p0 "${EXTRA_ARGS[@]}"
+    "$0" train --run-id "$RUN_ID"
+    "$0" p0-summary --run-id "$RUN_ID"
     ;;
   smoke-pipeline)
     "$0" new-run

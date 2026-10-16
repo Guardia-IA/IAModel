@@ -87,10 +87,17 @@ def _job_smoke_train(params: Dict[str, Any], output_dir: Path) -> Dict[str, Any]
     }
 
 
+def _job_p0_eval(params: Dict[str, Any], output_dir: Path) -> Dict[str, Any]:
+    from p0_eval import run_p0_eval
+
+    return run_p0_eval(params, output_dir)
+
+
 HANDLERS = {
     "smoke": _job_smoke,
     "cache_touch": _job_cache_touch,
     "smoke_train": _job_smoke_train,
+    "p0_eval": _job_p0_eval,
 }
 
 

@@ -79,7 +79,18 @@ def main() -> int:
         )
         return 0
 
-    if purpose == "smoke_test" or phase == "sprint1_infra":
+    if purpose == "p0_baseline" or phase == "sprint2_p0":
+        print(
+            "\n"
+            + "=" * 72
+            + "\n"
+            "Campaign2 P0: evaluación incumbent #41/#48 (forward, sin re-entrenar).\n"
+            "Tras terminar: ./run_campaign2.sh p0-summary\n"
+            + "=" * 72
+            + "\n",
+            flush=True,
+        )
+    elif purpose == "smoke_test" or phase == "sprint1_infra":
         print(
             "\n"
             + "=" * 72

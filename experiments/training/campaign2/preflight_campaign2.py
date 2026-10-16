@@ -35,8 +35,10 @@ from time_estimate import build_time_estimate_report  # noqa: E402
 from campaign2_paths import parallel_recommendation_path  # noqa: E402
 from training_time_estimate import fmt_duration  # noqa: E402
 from preflight_display import render_preflight_summary  # noqa: E402
+from p0_jobs import build_p0_job_queue  # noqa: E402
 
 BOLD = "\033[1m"
+DIM = "\033[2m"
 CYAN = "\033[96m"
 YELLOW = "\033[93m"
 GREEN = "\033[92m"
@@ -114,6 +116,11 @@ def main() -> int:
         action="store_true",
         help="Añade jobs smoke al scheduler (probar paralelismo). No entrena el modelo de producción.",
     )
+    ap.add_argument(
+        "--p0",
+        action="store_true",
+        help="Sprint 2: encola eval P0 (#41/#48, P0.A clip + P0.B ventanas). Requiere rutas en p0_incumbent o env CAMPAIGN2_MODEL_*.",
+    )
     args = ap.parse_args()
 
     cfg = load_campaign2_config(Path(args.config) if args.config else None)
@@ -133,7 +140,10 @@ def main() -> int:
     log(f"{BOLD}{'=' * 72}{RESET}")
     log(f"{BOLD}Campaign2 PREFLIGHT — {phase}{RESET}")
     log(f"RUN_ID={CYAN}{run_id}{RESET}")
-    log(f"{YELLOW}Sprint 1: inventario + caché 12 Hz. NO es entrenamiento del modelo Kanvis.{RESET}")
+    if args.p0 or phase.startswith("sprint2"):
+        log(f"{CYAN}Sprint 2 P0: inventario + caché + cola eval incumbent (no entrena v2 aún).{RESET}")
+    else:
+        log(f"{YELLOW}Sprint 1: inventario + caché 12 Hz. NO es entrenamiento del modelo Kanvis.{RESET}")
     log(f"Log: {log_path}")
     log(f"{BOLD}{'=' * 72}{RESET}")
 
@@ -216,8 +226,36 @@ def main() -> int:
         cfg,
         manifest_path=manifest_path if manifest_path.is_file() else None,
         run_id=run_id,
-        enable_smoke=enable_smoke,
+        enable_smoke=enable_smoke and not args.p0,
     )
+
+    p0_warnings: List[str] = []
+    queue_purpose = "smoke_test" if jobs else "infra_only"
+    queue_phase = phase
+    if args.p0:
+        if not manifest_path.is_file():
+            log(f"\n{YELLOW}--p0: falta manifest (ejecuta preflight con --data-root y sin --skip-cache).{RESET}")
+        elif not data_roots:
+            log(f"\n{YELLOW}--p0: sin data_roots (necesarios para P0.A legacy_clip).{RESET}")
+        else:
+            p0_jobs, p0_warnings = build_p0_job_queue(
+                cfg,
+                manifest_path=manifest_path,
+                data_roots=data_roots,
+                run_id=run_id,
+            )
+            for w in p0_warnings:
+                log(f"  {YELLOW}P0: {w}{RESET}")
+            if p0_jobs:
+                jobs = p0_jobs
+                queue_purpose = "p0_baseline"
+                queue_phase = "sprint2_p0"
+                log(f"\n{BOLD}7b) Cola P0 (Sprint 2){RESET}")
+                log(f"  {GREEN}{len(jobs)} jobs eval{RESET} (legacy_clip + ventanas × single_user on/off)")
+                for j in jobs:
+                    log(f"    - {j.job_id} ({j.params.get('mode')}, model {j.params.get('model_id')})")
+            else:
+                log(f"\n{YELLOW}--p0: cola vacía (configura rutas a modelo_41/modelo_48).{RESET}")
 
     manifest_entries: List[Dict[str, Any]] = []
     if manifest_path.is_file():
@@ -259,11 +297,14 @@ def main() -> int:
         )
     log(f"  {YELLOW}{time_est['note']}{RESET}")
 
-    log(f"\n{BOLD}7) Cola de jobs (Sprint 1){RESET}")
+    log(f"\n{BOLD}7) Cola de jobs{RESET}")
     if not jobs:
-        log(f"  {GREEN}Cola vacía (normal en Sprint 1).{RESET}")
-        log(f"  El comando «train» no entrenará Kanvis hasta Sprint 2.")
-        log(f"  Para probar el scheduler: preflight --smoke-test && ./run_campaign2.sh train")
+        log(f"  {GREEN}Cola vacía.{RESET}")
+        if not args.p0:
+            log(f"  Sprint 1: usa preflight --p0 tras configurar checkpoints para baseline.")
+            log(f"  Scheduler: preflight --smoke-test && ./run_campaign2.sh train")
+    elif queue_purpose == "p0_baseline":
+        log(f"  Siguiente: ./run_campaign2.sh train && ./run_campaign2.sh p0-summary")
     else:
         log(f"  {YELLOW}Modo smoke-test:{RESET} {len(jobs)} jobs (scheduler, NO modelo Kanvis)")
         for j in jobs:
@@ -271,8 +312,8 @@ def main() -> int:
 
     queue_payload = {
         "run_id": run_id,
-        "phase": phase,
-        "purpose": "smoke_test" if jobs else "infra_only",
+        "phase": queue_phase,
+        "purpose": queue_purpose,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "jobs": [
             {"job_id": j.job_id, "job_type": j.job_type, "params": j.params, "priority": j.priority}
@@ -287,7 +328,7 @@ def main() -> int:
     preflight_report = {
         "run_id": run_id,
         "phase": phase,
-        "purpose": queue_payload["purpose"],
+        "purpose": queue_purpose,
         "data_roots": [str(p) for p in data_roots],
         "num_clip_records": len(records),
         "category_counts": _category_table(records) if records else {},
