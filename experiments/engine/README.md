@@ -36,7 +36,7 @@ python engine/export_yolo_pose_engine.py \
 
 Genera `yolo26s-pose.engine` y `yolo26s-pose.engine.manifest.json` (hash, GPU, imgsz, versiones).
 
-**Importante — C1 Triton pose:** el `.engine` de `export_yolo_pose_engine.py` / Ultralytics **no** es el mismo formato que el `model.plan` de Triton (`tensorrt_plan`). Triton espera un plan compilado con **trtexec en la imagen** `nvcr.io/nvidia/tritonserver:25.02-py3` (u la que use el piloto). Copiar el `.engine` Ultralytics a `model.plan` provoca fallo de deserialización (magic 833 vs plan TRT).
+**Importante — C1 Triton pose:** el `.engine` de `export_yolo_pose_engine.py` / Ultralytics **no** es el mismo formato que el `model.plan` de Triton (`tensorrt_plan`). Triton espera un plan compilado con **trtexec** (p. ej. imagen `nvcr.io/nvidia/tensorrt:25.02-py3`; la imagen `tritonserver:25.02-py3` no trae `trtexec` en PATH). Runbook piloto: `engine/PILOTO_WUDALKOT_P0_CHECKLIST.md`. Copiar el `.engine` Ultralytics a `model.plan` provoca fallo de deserialización (magic 833 vs plan TRT).
 
 Para piloto wudalkot use `build_triton_pose_plan.sh`:
 

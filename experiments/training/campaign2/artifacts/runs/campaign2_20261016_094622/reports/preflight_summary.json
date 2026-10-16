@@ -1,0 +1,9 @@
+{
+  "run_id": "campaign2_20261016_094622",
+  "data_roots": [],
+  "num_clip_records": 0,
+  "cache": null,
+  "split_summary": {},
+  "job_queue": "/home/debian/dev/Proyectos/GuadIA-IAModel/IAModel/experiments/training/campaign2/artifacts/runs/campaign2_20261016_094622/jobs/queue.json",
+  "num_jobs": 3
+}

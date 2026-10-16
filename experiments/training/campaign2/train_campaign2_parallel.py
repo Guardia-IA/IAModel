@@ -1,0 +1,115 @@
+#!/usr/bin/env python3
+"""Ejecuta la cola de jobs Campaign2 en paralelo (Sprint 1)."""
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Optional
+
+CAMPAIGN2_DIR = Path(__file__).resolve().parent
+TRAINING_DIR = CAMPAIGN2_DIR.parent
+for p in (TRAINING_DIR, CAMPAIGN2_DIR):
+    if str(p) not in sys.path:
+        sys.path.insert(0, str(p))
+
+from campaign2_paths import (  # noqa: E402
+    job_queue_path,
+    load_campaign2_config,
+    parallel_recommendation_path,
+    read_current_run_id,
+    run_layout,
+    scheduler_log_path,
+)
+from gpu_scheduler import GpuJobScheduler, JobSpec  # noqa: E402
+
+
+def _load_max_parallel(cfg: dict, run_id: str, override: Optional[int]) -> int:
+    if override is not None and override > 0:
+        return override
+    rec_path = parallel_recommendation_path(run_id)
+    if rec_path.is_file():
+        with open(rec_path, "r", encoding="utf-8") as f:
+            rec = json.load(f)
+        return int(rec.get("max_parallel_jobs", cfg.get("parallelism", {}).get("max_parallel_jobs", 4)))
+    return int(cfg.get("parallelism", {}).get("max_parallel_jobs", 4))
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--config", type=str, default=None)
+    ap.add_argument("--run-id", type=str, default=None)
+    ap.add_argument("--max-parallel", type=int, default=None)
+    args = ap.parse_args()
+
+    cfg = load_campaign2_config(Path(args.config) if args.config else None)
+    run_id = args.run_id or read_current_run_id()
+    if not run_id:
+        print("ERROR: sin RUN_ID", file=sys.stderr)
+        return 2
+
+    qpath = job_queue_path(run_id)
+    if not qpath.is_file():
+        print(f"ERROR: falta cola {qpath}. Ejecuta preflight_campaign2.py", file=sys.stderr)
+        return 2
+
+    with open(qpath, "r", encoding="utf-8") as f:
+        queue = json.load(f)
+
+    jobs = [
+        JobSpec(
+            job_id=str(j["job_id"]),
+            job_type=str(j["job_type"]),
+            params=dict(j.get("params") or {}),
+            priority=int(j.get("priority", 0)),
+        )
+        for j in queue.get("jobs", [])
+    ]
+    if not jobs:
+        print("WARN: cola vacía")
+        return 0
+
+    max_par = _load_max_parallel(cfg, run_id, args.max_parallel)
+    par_cfg = cfg.get("parallelism") or {}
+    layout = run_layout(run_id)
+    scheduler = GpuJobScheduler(
+        run_id=run_id,
+        campaign2_dir=CAMPAIGN2_DIR,
+        max_parallel=max_par,
+        log_path=scheduler_log_path(run_id),
+        cuda_device_index=int(par_cfg.get("cuda_device_index", 0)),
+    )
+
+    print(f"Campaign2 train-parallel run_id={run_id} jobs={len(jobs)} max_parallel={max_par}")
+    results = scheduler.run_queue(jobs, layout["jobs_dir"])
+
+    summary = {
+        "run_id": run_id,
+        "finished_at": datetime.now(timezone.utc).isoformat(),
+        "max_parallel": max_par,
+        "results": [
+            {
+                "job_id": r.job_id,
+                "status": r.status,
+                "returncode": r.returncode,
+                "wall_seconds": round(r.wall_seconds, 3),
+                "output_dir": r.output_dir,
+                "error": r.error,
+            }
+            for r in results
+        ],
+    }
+    out_path = layout["reports_dir"] / "train_parallel_summary.json"
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump(summary, f, indent=2, ensure_ascii=False)
+        f.write("\n")
+
+    failed = [r for r in results if r.status != "ok"]
+    print(json.dumps(summary, indent=2))
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

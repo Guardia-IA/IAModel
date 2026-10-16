@@ -1,0 +1,13 @@
+{
+  "job_id": "smoke_02",
+  "run_id": "campaign2_20261016_094622",
+  "status": "ok",
+  "wall_seconds": 1.5633398240897804,
+  "result": {
+    "job_type": "smoke",
+    "gpu": {
+      "cuda_available": false
+    }
+  },
+  "error": null
+}

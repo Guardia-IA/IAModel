@@ -1,0 +1,11 @@
+{
+  "job_id": "smoke_01",
+  "job_type": "smoke_train",
+  "run_id": "campaign2_20261016_094622",
+  "params": {
+    "batch_size": 64,
+    "seq_len": 96,
+    "feature_dim": 62,
+    "steps": 8
+  }
+}

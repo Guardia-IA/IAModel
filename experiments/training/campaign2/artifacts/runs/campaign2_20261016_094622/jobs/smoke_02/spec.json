@@ -1,0 +1,8 @@
+{
+  "job_id": "smoke_02",
+  "job_type": "smoke",
+  "run_id": "campaign2_20261016_094622",
+  "params": {
+    "sleep_seconds": 0.6
+  }
+}

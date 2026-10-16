@@ -1,0 +1,11 @@
+{
+  "job_id": "smoke_01",
+  "run_id": "campaign2_20261016_094622",
+  "status": "ok",
+  "wall_seconds": 0.9622645779745653,
+  "result": {
+    "job_type": "smoke_train",
+    "skipped": "no_cuda"
+  },
+  "error": null
+}

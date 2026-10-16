@@ -1,0 +1,56 @@
+{
+  "version": 2,
+  "description": "Kanvis Campaign2 — ventanas, splits agrupados, entrenamiento paralelo en GPU",
+  "data_roots": [],
+  "_data_roots_comment": "Rutas a .../data_result. Override: preflight --data-root /path (repetible). Si vacío, preflight usa PATH_ROOTS de config.py del legacy si existe.",
+  "class_maps_dir": "../campaign/class_maps",
+  "robbery_class": 6,
+  "single_user_only": false,
+  "pose_source": "full",
+  "temporal": {
+    "window_seconds": 8.0,
+    "target_hz": 12.0,
+    "stride_seconds": 1.0,
+    "seq_len": 96
+  },
+  "split": {
+    "strategy": "stratified_group_hybrid",
+    "ratios": {
+      "train": 0.7,
+      "val_dev": 0.1,
+      "threshold_calib": 0.1,
+      "frozen_test": 0.1
+    },
+    "seed": 42,
+    "group_keys": ["video_source", "clip_name_prefix"],
+    "embargo_seconds": 8.0,
+    "min_robbery_per_eval_split": 5,
+    "_comment": "Sprint 1: split básico por group_id=hash(clip folder); Sprint 2+ mejora staged/real"
+  },
+  "cache": {
+    "enabled": true,
+    "use_shm": true,
+    "shm_basename": "kanvis_pose_12hz",
+    "dtype": "float32",
+    "build_parallel_shards": 0,
+    "_comment": "build_parallel_shards>0 reparte clips en N workers CPU (futuro)"
+  },
+  "parallelism": {
+    "max_parallel_jobs": 8,
+    "vram_reserve_mb": 2048,
+    "auto_tune_from_probe": true,
+    "probe_batch_size": 64,
+    "probe_seq_len": 96,
+    "probe_feature_dim": 62,
+    "oom_retry_halve_batch": true,
+    "max_dataloader_workers_per_job": 4,
+    "max_cpu_workers_total": 32,
+    "cuda_device_index": 0
+  },
+  "phases": {
+    "p0_baseline": { "enabled": false },
+    "p1_train_v2": { "enabled": false }
+  },
+  "seeds": [17, 42, 103],
+  "sprint1_smoke_jobs": 3
+}

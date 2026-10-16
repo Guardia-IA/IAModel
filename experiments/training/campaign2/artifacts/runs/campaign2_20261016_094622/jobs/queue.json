@@ -1,0 +1,33 @@
+{
+  "run_id": "campaign2_20261016_094622",
+  "created_at": "2026-10-16T07:46:25.985737+00:00",
+  "jobs": [
+    {
+      "job_id": "smoke_01",
+      "job_type": "smoke_train",
+      "params": {
+        "batch_size": 64,
+        "seq_len": 96,
+        "feature_dim": 62,
+        "steps": 8
+      },
+      "priority": 0
+    },
+    {
+      "job_id": "smoke_02",
+      "job_type": "smoke",
+      "params": {
+        "sleep_seconds": 0.6
+      },
+      "priority": 0
+    },
+    {
+      "job_id": "smoke_03",
+      "job_type": "smoke",
+      "params": {
+        "sleep_seconds": 0.7
+      },
+      "priority": 0
+    }
+  ]
+}

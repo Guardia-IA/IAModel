@@ -1,4 +1,10 @@
 #!/usr/bin/env bash
+# AVISO (15-oct-2026): para el piloto, la vía OFICIAL es la de C1 (kanvis-monitoring):
+#   scripts/export_triton_pose_onnx.py (dynamic=True, batch=32, end2end, opset 17)
+#   + scripts/triton_pose_entrypoint.sh (trtexec con shapes 1/16/32 e inputIOFormats fp16:chw).
+# Este script exporta ONNX estático y compila sin perfiles de batch: su plan NO es compatible
+# con el config.pbtxt de C1 (max_batch 32, entrada FP16). Úsalo solo para pruebas locales.
+#
 # Genera un model.plan (TensorRT crudo) compatible con Triton nvcr.io/nvidia/tritonserver:25.02-py3
 # a partir de yolo26s-pose.pt (u otro YOLO pose).
 #
@@ -19,7 +25,8 @@
 
 set -euo pipefail
 
-TRITON_IMAGE="${TRITON_IMAGE:-nvcr.io/nvidia/tritonserver:25.02-py3}"
+# Imagen Triton server NO incluye trtexec en PATH; compilar plan con TensorRT 25.02 (misma major que sidecar).
+TRTEXEC_IMAGE="${TRTEXEC_IMAGE:-nvcr.io/nvidia/tensorrt:25.02-py3}"
 PYTHON_IMAGE="${PYTHON_IMAGE:-python:3.12-slim}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 HOST_DIR=""
@@ -101,15 +108,21 @@ PY
     "
 fi
 
-echo "=== 2/2 trtexec → plan TensorRT (imagen Triton; requiere --gpus all y driver NVIDIA) ==="
+echo "=== 2/2 trtexec → plan TensorRT ($TRTEXEC_IMAGE; --gpus all + driver NVIDIA) ==="
 docker run --rm --gpus all \
   -v "$HOST_DIR:$WORK" \
-  "$TRITON_IMAGE" \
-  trtexec \
-    --onnx="$ONNX_PATH" \
-    --saveEngine="$PLAN_PATH" \
-    $FP16 \
-    --workspace=4096
+  --entrypoint bash \
+  "$TRTEXEC_IMAGE" \
+  -lc "
+    TRTEXEC=\$(command -v trtexec || true)
+    [[ -z \"\$TRTEXEC\" && -x /usr/src/tensorrt/bin/trtexec ]] && TRTEXEC=/usr/src/tensorrt/bin/trtexec
+    [[ -z \"\$TRTEXEC\" ]] && { echo 'ERROR: trtexec no encontrado en imagen'; exit 1; }
+    \"\$TRTEXEC\" \
+      --onnx='$ONNX_PATH' \
+      --saveEngine='$PLAN_PATH' \
+      $FP16 \
+      --workspace=4096
+  "
 
 echo ""
 echo "Plan generado: $HOST_DIR/$OUT_NAME"

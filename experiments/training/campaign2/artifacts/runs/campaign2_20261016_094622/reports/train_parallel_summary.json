@@ -1,0 +1,31 @@
+{
+  "run_id": "campaign2_20261016_094622",
+  "finished_at": "2026-10-16T07:46:31.810545+00:00",
+  "max_parallel": 1,
+  "results": [
+    {
+      "job_id": "smoke_01",
+      "status": "ok",
+      "returncode": 0,
+      "wall_seconds": 1.328,
+      "output_dir": "/home/debian/dev/Proyectos/GuadIA-IAModel/IAModel/experiments/training/campaign2/artifacts/runs/campaign2_20261016_094622/jobs/smoke_01",
+      "error": null
+    },
+    {
+      "job_id": "smoke_02",
+      "status": "ok",
+      "returncode": 0,
+      "wall_seconds": 1.921,
+      "output_dir": "/home/debian/dev/Proyectos/GuadIA-IAModel/IAModel/experiments/training/campaign2/artifacts/runs/campaign2_20261016_094622/jobs/smoke_02",
+      "error": null
+    },
+    {
+      "job_id": "smoke_03",
+      "status": "ok",
+      "returncode": 0,
+      "wall_seconds": 2.212,
+      "output_dir": "/home/debian/dev/Proyectos/GuadIA-IAModel/IAModel/experiments/training/campaign2/artifacts/runs/campaign2_20261016_094622/jobs/smoke_03",
+      "error": null
+    }
+  ]
+}
