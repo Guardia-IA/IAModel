@@ -1,0 +1,41 @@
+{
+  "kanvis_triton_pose_root": "",
+  "triton_url": "kanvis-pilot.ai:47811",
+  "http_health_base": "http://kanvis-pilot.ai:47810",
+  "model_name": "yolo26s-pose",
+  "pose_config": "",
+  "bundle_json": "",
+  "infer_timeout_seconds": 300,
+  "triton_batch_size": 8,
+  "tracker": "bytetrack",
+  "parse_conf": 0.18,
+  "parallel_clips": null,
+  "output_base": "/media/8TB/DatosEntrenamiento/data_clips/data_triton_pose",
+  "pipeline": {
+    "input_root": "",
+    "data_result_subdir": "data_result",
+    "temp_clips_subdir": "temp_clips"
+  },
+  "ffmpeg": {
+    "clip_scale_height": 1080,
+    "vaapi_device": null,
+    "delete_temp_videos": true
+  },
+  "filters": {
+    "single_user_only": true,
+    "skip_existing_output": true,
+    "min_kp_conf": 0.5,
+    "min_clip_duration_sec": { "enabled": true, "value": 0.5 },
+    "max_clip_duration_sec": { "enabled": true, "value": 120.0 },
+    "min_user_seconds": { "enabled": false, "value": 0.0 },
+    "min_coverage_ratio": { "enabled": true, "value": 0.8 }
+  },
+  "category_limits_path": "../config_pose_extraction.json",
+  "category_limits": {},
+  "time_estimate": {
+    "default_fps": 12.0,
+    "full_clip_default_sec": 10.0,
+    "triton_sec_per_frame": 0.022,
+    "ffmpeg_sec_per_clip": 6.0
+  }
+}
