@@ -40,9 +40,11 @@ Variables:
 
 Flujo típico (mismo equipo que Triton):
   $0 check-triton
-  $0 preflight-csv --input-root /media/8TB/.../csv_buenos \\
-      --output-base /media/8TB/.../data_triton_pose --probe-videos
-  $0 extract-csv --input-root /media/8TB/.../csv_buenos \\
+  $0 preflight-csv \\
+      --input-root /home/angel/DatosEntrenamiento/Videos/DatosOnline_3/sessions \\
+      --output-base /media/8TB/.../data_triton_pose
+  $0 extract-csv \\
+      --input-root /ruta/carpeta1 --input-root /ruta/carpeta2 \\
       --output-base /media/8TB/.../data_triton_pose
 
 Config: triton_pose_extract_config.json (filtros on/off, límites por categoría)

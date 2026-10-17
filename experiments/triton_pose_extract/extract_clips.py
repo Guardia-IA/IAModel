@@ -26,6 +26,29 @@ def _config_path(args: argparse.Namespace) -> Path | None:
     return Path(args.config) if getattr(args, "config", "") else None
 
 
+def _resolve_input_roots(args: argparse.Namespace, raw: dict) -> list[Path]:
+    roots: list[Path] = []
+    for p in getattr(args, "input_root", None) or []:
+        if p:
+            roots.append(Path(p).expanduser().resolve())
+    pipe = raw.get("pipeline") or {}
+    for p in pipe.get("input_roots") or []:
+        roots.append(Path(str(p)).expanduser().resolve())
+    if pipe.get("input_root"):
+        roots.append(Path(str(pipe["input_root"])).expanduser().resolve())
+    seen: set[str] = set()
+    uniq: list[Path] = []
+    for r in roots:
+        k = str(r)
+        if k not in seen:
+            seen.add(k)
+            uniq.append(r)
+    if not uniq:
+        print("ERROR: indica al menos una carpeta (--input-root DIR, repetible)", file=sys.stderr)
+        raise SystemExit(2)
+    return uniq
+
+
 def _load_raw_config(args: argparse.Namespace) -> dict:
     p = _config_path(args)
     path = p or PKG / "triton_pose_extract_config.json"
@@ -111,14 +134,14 @@ def _cmd_preflight_csv(args: argparse.Namespace) -> int:
     raw = _load_raw_config(args)
     ob = Path(args.output_base).expanduser() if args.output_base else None
     pipe = load_pipeline_config(raw, output_base=ob)
-    input_root = Path(args.input_root).expanduser().resolve()
+    input_roots = _resolve_input_roots(args, raw)
     settings = ExtractSettings.load(
         _config_path(args),
         triton_url=args.triton_url or None,
         require_pose_repo=False,
     )
     report = run_preflight_report(
-        input_root,
+        input_roots,
         pipe,
         settings,
         probe_videos=bool(args.probe_videos),
@@ -139,7 +162,7 @@ def _cmd_extract_csv(args: argparse.Namespace) -> int:
     raw = _load_raw_config(args)
     ob = Path(args.output_base).expanduser() if args.output_base else None
     pipe = load_pipeline_config(raw, output_base=ob)
-    input_root = Path(args.input_root).expanduser().resolve()
+    input_roots = _resolve_input_roots(args, raw)
 
     settings = ExtractSettings.load(
         _config_path(args),
@@ -157,7 +180,7 @@ def _cmd_extract_csv(args: argparse.Namespace) -> int:
             return 2
 
     report = run_csv_batch(
-        input_root,
+        input_roots,
         pipe,
         settings,
         parallel=args.parallel if args.parallel > 0 else None,
@@ -193,7 +216,12 @@ def main() -> int:
     pf = sub.add_parser("preflight-csv", help="Inventario CSV + tiempos Triton paralelo")
     pf.add_argument("--config", type=str, default="")
     pf.add_argument("--triton-url", type=str, default="")
-    pf.add_argument("--input-root", type=str, required=True, help="Carpeta con CSVs (rglob *.csv)")
+    pf.add_argument(
+        "--input-root",
+        action="append",
+        default=[],
+        help="Carpeta con *.csv (repetible; busca recursivo). Ej: .../DatosOnline_3/sessions",
+    )
     pf.add_argument("--output-base", type=str, default="", help="OUTPUT_BASE (data_result/ dentro)")
     pf.add_argument("--probe-videos", action="store_true", help="ffprobe duración real (lento)")
     pf.add_argument("--save-json", type=str, default="", help="Guardar informe JSON")
@@ -202,7 +230,12 @@ def main() -> int:
     excsv = sub.add_parser("extract-csv", help="Pipeline CSV → FFmpeg → Triton (como pose_extractor_clean)")
     excsv.add_argument("--config", type=str, default="")
     excsv.add_argument("--triton-url", type=str, default="")
-    excsv.add_argument("--input-root", type=str, required=True)
+    excsv.add_argument(
+        "--input-root",
+        action="append",
+        default=[],
+        help="Carpeta(s) con CSVs (repetible)",
+    )
     excsv.add_argument("--output-base", type=str, default="")
     excsv.add_argument("--limit", type=int, default=0)
     excsv.add_argument("--parallel", type=int, default=0)

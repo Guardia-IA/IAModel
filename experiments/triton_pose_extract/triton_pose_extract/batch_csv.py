@@ -9,7 +9,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional  # noqa: F401
 
 from triton_pose_extract.capacity import recommend_parallel_clips
 from triton_pose_extract.csv_jobs import ExtractClipJob, build_jobs_from_csvs, resolve_csv_list
@@ -52,8 +52,8 @@ def _process_one_job(job: ExtractClipJob, pipe: PipelineConfig, settings: Extrac
             if not job.work_video.is_file():
                 ok = cut_clip(
                     r.video_path,
-                    r.t_start,
-                    r.t_end,
+                    r.ffmpeg_start,
+                    r.ffmpeg_end,
                     job.work_video,
                     pipe.ffmpeg,
                 )
@@ -124,18 +124,18 @@ def _process_one_job(job: ExtractClipJob, pipe: PipelineConfig, settings: Extrac
 
 
 def run_csv_batch(
-    input_root: Path,
+    input_roots: List[Path],
     pipe: PipelineConfig,
     settings: ExtractSettings,
     *,
     parallel: int | None = None,
     limit: int = 0,
 ) -> Dict[str, Any]:
-    csv_files = resolve_csv_list(input_root)
+    csv_files = resolve_csv_list(input_roots)
     jobs, skipped, by_cat = build_jobs_from_csvs(
         csv_files,
         pipe,
-        path_root=input_root,
+        path_root=None,
         limit=limit,
     )
     if not jobs:
@@ -171,7 +171,7 @@ def run_csv_batch(
     ok_n = sum(1 for r in results if r.ok)
     report = {
         "ok": ok_n > 0,
-        "input_root": str(input_root),
+        "input_roots": [str(p) for p in input_roots],
         "num_csv": len(csv_files),
         "jobs_planned": len(jobs),
         "jobs_ok": ok_n,

@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 
 @dataclass
@@ -40,7 +40,7 @@ class PipelinePaths:
 
 @dataclass
 class PipelineConfig:
-    input_root: Optional[Path]
+    input_roots: List[Path]
     filters: PipelineFilters
     ffmpeg: FfmpegConfig
     paths: PipelinePaths
@@ -49,6 +49,7 @@ class PipelineConfig:
     estimate_fps: float = 12.0
     triton_sec_per_frame: float = 0.022
     ffmpeg_sec_per_clip: float = 6.0
+    end_equals_full_epsilon: float = 0.35
 
 
 def _toggle(raw: Any, default_enabled: bool, default_value: float) -> FilterToggle:
@@ -104,10 +105,21 @@ def load_pipeline_config(raw: Dict[str, Any], *, output_base: Path | None = None
     )
 
     est = raw.get("time_estimate") or {}
+    roots: List[Path] = []
+    for item in pipe.get("input_roots") or []:
+        roots.append(Path(str(item)).expanduser().resolve())
+    if pipe.get("input_root"):
+        roots.append(Path(str(pipe["input_root"])).expanduser().resolve())
+    seen: set[str] = set()
+    input_roots: List[Path] = []
+    for p in roots:
+        k = str(p)
+        if k not in seen:
+            seen.add(k)
+            input_roots.append(p)
+
     return PipelineConfig(
-        input_root=Path(pipe["input_root"]).expanduser().resolve()
-        if pipe.get("input_root")
-        else None,
+        input_roots=input_roots,
         filters=filters,
         ffmpeg=FfmpegConfig(
             clip_scale_height=int(ff.get("clip_scale_height") or 1080),
@@ -124,4 +136,5 @@ def load_pipeline_config(raw: Dict[str, Any], *, output_base: Path | None = None
         estimate_fps=float(est.get("default_fps") or 12.0),
         triton_sec_per_frame=float(est.get("triton_sec_per_frame") or 0.022),
         ffmpeg_sec_per_clip=float(est.get("ffmpeg_sec_per_clip") or 6.0),
+        end_equals_full_epsilon=float(pipe.get("end_equals_full_epsilon") or 0.35),
     )

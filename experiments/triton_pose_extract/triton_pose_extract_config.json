@@ -24,7 +24,9 @@
   },
   "output_base": "/media/8TB/DatosEntrenamiento/data_clips/data_triton_pose",
   "pipeline": {
-    "input_root": "",
+    "input_roots": [],
+    "_input_roots_comment": "Opcional en JSON; en CLI usa --input-root (repetible)",
+    "end_equals_full_epsilon": 0.35,
     "data_result_subdir": "data_result",
     "temp_clips_subdir": "temp_clips"
   },

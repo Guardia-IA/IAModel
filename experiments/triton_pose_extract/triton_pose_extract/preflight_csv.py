@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from triton_pose_extract.capacity import capacity_report, recommend_parallel_clips
-from triton_pose_extract.csv_io import discover_csv_files, iter_csv_clip_rows
+from triton_pose_extract.csv_io import discover_csv_files_many, iter_csv_clip_rows
 from triton_pose_extract.pipeline_config import PipelineConfig
 from triton_pose_extract.settings import ExtractSettings
 
@@ -24,7 +24,6 @@ def scan_csv_inventory(
     csv_files: List[Path],
     pipe: PipelineConfig,
     *,
-    path_root: Path | None = None,
     probe_videos: bool = False,
 ) -> Dict[str, Any]:
     category_counters: Dict[str, int] = {}
@@ -37,11 +36,18 @@ def scan_csv_inventory(
     full_without_probe = 0
 
     for csv_path in csv_files:
+        from triton_pose_extract.ffmpeg_cut import video_duration_cv2
+
+        def _dur_fn(p: Path) -> float:
+            return video_duration_cv2(p)
+
         for r in iter_csv_clip_rows(
             csv_path,
-            path_root=path_root,
+            path_root=None,
             category_limits=pipe.category_limits,
             category_counters=category_counters,
+            video_duration_fn=_dur_fn,
+            end_equals_full_epsilon=pipe.end_equals_full_epsilon,
         ):
             if not r.video_path.is_file():
                 missing += 1
@@ -130,17 +136,17 @@ def estimate_wall_time(
 
 
 def run_preflight_report(
-    input_root: Path,
+    input_roots: List[Path],
     pipe: PipelineConfig,
     settings: ExtractSettings,
     *,
     probe_videos: bool = False,
 ) -> Dict[str, Any]:
-    csv_files = discover_csv_files(input_root)
-    inv = scan_csv_inventory(csv_files, pipe, path_root=input_root, probe_videos=probe_videos)
+    csv_files = discover_csv_files_many(input_roots)
+    inv = scan_csv_inventory(csv_files, pipe, probe_videos=probe_videos)
     time_est = estimate_wall_time(inv, pipe, settings)
     return {
-        "input_root": str(input_root),
+        "input_roots": [str(p) for p in input_roots],
         "csv_files": [str(p) for p in csv_files],
         "inventory": inv,
         "time_estimate": time_est,
@@ -160,7 +166,9 @@ def print_preflight_report(report: Dict[str, Any]) -> None:
     print("=" * 72)
     print("  TRITON POSE EXTRACT — PREFLIGHT CSV")
     print("=" * 72)
-    print(f"  Raíz entrada:     {report['input_root']}")
+    print("  Carpetas entrada:")
+    for p in report.get("input_roots") or []:
+        print(f"    - {p}")
     print(f"  CSV encontrados:  {inv['num_csv']}")
     print(f"  Clips a procesar: {inv['total_clips']}")
     print(f"  Vídeos faltantes: {inv['missing_videos']}")

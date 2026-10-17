@@ -52,8 +52,58 @@ def discover_csv_files(input_root: Path) -> List[Path]:
     return sorted(root.rglob("*.csv"))
 
 
+def discover_csv_files_many(input_roots: List[Path]) -> List[Path]:
+    """Varias carpetas → todos los *.csv (sin duplicados)."""
+    seen: set[str] = set()
+    out: List[Path] = []
+    for root in input_roots:
+        for p in discover_csv_files(root):
+            key = str(p.resolve())
+            if key not in seen:
+                seen.add(key)
+                out.append(p)
+    return sorted(out, key=lambda p: str(p))
+
+
 def csv_display_row(start_row: int, row_idx: int) -> int:
     return start_row + int(row_idx)
+
+
+def resolve_clip_timing(
+    t_start: str,
+    t_end: str,
+    video_path: Path,
+    *,
+    video_duration_fn,
+    end_equals_full_epsilon: float = 0.35,
+) -> tuple[bool, str, str, float]:
+    """
+    Como pose_extractor_clean + regla extra:
+    - 00:00:00 + 00:00:00 → vídeo entero sin FFmpeg.
+    - Si inicio ~0 y fin ~duración del fichero → entero sin recorte.
+    - Si no → segmento [t_start, t_end] con FFmpeg.
+    """
+    if is_full_clip_range(t_start, t_end):
+        dur = float(video_duration_fn(video_path)) if video_duration_fn else 0.0
+        return True, t_start, t_end, dur
+
+    start_s = hms_to_seconds(t_start)
+    end_s = hms_to_seconds(t_end)
+    dur_seg = max(0.0, end_s - start_s)
+    total = float(video_duration_fn(video_path)) if video_duration_fn else 0.0
+    if total > 0 and start_s <= end_equals_full_epsilon and end_s >= total - end_equals_full_epsilon:
+        return True, "00:00:00", seconds_to_hms(total), total
+    if dur_seg <= 0:
+        return False, t_start, t_end, 0.0
+    return False, t_start, t_end, dur_seg
+
+
+def seconds_to_hms(seconds: float) -> str:
+    total = max(0, int(round(seconds)))
+    h = total // 3600
+    m = (total % 3600) // 60
+    s = total % 60
+    return f"{h:02d}:{m:02d}:{s:02d}"
 
 
 @dataclass(frozen=True)
@@ -70,6 +120,8 @@ class CsvClipRow:
     duration_sec: float
     dir_rel_path: str
     videos_dir: Path
+    ffmpeg_start: str
+    ffmpeg_end: str
 
 
 def _hms_to_compact(t: str) -> str:
@@ -114,6 +166,7 @@ def iter_csv_clip_rows(
     category_limits: Optional[Dict[str, int]] = None,
     category_counters: Optional[Dict[str, int]] = None,
     video_duration_fn=None,
+    end_equals_full_epsilon: float = 0.35,
 ) -> Iterator[CsvClipRow]:
     """Genera filas válidas del CSV (sin aplicar filtros de duración/calidad)."""
     category_limits = category_limits or {}
@@ -155,15 +208,13 @@ def iter_csv_clip_rows(
         video_rel = str(row.iloc[0]).strip().strip('"').strip("'")
         video_path = resolve_video_path(video_rel, base_dir)
         row_csv = csv_display_row(start_row, row_idx)
-        use_full = is_full_clip_range(t_start, t_end)
-
-        if use_full:
-            if video_duration_fn is None:
-                duration_sec = 0.0
-            else:
-                duration_sec = float(video_duration_fn(video_path))
-        else:
-            duration_sec = max(0.0, hms_to_seconds(t_end) - hms_to_seconds(t_start))
+        use_full, ff_start, ff_end, duration_sec = resolve_clip_timing(
+            t_start,
+            t_end,
+            video_path,
+            video_duration_fn=video_duration_fn,
+            end_equals_full_epsilon=end_equals_full_epsilon,
+        )
 
         yield CsvClipRow(
             csv_path=csv_path,
@@ -178,4 +229,6 @@ def iter_csv_clip_rows(
             duration_sec=duration_sec,
             dir_rel_path=dir_rel,
             videos_dir=base_dir,
+            ffmpeg_start=ff_start,
+            ffmpeg_end=ff_end,
         )

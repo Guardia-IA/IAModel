@@ -63,6 +63,8 @@ def build_jobs_from_csvs(
     def _dur_fn(p: Path) -> float:
         return video_duration_cv2(p)
 
+    eps = float(getattr(pipe, "end_equals_full_epsilon", 0.35))
+
     for csv_path in csv_files:
         for r in iter_csv_clip_rows(
             csv_path,
@@ -70,6 +72,7 @@ def build_jobs_from_csvs(
             category_limits=pipe.category_limits,
             category_counters=category_counters,
             video_duration_fn=_dur_fn,
+            end_equals_full_epsilon=eps,
         ):
             clip_name = make_clip_name(
                 r.video_rel,
@@ -111,5 +114,7 @@ def build_jobs_from_csvs(
     return jobs, skipped, by_category
 
 
-def resolve_csv_list(input_root: Path) -> List[Path]:
-    return discover_csv_files(input_root)
+def resolve_csv_list(input_roots: List[Path]) -> List[Path]:
+    from triton_pose_extract.csv_io import discover_csv_files_many
+
+    return discover_csv_files_many(input_roots)
