@@ -173,7 +173,9 @@ def format_time_estimate_block(te: Dict[str, Any]) -> List[str]:
     per = te.get("per_job") or []
     if per:
         lines.append(f"{DIM}│{'─' * (w - 2)}│{RESET}")
-        lines.append(f"{DIM}│{RESET}  {BOLD}Por job (GPU, todas las semillas):{RESET}{' ' * 28}{DIM}│{RESET}")
+        lines.append(
+            f"{DIM}│{RESET}  {BOLD}Plan config (por tipo × semillas en p1_job_matrix):{RESET}{' ' * 8}{DIM}│{RESET}"
+        )
         for j in per:
             jid = str(j.get("job_id", ""))[:28]
             sec = j.get("gpu_seconds_all_seeds", 0)
@@ -185,6 +187,32 @@ def format_time_estimate_block(te: Dict[str, Any]) -> List[str]:
             lines.append(
                 f"{DIM}│{RESET}    {CYAN}{jid:<28}{RESET} {GREEN}{tstr:>12}{RESET}  {DIM}│{RESET}"
             )
+
+    qw = te.get("queue_wall_estimate") or {}
+    if qw.get("num_jobs_total"):
+        lines.append(f"{DIM}│{'─' * (w - 2)}│{RESET}")
+        lines.append(
+            f"{DIM}│{RESET}  {BOLD}{GREEN}COLA REAL (§7/§8 preflight — usar este total):{RESET}{' ' * 12}{DIM}│{RESET}"
+        )
+        lines.append(
+            f"{DIM}│{RESET}  Jobs: {qw.get('num_jobs_total')} "
+            f"(train {qw.get('num_p1_train_jobs', 0)}, p0 {qw.get('num_p0_eval_jobs', 0)})  {DIM}│{RESET}"
+        )
+        lines.append(
+            f"{DIM}│{RESET}  1 GPU secuencial: {CYAN}{qw.get('serial_gpu_human', '?')}{RESET}"
+            f"{' ' * max(0, 24 - len(str(qw.get('serial_gpu_human', ''))))}{DIM}│{RESET}"
+        )
+        lines.append(
+            f"{DIM}│{RESET}  {BOLD}Pared ×{qw.get('max_parallel_jobs', '?')} GPUs:{RESET} "
+            f"{GREEN}{BOLD}{qw.get('parallel_gpu_human', '?')}{RESET}"
+            f"  ({qw.get('parallel_gpu_seconds', 0) / 3600:.2f} h)  {DIM}│{RESET}"
+        )
+        if qw.get("p1_train_parallel_gpu_human"):
+            lines.append(
+                f"{DIM}│{RESET}  Solo p1_train par: {GREEN}{qw.get('p1_train_parallel_gpu_human')}{RESET}"
+                f"{' ' * 36}{DIM}│{RESET}"
+            )
+        lines.append(f"{DIM}│{RESET}  {DIM}{qw.get('formula', '')[:64]}{RESET}  {DIM}│{RESET}")
 
     leg = te.get("legacy_campaign_20_models_reference")
     if leg:
@@ -240,6 +268,48 @@ def render_preflight_summary(
     if report.get("time_estimate"):
         parts.extend(format_time_estimate_block(report["time_estimate"]))
     parts.extend(format_queue_block(report.get("job_queue_summary")))
+
+    qw = report.get("queue_wall_estimate") or (report.get("time_estimate") or {}).get("queue_wall_estimate")
+    pre_s = float(report.get("wall_seconds") or 0)
+    parts.append("")
+    parts.append(f"{BOLD}{MAGENTA}{'═' * 72}{RESET}")
+    parts.append(f"{BOLD}{MAGENTA}  TIEMPO TOTAL ESTIMADO (resumen){RESET}")
+    parts.append(f"{BOLD}{MAGENTA}{'═' * 72}{RESET}")
+    parts.append(
+        f"  {BOLD}Preflight{RESET} (inventario + caché, ya ejecutado): "
+        f"{CYAN}{pre_s / 60:.1f} min{RESET} ({pre_s:.0f} s)"
+    )
+    if qw and qw.get("num_jobs_total"):
+        par_h = float(qw.get("parallel_gpu_seconds", 0)) / 3600.0
+        post_h = max(0.3, qw.get("num_p1_train_jobs", 0) * 2 / 60.0)
+        total_h = pre_s / 3600.0 + par_h + post_h
+        parts.append(
+            f"  {BOLD}Train{RESET} (./run_campaign2.sh train, cola {qw.get('num_jobs_total')} jobs, "
+            f"×{qw.get('max_parallel_jobs')} GPU): "
+            f"{GREEN}{BOLD}{qw.get('parallel_gpu_human')}{RESET} ({par_h:.2f} h)"
+        )
+        parts.append(
+            f"  {BOLD}Post-train{RESET} (calibrate + eval, aprox.): "
+            f"{YELLOW}~{post_h * 60:.0f}–{post_h * 60 + 30:.0f} min{RESET}"
+        )
+        parts.append(
+            f"  {BOLD}TOTAL hasta modelos evaluados:{RESET} "
+            f"{GREEN}{BOLD}~{total_h:.1f} h{RESET} de pared "
+            f"(preflight + train paralelo + post)"
+        )
+        te_plan = report.get("time_estimate") or {}
+        n_plan = te_plan.get("p1_planned_training_runs", "?")
+        parts.append(
+            f"  {DIM}Nota: §6 del log = plan config ({n_plan} runs agrupados por tipo); "
+            f"el TOTAL de arriba = cola real (1 job = 1 entrenamiento).{RESET}"
+        )
+    else:
+        te = report.get("time_estimate") or {}
+        parts.append(
+            f"  {BOLD}Train P1 (plan config, ×{te.get('max_parallel_jobs', '?')} GPU):{RESET} "
+            f"{GREEN}{te.get('p1_parallel_gpu_human', te.get('p1_parallel_human', '?'))}{RESET}"
+        )
+    parts.append(f"{BOLD}{MAGENTA}{'═' * 72}{RESET}")
 
     parts.append("")
     parts.append(

@@ -36,7 +36,7 @@ from dataset_cache import (  # noqa: E402
     swap_pose_source_on_records,
 )
 from gpu_scheduler import JobSpec  # noqa: E402
-from time_estimate import build_time_estimate_report  # noqa: E402
+from time_estimate import build_time_estimate_report, estimate_job_queue_wall  # noqa: E402
 from campaign2_paths import parallel_recommendation_path  # noqa: E402
 from training_time_estimate import fmt_duration  # noqa: E402
 from preflight_display import render_preflight_summary  # noqa: E402
@@ -584,6 +584,11 @@ def main() -> int:
             f"paralelo×{max_parallel} {fmt_duration(leg['parallel_seconds'])}"
         )
     log(f"  {YELLOW}{time_est['note']}{RESET}")
+    log(
+        f"  {DIM}(§6 = plan config time_estimate.p1_job_matrix: "
+        f"{time_est['p1_planned_training_runs']} entrenamientos agrupados por tipo de job; "
+        f"la cola §7 puede tener más jobs — 1 job = 1 semilla.){RESET}"
+    )
 
     log(f"\n{BOLD}7) Cola de jobs{RESET}")
     if not jobs:
@@ -603,6 +608,42 @@ def main() -> int:
         log(f"  {YELLOW}Modo smoke-test:{RESET} {len(jobs)} jobs (scheduler, NO modelo Kanvis)")
         for j in jobs:
             log(f"    - {j.job_id} ({j.job_type})")
+
+    queue_wall: Optional[Dict[str, Any]] = None
+    if jobs:
+        queue_wall = estimate_job_queue_wall(
+            jobs,
+            train_rows=int(time_est["window_train_rows_per_epoch"]),
+            val_rows=int(time_est["window_val_rows_per_epoch"]),
+            calibration_factor=float(time_est["calibration_factor_applied"]),
+            max_parallel_jobs=max_parallel,
+        )
+        time_est["queue_wall_estimate"] = queue_wall
+        log(f"\n{BOLD}8) Tiempo total estimado — cola real (train paralelo){RESET}")
+        log(
+            f"  Jobs en cola: {queue_wall['num_jobs_total']} "
+            f"(p1_train={queue_wall['num_p1_train_jobs']}, p0_eval={queue_wall['num_p0_eval_jobs']})"
+        )
+        log(
+            f"  {BOLD}Suma GPU (1 job tras otro):{RESET} {CYAN}{queue_wall['serial_gpu_human']}{RESET} "
+            f"({queue_wall['serial_gpu_seconds'] / 3600:.2f} h)"
+        )
+        log(
+            f"  {BOLD}Pared con ×{max_parallel} GPUs:{RESET} {GREEN}{queue_wall['parallel_gpu_human']}{RESET} "
+            f"({queue_wall['parallel_gpu_seconds'] / 3600:.2f} h)  ← tiempo de ./train con esta cola"
+        )
+        if queue_wall["num_p1_train_jobs"]:
+            log(
+                f"  Solo entrenamiento v2 ({queue_wall['num_p1_train_jobs']} jobs): "
+                f"sec {queue_wall['p1_train_serial_gpu_human']} → "
+                f"par×{max_parallel} {GREEN}{queue_wall['p1_train_parallel_gpu_human']}{RESET}"
+            )
+        log(f"  {DIM}{queue_wall['formula']}{RESET}")
+        post_min = 20 + max(0, queue_wall["num_p1_train_jobs"]) * 2
+        log(
+            f"  {DIM}+ post-train (calibrate + p1-eval, no en cola inicial): "
+            f"~{post_min}–{post_min + 30} min extra{RESET}"
+        )
 
     queue_payload = {
         "run_id": run_id,
@@ -657,6 +698,7 @@ def main() -> int:
         "log_file": str(log_path),
         "max_parallel_jobs": max_parallel,
         "time_estimate": time_est,
+        "queue_wall_estimate": queue_wall,
     }
     manifest_meta = {k: str(v) for k, v in manifest_by_pose.items()}
     if not manifest_meta and manifest_path.is_file():

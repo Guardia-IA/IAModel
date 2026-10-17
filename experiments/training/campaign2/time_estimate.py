@@ -148,6 +148,93 @@ def default_p1_job_plan(cfg: Dict[str, Any]) -> List[Dict[str, Any]]:
     ]
 
 
+def _estimate_one_train_job_gpu_seconds(
+    params: Dict[str, Any],
+    *,
+    train_rows: int,
+    val_rows: int,
+    calibration_factor: float,
+) -> float:
+    arch = str(params.get("arch", "masked_tcn64"))
+    legacy_arch = ARCH_ALIASES.get(arch, arch)
+    cfg = {
+        "arch": legacy_arch,
+        "epochs": int(params.get("epochs", 100)),
+        "batch_size": int(params.get("batch_size", 64)),
+        "seq_len": int(params.get("seq_len", 96)),
+        "done": False,
+    }
+    est = estimate_single_experiment_seconds(cfg, train_rows=train_rows, val_rows=val_rows)
+    if est is None:
+        return 0.0
+    return float(est["gpu_seconds"]) * calibration_factor
+
+
+def estimate_job_queue_wall(
+    queue_jobs: List[Any],
+    *,
+    train_rows: int,
+    val_rows: int,
+    calibration_factor: float,
+    max_parallel_jobs: int,
+    p0_eval_gpu_seconds: float = 180.0,
+) -> Dict[str, Any]:
+    """
+    Estima pared según la cola real (p. ej. matriz: 12× p1_train + eval P0).
+    Cada job p1_train en cola = 1 semilla (no agrupar como p1_job_matrix).
+    """
+    per: List[Dict[str, Any]] = []
+    serial = 0.0
+    n_train = 0
+    n_p0 = 0
+    train_serial = 0.0
+    p0_serial = 0.0
+
+    for j in queue_jobs:
+        jtype = getattr(j, "job_type", None) or (j.get("job_type") if isinstance(j, dict) else None)
+        jid = getattr(j, "job_id", None) or (j.get("job_id") if isinstance(j, dict) else "?")
+        params = getattr(j, "params", None) or (j.get("params") if isinstance(j, dict) else {}) or {}
+
+        if jtype == "p1_train":
+            sec = _estimate_one_train_job_gpu_seconds(
+                params, train_rows=train_rows, val_rows=val_rows, calibration_factor=calibration_factor
+            )
+            n_train += 1
+            train_serial += sec
+        elif jtype == "p0_eval":
+            sec = float(p0_eval_gpu_seconds) * calibration_factor
+            n_p0 += 1
+            p0_serial += sec
+        else:
+            sec = 60.0
+        serial += sec
+        per.append({"job_id": str(jid), "job_type": str(jtype), "gpu_seconds": sec})
+
+    n_all = len(queue_jobs)
+    parallel = parallel_wall_seconds(serial, n_all, max_parallel_jobs)
+    train_par = parallel_wall_seconds(train_serial, n_train, max_parallel_jobs) if n_train else 0.0
+
+    return {
+        "num_jobs_total": n_all,
+        "num_p1_train_jobs": n_train,
+        "num_p0_eval_jobs": n_p0,
+        "serial_gpu_seconds": serial,
+        "parallel_gpu_seconds": parallel,
+        "p1_train_serial_gpu_seconds": train_serial,
+        "p1_train_parallel_gpu_seconds": train_par,
+        "p0_eval_serial_gpu_seconds": p0_serial,
+        "per_queue_job": per,
+        "serial_gpu_human": fmt_duration(serial),
+        "parallel_gpu_human": fmt_duration(parallel),
+        "p1_train_serial_gpu_human": fmt_duration(train_serial),
+        "p1_train_parallel_gpu_human": fmt_duration(train_par),
+        "max_parallel_jobs": max_parallel_jobs,
+        "formula": (
+            f"pared ≈ (suma duraciones {n_all} jobs / min({max_parallel_jobs}, {n_all}) slots) × 1.10"
+        ),
+    }
+
+
 def build_time_estimate_report(
     cfg: Dict[str, Any],
     *,
