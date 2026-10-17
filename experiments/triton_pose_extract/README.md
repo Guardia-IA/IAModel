@@ -72,7 +72,7 @@ chmod +x run_extract.sh
   --input-root /media/8TB/DatosEntrenamiento/datos_3/csv_buenos \
   --output-base /media/8TB/DatosEntrenamiento/data_clips/data_triton_pose
 
-# Debug: primeros N clips (1 worker = log más claro; 4 = más rápido en lote)
+# Debug: primeros N clips (`--limit` usa máx. 2 workers; `--parallel 1` = log más claro)
 ./run_extract.sh extract-csv --input-root ... --output-base ... --limit 5 --parallel 1 -v
 
 # Calentar Triton antes del batch (1ª infer GPU puede tardar 1–3 min)

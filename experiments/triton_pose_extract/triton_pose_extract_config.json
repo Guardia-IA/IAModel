@@ -31,7 +31,8 @@
     "temp_clips_subdir": "temp_clips"
   },
   "ffmpeg": {
-    "clip_scale_height": 1080,
+    "clip_scale_height": 0,
+    "_clip_scale_height_comment": "0 = recorte stream copy (rápido); 1080 = re-encode lento (legacy YOLO local)",
     "vaapi_device": null,
     "delete_temp_videos": true
   },

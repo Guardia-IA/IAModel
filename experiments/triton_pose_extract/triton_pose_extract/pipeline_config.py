@@ -26,7 +26,7 @@ class PipelineFilters:
 
 @dataclass
 class FfmpegConfig:
-    clip_scale_height: int = 1080
+    clip_scale_height: int = 0
     vaapi_device: Optional[str] = None
     delete_temp_videos: bool = True
 
@@ -122,7 +122,9 @@ def load_pipeline_config(raw: Dict[str, Any], *, output_base: Path | None = None
         input_roots=input_roots,
         filters=filters,
         ffmpeg=FfmpegConfig(
-            clip_scale_height=int(ff.get("clip_scale_height") or 1080),
+            clip_scale_height=int(ff["clip_scale_height"])
+            if "clip_scale_height" in ff
+            else 0,
             vaapi_device=ff.get("vaapi_device") or None,
             delete_temp_videos=bool(ff.get("delete_temp_videos", True)),
         ),

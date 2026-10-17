@@ -55,7 +55,7 @@ def _process_one_job(job: ExtractClipJob, pipe: PipelineConfig, settings: Extrac
     try:
         if job.clip_is_temp:
             if not job.work_video.is_file():
-                ok = cut_clip(
+                ok, ff_err = cut_clip(
                     r.video_path,
                     r.ffmpeg_start,
                     r.ffmpeg_end,
@@ -63,11 +63,14 @@ def _process_one_job(job: ExtractClipJob, pipe: PipelineConfig, settings: Extrac
                     pipe.ffmpeg,
                 )
                 if not ok:
+                    msg = "ffmpeg_falló"
+                    if ff_err:
+                        msg = f"ffmpeg_falló: {ff_err[:280]}"
                     return JobResult(
                         job.clip_name,
                         False,
                         None,
-                        "ffmpeg_falló",
+                        msg,
                         time.perf_counter() - t0,
                         r.row_csv,
                         status="fail_infra",
@@ -169,6 +172,8 @@ def run_csv_batch(
 
     n_workers = parallel if parallel is not None else recommend_parallel_clips(settings)
     n_workers = max(1, min(n_workers, len(jobs)))
+    if limit > 0 and parallel is None:
+        n_workers = min(n_workers, 2)
     results: List[JobResult] = []
     t0 = time.perf_counter()
 
