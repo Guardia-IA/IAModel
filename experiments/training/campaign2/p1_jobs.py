@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Tuple
 
+from campaign2_paths import run_layout
 from gpu_scheduler import JobSpec
 
 
@@ -57,6 +58,12 @@ def build_p1_job_queue(
     robbery_class = int(cfg.get("robbery_class", 6))
     warnings: List[str] = []
     jobs: List[JobSpec] = []
+    hn_path = run_layout(run_id)["reports_dir"] / "hard_neg_manifest.json"
+    hard_neg_manifest_path = str(hn_path) if hn_path.is_file() else None
+    p3 = cfg.get("p3_hard_neg") or {}
+    ext = str(p3.get("external_manifest_path") or "").strip()
+    if ext:
+        hard_neg_manifest_path = ext
 
     for job in matrix:
         job_id = str(job.get("job_id", "v2_job"))
@@ -82,6 +89,8 @@ def build_p1_job_queue(
                 "robbery_class": robbery_class,
                 "num_workers": 0,
             }
+            if hard_neg_manifest_path:
+                params["hard_neg_manifest_path"] = hard_neg_manifest_path
             jobs.append(JobSpec(job_id=sid, job_type="p1_train", params=params, priority=20))
 
     if not jobs:

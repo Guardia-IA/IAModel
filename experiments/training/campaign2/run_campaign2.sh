@@ -62,6 +62,8 @@ Uso: $0 <comando> [args...]
   p1-eval              Cola eval sobre best.pt + train (paralelo)
   p1-eval-summary      Métricas eval clip-max
   p1-seed-ensemble     Media prob entre semillas v2 (mismo job base)
+  p1-promote           Copia mejor checkpoint a models/promoted/
+  debug-gate           Comprueba RUN (robos en split, best.pt, etc.)
   debug-pipeline       new-run + probe + preflight --debug --p1 + train + eval + resúmenes
   matrix-pipeline      full+filtered, legacy eval + train v2 + eval + ranking ensembles
   debug-matrix         matrix-pipeline en modo debug (~50 clips)
@@ -204,6 +206,7 @@ EOF
     echo "[matrix-pipeline] Ver reports/ensemble_leaderboard.json"
     ;;
   debug-matrix)
+    "$0" validate || exit 1
     "$0" new-run
     RUN_ID="$(tr -d '[:space:]' < "$CURRENT_RUN_FILE")"
     export RUN_ID
@@ -216,7 +219,19 @@ EOF
     "$0" p1-eval-summary --run-id "$RUN_ID"
     "$0" p1-seed-ensemble --run-id "$RUN_ID" || true
     "$0" ensemble-leaderboard --run-id "$RUN_ID"
+    "$0" p1-promote --run-id "$RUN_ID" || true
+    "$0" debug-gate --run-id "$RUN_ID"
     echo "[debug-matrix] OK — para producción: ./run_campaign2.sh matrix-pipeline --data-root ..."
+    ;;
+  debug-gate)
+    parse_run_id_from_args "${EXTRA_ARGS[@]}" || true
+    ensure_run_id
+    "$PY" debug_gate.py --run-id "$RUN_ID" "${EXTRA_ARGS[@]}"
+    ;;
+  p1-promote)
+    parse_run_id_from_args "${EXTRA_ARGS[@]}" || true
+    ensure_run_id
+    "$PY" p1_promote.py --run-id "$RUN_ID" "${EXTRA_ARGS[@]}"
     ;;
   ensemble-leaderboard)
     parse_run_id_from_args "${EXTRA_ARGS[@]}" || true

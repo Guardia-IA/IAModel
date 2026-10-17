@@ -14,7 +14,9 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, WeightedRandomSampler
 
-from train_v2.dataset_windows import WindowManifestDataset, make_datasets
+from train_v2.dataset_windows import WindowManifestDataset, collate_window_batch, make_datasets
+from train_v2.mil_loss import theft_train_loss
+from train_v2.model_forward import forward_heads, forward_theft
 from train_v2.features import PREPROCESS_TORSO
 from train_v2.metrics import (
     binary_metrics,
@@ -29,12 +31,18 @@ from train_v2.window_index import WindowRef
 def _build_model(arch: str, input_dim: int, cfg: Dict[str, Any]) -> nn.Module:
     hidden = int(cfg.get("hidden_dim", 64))
     dropout = float(cfg.get("dropout", 0.15))
+    ck = dict(cfg.get("config") or {})
+    p1 = dict(cfg.get("p1_train") or ck or cfg)
     if arch in ("masked_tcn64", "masked_tcn"):
         return MaskedTCNClassifier(
             input_dim,
-            hidden_dim=hidden,
-            num_layers=int(cfg.get("num_layers", 4)),
-            dropout=dropout,
+            hidden_dim=int(cfg.get("hidden_dim", ck.get("hidden_dim", hidden))),
+            num_layers=int(cfg.get("num_layers", ck.get("num_layers", 4))),
+            dropout=float(cfg.get("dropout", ck.get("dropout", dropout))),
+            readout=str(p1.get("readout", ck.get("readout", "mean_max"))),
+            aux_concealment=bool(
+                p1.get("aux_concealment_head", ck.get("aux_concealment", True))
+            ),
         )
     if arch in ("gru64_pooled", "gru_pooled"):
         return GRUPooledClassifier(
@@ -63,16 +71,22 @@ def _eval_loader(
     refs: List[WindowRef],
     threshold: float,
     max_fp_clips: int = 11,
+    clip_y_by_uid: Dict[str, int] | None = None,
 ) -> Dict[str, Any]:
     model.eval()
     probs: List[float] = []
     y_true: List[int] = []
     uids: List[str] = []
     idx = 0
-    for x, y, m in loader:
+    for batch in loader:
+        if len(batch) == 5:
+            x, y, m, _batch_uids, _crob = batch
+        else:
+            x, y, m = batch
         x = x.to(device)
+        y = y.to(device)
         m = m.to(device)
-        logits = model(x, m)
+        logits = forward_theft(model, x, m)
         p = torch.sigmoid(logits).cpu().numpy()
         bs = x.size(0)
         for i in range(bs):
@@ -85,8 +99,12 @@ def _eval_loader(
     pr = np.array(probs, dtype=np.float64)
     pred = (pr >= threshold).astype(np.int64)
     window_m = binary_metrics(yt, pred)
-    clip_m = clip_metrics_from_window_probs(uids, yt, pr, threshold=threshold)
-    clip_budget = clip_metrics_at_fp_budget(uids, yt, pr, max_fp_clips=max_fp_clips)
+    clip_m = clip_metrics_from_window_probs(
+        uids, yt, pr, threshold=threshold, clip_y_by_uid=clip_y_by_uid
+    )
+    clip_budget = clip_metrics_at_fp_budget(
+        uids, yt, pr, max_fp_clips=max_fp_clips, clip_y_by_uid=clip_y_by_uid
+    )
     return {
         "window": window_m,
         "clip_max": clip_m,
@@ -95,21 +113,32 @@ def _eval_loader(
     }
 
 
+def _clip_labels_from_manifest(manifest: Dict[str, Any]) -> Dict[str, int]:
+    out: Dict[str, int] = {}
+    for ent in manifest.get("entries") or []:
+        uid = str(ent.get("uid") or "")
+        if uid:
+            out[uid] = 1 if ent.get("is_robbery") else 0
+    return out
+
+
 def _train_sampler(
     ds: WindowManifestDataset,
     *,
     hard_neg_classes: List[int] | None = None,
+    hard_neg_manifest_uids: set[str] | None = None,
 ) -> WeightedRandomSampler:
     """25% pos / 25% hard neg / 50% neg ordinario (experto P3-lite)."""
     hard_neg_classes = hard_neg_classes or [2, 3, 4, 14]
     hard_set = {int(x) for x in hard_neg_classes}
+    manifest_hard = hard_neg_manifest_uids or set()
     pos_idx: List[int] = []
     hard_idx: List[int] = []
     neg_idx: List[int] = []
     for i, ref in enumerate(ds.refs):
         if ref.label_theft:
             pos_idx.append(i)
-        elif int(ref.clip_label) in hard_set:
+        elif int(ref.clip_label) in hard_set or ref.uid in manifest_hard:
             hard_idx.append(i)
         else:
             neg_idx.append(i)
@@ -161,6 +190,17 @@ def run_p1_train(params: Dict[str, Any], output_dir: Path) -> Dict[str, Any]:
     normalize_mode = str(p1_cfg.get("preprocess", PREPROCESS_TORSO))
     augment_cfg = dict(p1_cfg.get("augment") or {})
     hard_neg_classes = [int(x) for x in (p1_cfg.get("hard_neg_classes") or [2, 3, 4, 14])]
+    window_label_policy = str(p1_cfg.get("window_label_policy", "tail_positive"))
+    robbery_tail_sec = float(p1_cfg.get("robbery_positive_tail_seconds", 3.0))
+    hard_neg_manifest_path = params.get("hard_neg_manifest_path") or p1_cfg.get(
+        "hard_neg_manifest_path"
+    )
+    hard_neg_uids: set[str] = set()
+    if hard_neg_manifest_path:
+        hn_path = Path(str(hard_neg_manifest_path))
+        if hn_path.is_file():
+            with open(hn_path, "r", encoding="utf-8") as hf:
+                hard_neg_uids = {str(u) for u in (json.load(hf).get("uids") or [])}
 
     train_ds, val_ds, meta = make_datasets(
         manifest_path,
@@ -172,14 +212,22 @@ def run_p1_train(params: Dict[str, Any], output_dir: Path) -> Dict[str, Any]:
         augment_cfg=augment_cfg,
         normalize_mode=normalize_mode,
         augment_seed=seed,
+        window_label_policy=window_label_policy,
+        robbery_positive_tail_seconds=robbery_tail_sec,
     )
+    clip_y_by_uid = _clip_labels_from_manifest(train_ds.manifest)
     input_dim = int(meta["input_dim"])
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     train_loader = DataLoader(
         train_ds,
         batch_size=batch_size,
-        sampler=_train_sampler(train_ds, hard_neg_classes=hard_neg_classes),
+        sampler=_train_sampler(
+            train_ds,
+            hard_neg_classes=hard_neg_classes,
+            hard_neg_manifest_uids=hard_neg_uids,
+        ),
+        collate_fn=collate_window_batch,
         num_workers=int(params.get("num_workers", 0)),
         pin_memory=torch.cuda.is_available(),
     )
@@ -187,6 +235,7 @@ def run_p1_train(params: Dict[str, Any], output_dir: Path) -> Dict[str, Any]:
         val_ds,
         batch_size=batch_size,
         shuffle=False,
+        collate_fn=collate_window_batch,
         num_workers=int(params.get("num_workers", 0)),
         pin_memory=torch.cuda.is_available(),
     )
@@ -207,6 +256,10 @@ def run_p1_train(params: Dict[str, Any], output_dir: Path) -> Dict[str, Any]:
     else:
         sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=max(epochs, 1))
     loss_fn = nn.BCEWithLogitsLoss()
+    mil_bag_weight = float(p1_cfg.get("mil_bag_loss_weight", 0.5))
+    mil_bag_temp = float(p1_cfg.get("mil_bag_temperature", 0.5))
+    use_mil_bag = bool(p1_cfg.get("mil_bag_loss_enabled", True))
+    conceal_weight = float(p1_cfg.get("concealment_loss_weight", 0.2))
 
     best_score = -1.0
     best_path = output_dir / "best.pt"
@@ -233,13 +286,24 @@ def run_p1_train(params: Dict[str, Any], output_dir: Path) -> Dict[str, Any]:
         model.train()
         running = 0.0
         n_batches = 0
-        for x, y, m in train_loader:
+        for x, y, m, uids, clip_rob in train_loader:
             x = x.to(device)
             y = y.to(device)
             m = m.to(device)
+            clip_rob = clip_rob.to(device)
             opt.zero_grad(set_to_none=True)
-            logits = model(x, m)
-            loss = loss_fn(logits, y)
+            theft_logits, conceal_logits = forward_heads(model, x, m)
+            loss, _lp = theft_train_loss(
+                theft_logits,
+                y,
+                uids,
+                clip_rob,
+                bag_loss_weight=mil_bag_weight,
+                bag_temperature=mil_bag_temp,
+                use_bag_for_robbery_clips=use_mil_bag,
+            )
+            if conceal_logits is not None and conceal_weight > 0:
+                loss = loss + conceal_weight * loss_fn(conceal_logits, clip_rob)
             loss.backward()
             if grad_clip > 0:
                 nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
@@ -255,6 +319,7 @@ def run_p1_train(params: Dict[str, Any], output_dir: Path) -> Dict[str, Any]:
             refs=val_ds.refs,
             threshold=val_threshold,
             max_fp_clips=max_fp_clips,
+            clip_y_by_uid=clip_y_by_uid,
         )
         clip = val_stats["clip_max"]
         clip_budget = val_stats.get("clip_budget") or clip
@@ -290,6 +355,8 @@ def run_p1_train(params: Dict[str, Any], output_dir: Path) -> Dict[str, Any]:
                         "hidden_dim": params.get("hidden_dim", 64),
                         "dropout": params.get("dropout", 0.15),
                         "num_layers": params.get("num_layers", 4),
+                        "readout": p1_cfg.get("readout", "mean_max"),
+                        "aux_concealment": bool(p1_cfg.get("aux_concealment_head", True)),
                         "train_v2": True,
                     },
                     "input_dim": input_dim,

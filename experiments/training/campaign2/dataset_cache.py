@@ -96,7 +96,12 @@ def resample_poses_to_hz(
     return out, valid
 
 
-def _clip_group_id(clip_dir: Path, meta: Dict[str, Any]) -> str:
+def _clip_group_id(clip_dir: Path, meta: Dict[str, Any], *, split_strategy: str = "hash_clip") -> str:
+    from split_groups import stable_group_id
+
+    rec = {"clip_dir": str(clip_dir), "meta": meta}
+    if split_strategy and split_strategy != "hash_clip":
+        return stable_group_id(rec, strategy=split_strategy)
     vs = str(meta.get("video_source") or meta.get("video") or "")
     name = clip_dir.name
     raw = f"{vs}|{name}"
@@ -201,6 +206,7 @@ def collect_clip_records(
     pose_source: str = "full",
     single_user_only: bool = False,
     robbery_class: int = 6,
+    split_strategy: str = "stratified_group_hybrid",
     log_fn=None,
 ) -> List[Dict[str, Any]]:
     from train_model_operations import collect_examples, _example_uid  # type: ignore
@@ -238,7 +244,7 @@ def collect_clip_records(
                     "clip_dir": str(clip_dir),
                     "data_root": str(root),
                     "meta": meta,
-                    "group_id": _clip_group_id(clip_dir, meta),
+                    "group_id": _clip_group_id(clip_dir, meta, split_strategy=split_strategy),
                 }
             )
     _log(f"  Total registros agregados: {len(records)}")

@@ -70,7 +70,21 @@
     "warmup_epochs": 5,
     "preprocess": "campaign2_windows_torso_v1",
     "augment_enabled": true,
-    "hard_neg_classes": [2, 3, 4, 14]
+    "hard_neg_classes": [2, 3, 4, 14],
+    "window_label_policy": "tail_positive",
+    "robbery_positive_tail_seconds": 3.0,
+    "_window_label_policy_comment": "clip_all=MIL débil antiguo; tail_positive=solo últimos N s positivos (experto)",
+    "readout": "mean_max",
+    "aux_concealment_head": true,
+    "concealment_loss_weight": 0.2,
+    "mil_bag_loss_enabled": true,
+    "mil_bag_loss_weight": 0.5,
+    "mil_bag_temperature": 0.5
+  },
+  "p3_hard_neg": {
+    "enabled": true,
+    "external_manifest_path": "",
+    "_comment": "Opcional: JSON con uids revisados en producción; se fusiona en preflight"
   },
   "p1_calibrate": {
     "split": "threshold_calib",

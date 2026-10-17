@@ -36,15 +36,23 @@ def aggregate_clip_scores(
     uids: list[str],
     y_true: np.ndarray,
     probs: np.ndarray,
+    *,
+    clip_y_by_uid: Dict[str, int] | None = None,
 ) -> tuple[list[str], np.ndarray, np.ndarray]:
-    """Max prob por clip (uid)."""
+    """Max prob por clip (uid). Etiqueta clip = is_robbery del manifest si se pasa."""
     by_uid: Dict[str, list[float]] = {}
     by_y: Dict[str, int] = {}
     for u, yt, p in zip(uids, y_true, probs):
         by_uid.setdefault(u, []).append(float(p))
-        by_y[u] = int(yt)
+        by_y[u] = max(by_y.get(u, 0), int(yt))
     clip_uids = sorted(by_uid.keys())
-    clip_y = np.array([by_y[u] for u in clip_uids], dtype=np.int64)
+    clip_y = np.array(
+        [
+            int(clip_y_by_uid.get(u, by_y[u])) if clip_y_by_uid else int(by_y[u])
+            for u in clip_uids
+        ],
+        dtype=np.int64,
+    )
     clip_p = np.array([max(by_uid[u]) for u in clip_uids], dtype=np.float64)
     return clip_uids, clip_y, clip_p
 
@@ -78,9 +86,12 @@ def clip_metrics_at_fp_budget(
     *,
     max_fp_clips: int,
     threshold: float | None = None,
+    clip_y_by_uid: Dict[str, int] | None = None,
 ) -> Dict[str, Any]:
     """Recall clip-level con umbral fijado por presupuesto FP en negativos."""
-    _, clip_y, clip_p = aggregate_clip_scores(uids, y_true, probs)
+    _, clip_y, clip_p = aggregate_clip_scores(
+        uids, y_true, probs, clip_y_by_uid=clip_y_by_uid
+    )
     if threshold is None:
         threshold = threshold_from_negative_order_statistic(clip_y, clip_p, max_fp_clips=max_fp_clips)
     pred = (clip_p >= threshold).astype(np.int64)
@@ -97,16 +108,11 @@ def clip_metrics_from_window_probs(
     y_true: np.ndarray,
     probs: np.ndarray,
     threshold: float = 0.5,
+    clip_y_by_uid: Dict[str, int] | None = None,
 ) -> Dict[str, Any]:
     """Agrega max prob por uid (misma regla que P0.B)."""
-    by_uid: Dict[str, list[float]] = {}
-    by_y: Dict[str, int] = {}
-    for u, yt, p in zip(uids, y_true, probs):
-        by_uid.setdefault(u, []).append(float(p))
-        by_y[u] = int(yt)
-    clip_true: list[int] = []
-    clip_pred: list[int] = []
-    for u, plist in by_uid.items():
-        clip_true.append(by_y[u])
-        clip_pred.append(1 if max(plist) >= threshold else 0)
-    return binary_metrics(np.array(clip_true), np.array(clip_pred))
+    clip_uids, clip_y, clip_p = aggregate_clip_scores(
+        uids, y_true, probs, clip_y_by_uid=clip_y_by_uid
+    )
+    clip_pred = (clip_p >= threshold).astype(np.int64)
+    return binary_metrics(clip_y, clip_pred)

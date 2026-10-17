@@ -36,7 +36,8 @@ Ajusta `debug` en `campaign2_config.json` (clips, épocas, 2 modelos). Para prod
 watch -n 5 ./run_campaign2.sh p1-status   # durante train
 ```
 
-Limitaciones MVP: MIL fino, norm avanzada, split staged/real, calibración T, ensemble semillas.
+P1 v2: TCN mean+max readout, cabeza concealment aux, MIL bag LSE, tail_positive, fps audit, hard neg manifest, split por sesión/prefix, calibración T, recall@FP, promote + debug-gate.
+Pendiente largo plazo: intervalos anotados, loss MIL completa por evento, embargo temporal fino, despliegue prod 12Hz.
 
 ## Sprint 2 — P0 baseline (implementado)
 

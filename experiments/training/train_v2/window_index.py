@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from train_v2.legacy_preprocess import window_starts
+from train_v2.window_labels import POLICY_CLIP_ALL, window_theft_label
 
 
 @dataclass(frozen=True)
@@ -15,6 +16,7 @@ class WindowRef:
     group_id: str
     label_theft: int
     clip_label: int = 0
+    clip_is_robbery: int = 0
 
 
 def build_window_index(
@@ -25,6 +27,9 @@ def build_window_index(
     stride_frames: int,
     robbery_class: int = 6,
     max_windows_per_clip: int = 0,
+    target_hz: float = 12.0,
+    window_label_policy: str = POLICY_CLIP_ALL,
+    robbery_positive_tail_seconds: float = 3.0,
 ) -> List[WindowRef]:
     out: List[WindowRef] = []
     for idx, ent in enumerate(entries):
@@ -39,10 +44,18 @@ def build_window_index(
             starts = starts[::step][:max_windows_per_clip]
         clip_label = int(ent.get("label", 0))
         is_rob = bool(ent.get("is_robbery")) or clip_label == int(robbery_class)
-        label = 1 if is_rob else 0
         uid = str(ent.get("uid") or idx)
         gid = str(ent.get("group_id") or uid)
         for s in starts:
+            label = window_theft_label(
+                is_robbery_clip=is_rob,
+                start_frame=int(s),
+                window_frames=window_frames,
+                num_frames=t,
+                target_hz=float(target_hz),
+                policy=window_label_policy,
+                tail_seconds=robbery_positive_tail_seconds,
+            )
             out.append(
                 WindowRef(
                     entry_index=idx,
@@ -51,6 +64,7 @@ def build_window_index(
                     group_id=gid,
                     label_theft=label,
                     clip_label=clip_label,
+                    clip_is_robbery=1 if is_rob else 0,
                 )
             )
     return out

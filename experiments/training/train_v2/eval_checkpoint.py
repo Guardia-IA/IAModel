@@ -15,6 +15,7 @@ from train_v2.metrics import binary_metrics, clip_metrics_from_window_probs
 from train_v2.models.gru_pooled import GRUPooledClassifier
 from train_v2.models.masked_tcn import MaskedTCNClassifier
 from train_v2.legacy_preprocess import window_starts
+from train_v2.model_forward import forward_theft
 from train_v2.train_job import _build_model
 
 
@@ -70,7 +71,7 @@ def run_v2_window_eval(
             return
         x = torch.stack(batch_x, dim=0).to(device)
         m = torch.stack(batch_m, dim=0).to(device)
-        logits = model(x, m)
+        logits = forward_theft(model, x, m)
         probs = torch.sigmoid(logits).cpu().numpy()
         for i, (cidx, uid, _w) in enumerate(batch_meta):
             window_probs.setdefault(cidx, []).append(float(probs[i]))

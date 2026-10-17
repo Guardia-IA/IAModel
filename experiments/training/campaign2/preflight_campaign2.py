@@ -38,6 +38,12 @@ from preflight_display import render_preflight_summary  # noqa: E402
 from p0_jobs import build_p0_job_queue  # noqa: E402
 from p1_jobs import build_p1_job_queue  # noqa: E402
 from matrix_jobs import build_matrix_job_queue, cache_dir_for_pose, matrix_settings  # noqa: E402
+from fps_audit import audit_clip_timing  # noqa: E402
+from hard_neg_manifest import (  # noqa: E402
+    build_hard_neg_manifest,
+    merge_external_manifest,
+    write_hard_neg_manifest,
+)
 
 BOLD = "\033[1m"
 DIM = "\033[2m"
@@ -74,6 +80,41 @@ def _category_table(records: List[Dict[str, Any]]) -> Dict[str, int]:
 def _category_table_from_manifest(entries: List[Dict[str, Any]]) -> Dict[str, int]:
     c = Counter(int(e.get("label", -1)) for e in entries)
     return {str(k): v for k, v in sorted(c.items()) if k >= 0}
+
+
+def _inventory_audits(
+    records: List[Dict[str, Any]],
+    layout: Dict[str, Path],
+    cfg: Dict[str, Any],
+    log_fn,
+) -> tuple[Dict[str, Any], Dict[str, Any]]:
+    fps_audit = audit_clip_timing(records)
+    fps_path = layout["reports_dir"] / "fps_audit.json"
+    with open(fps_path, "w", encoding="utf-8") as f:
+        json.dump(fps_audit, f, indent=2, ensure_ascii=False)
+        f.write("\n")
+    if fps_audit["n_issues"]:
+        log_fn(
+            f"  {YELLOW}FPS/meta: {fps_audit['n_issues']} clips con duración ≠ meta "
+            f"→ {fps_path}{RESET}"
+        )
+    else:
+        log_fn(
+            f"  {GREEN}FPS/meta: sin discrepancias graves (±{fps_audit['tolerance_sec']}s){RESET}"
+        )
+    p1_cfg = cfg.get("p1_train") or {}
+    hn_doc = build_hard_neg_manifest(
+        records,
+        hard_neg_classes=[int(x) for x in (p1_cfg.get("hard_neg_classes") or [2, 3, 4, 14])],
+        robbery_class=int(cfg.get("robbery_class", 6)),
+    )
+    p3 = cfg.get("p3_hard_neg") or {}
+    ext_hn = str(p3.get("external_manifest_path") or "").strip()
+    if ext_hn:
+        hn_doc = merge_external_manifest(hn_doc, Path(ext_hn))
+    write_hard_neg_manifest(layout["reports_dir"] / "hard_neg_manifest.json", hn_doc)
+    log_fn(f"  Hard neg manifest: {hn_doc['n_clips']} clips → reports/hard_neg_manifest.json")
+    return fps_audit, hn_doc
 
 
 def _cache_info_from_manifest(manifest_path: Path) -> Optional[Dict[str, Any]]:
@@ -231,6 +272,8 @@ def main() -> int:
     split_cfg = cfg.get("split") or {}
 
     records: List[Dict[str, Any]] = []
+    fps_audit_report: Optional[Dict[str, Any]] = None
+    hard_neg_summary: Optional[Dict[str, Any]] = None
     cache_result = None
     manifest_by_pose: Dict[str, Path] = {}
     t0 = time.perf_counter()
@@ -254,6 +297,7 @@ def main() -> int:
                 pose_source=str(ps),
                 single_user_only=single_user_only,
                 robbery_class=robbery_class,
+                split_strategy=str(split_cfg.get("strategy", "stratified_group_hybrid")),
                 log_fn=log,
             )
             log(f"    Inventario {len(rec_ps)} clips en {time.perf_counter() - t_inv:.1f}s")
@@ -291,6 +335,9 @@ def main() -> int:
             records.extend(rec_ps)
         if manifest_by_pose:
             manifest_path = next(iter(manifest_by_pose.values()))
+        if records:
+            log(f"\n{BOLD}Auditoría inventario (fps + hard neg P3){RESET}")
+            fps_audit_report, hard_neg_summary = _inventory_audits(records, layout, cfg, log)
     elif data_roots and not args.skip_cache and cache_cfg.get("enabled", True):
         log(f"\n{BOLD}2) Inventario de clips (collect_examples legacy, solo lectura){RESET}")
         t_inv = time.perf_counter()
@@ -302,6 +349,7 @@ def main() -> int:
             pose_source=pose_source,
             single_user_only=single_user_only,
             robbery_class=robbery_class,
+            split_strategy=str(split_cfg.get("strategy", "stratified_group_hybrid")),
             log_fn=log,
         )
         log(f"  Inventario en {time.perf_counter() - t_inv:.1f}s — {len(records)} registros")
@@ -329,6 +377,8 @@ def main() -> int:
         if not records:
             log(f"  {YELLOW}WARN: 0 clips; caché omitida.{RESET}")
         else:
+            log(f"\n{BOLD}Auditoría inventario (fps + hard neg P3){RESET}")
+            fps_audit_report, hard_neg_summary = _inventory_audits(records, layout, cfg, log)
             log(f"\n{BOLD}3) Caché poses @ {temporal.get('target_hz', 12)} Hz (mmap){RESET}")
             t_cache = time.perf_counter()
             cache_result = build_pose_cache(
@@ -537,6 +587,12 @@ def main() -> int:
         "data_roots": [str(p) for p in data_roots],
         "num_clip_records": len(records) or len(manifest_entries),
         "category_counts": category_counts,
+        "fps_audit": fps_audit_report,
+        "hard_neg_manifest": (
+            {"n_clips": hard_neg_summary.get("n_clips"), "path": "reports/hard_neg_manifest.json"}
+            if hard_neg_summary
+            else None
+        ),
         "job_queue_summary": {
             "purpose": queue_purpose,
             "num_jobs": len(jobs),

@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Tuple
 
 import numpy as np
 import torch
-from torch.utils.data import Dataset
+from torch.utils.data import DataLoader, Dataset
 
 import random
 
@@ -82,7 +82,20 @@ class WindowManifestDataset(Dataset):
             torch.from_numpy(x),
             torch.tensor(y, dtype=torch.float32),
             torch.from_numpy(fmask),
+            ref.uid,
+            float(ref.clip_is_robbery),
         )
+
+
+def collate_window_batch(batch):
+    xs, ys, ms, uids, crob = zip(*batch)
+    return (
+        torch.stack(xs, dim=0),
+        torch.stack(ys, dim=0),
+        torch.stack(ms, dim=0),
+        list(uids),
+        torch.tensor(crob, dtype=torch.float32),
+    )
 
 
 def load_manifest(path: Path) -> Dict[str, Any]:
@@ -107,12 +120,15 @@ def make_datasets(
     augment_cfg: Dict[str, Any] | None = None,
     normalize_mode: str = PREPROCESS_TORSO,
     augment_seed: int = 42,
+    window_label_policy: str = "tail_positive",
+    robbery_positive_tail_seconds: float = 3.0,
 ) -> Tuple[WindowManifestDataset, WindowManifestDataset, Dict[str, Any]]:
     manifest = load_manifest(manifest_path)
     hz = float(temporal.get("target_hz", 12.0))
     window_frames = int(round(float(temporal.get("window_seconds", 8.0)) * hz))
     stride_frames = max(1, int(round(float(temporal.get("stride_seconds", 1.0)) * hz)))
     seq_len = int(temporal.get("seq_len", 96))
+    target_hz = float(temporal.get("target_hz", manifest.get("target_hz", 12.0)))
     entries = manifest.get("entries") or []
 
     train_refs = build_window_index(
@@ -122,6 +138,9 @@ def make_datasets(
         stride_frames=stride_frames,
         robbery_class=robbery_class,
         max_windows_per_clip=max_windows_per_clip,
+        target_hz=target_hz,
+        window_label_policy=window_label_policy,
+        robbery_positive_tail_seconds=robbery_positive_tail_seconds,
     )
     val_refs = build_window_index(
         entries,
@@ -130,6 +149,9 @@ def make_datasets(
         stride_frames=stride_frames,
         robbery_class=robbery_class,
         max_windows_per_clip=0,
+        target_hz=target_hz,
+        window_label_policy=window_label_policy,
+        robbery_positive_tail_seconds=robbery_positive_tail_seconds,
     )
     train_ds = WindowManifestDataset(
         manifest,
@@ -157,5 +179,8 @@ def make_datasets(
         "input_dim": int(manifest.get("num_joints", 8)) * 5,
         "seq_len": seq_len,
         "window_frames": window_frames,
+        "window_label_policy": window_label_policy,
+        "robbery_positive_tail_seconds": robbery_positive_tail_seconds,
+        "target_hz": target_hz,
     }
     return train_ds, val_ds, meta
