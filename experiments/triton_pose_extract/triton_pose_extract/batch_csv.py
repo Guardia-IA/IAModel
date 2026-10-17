@@ -164,13 +164,18 @@ def run_csv_batch(
     *,
     parallel: int | None = None,
     limit: int = 0,
+    verbose: bool = True,
 ) -> Dict[str, Any]:
+    print("extract-csv: buscando *.csv en raíces…", flush=True)
+    t_disc = time.perf_counter()
     csv_files = resolve_csv_list(input_roots)
+    print(f"  {len(csv_files)} CSV ({time.perf_counter() - t_disc:.1f}s)", flush=True)
     jobs, skipped, by_cat = build_jobs_from_csvs(
         csv_files,
         pipe,
         path_root=None,
         limit=limit,
+        verbose=verbose,
     )
     if not jobs:
         return {

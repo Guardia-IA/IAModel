@@ -191,13 +191,20 @@ def _cmd_extract_csv(args: argparse.Namespace) -> int:
         settings.single_user_only = False
     else:
         settings.single_user_only = pipe.filters.single_user_only
+    print(
+        f"extract-csv: salida → {pipe.paths.data_result_dir} · "
+        f"primary_user={pipe.filters.export_primary_user_on_multi_track}",
+        flush=True,
+    )
     ensure_pose_core_importable(settings.triton_pose_repo)
 
     if not args.skip_ready:
+        print("Comprobando Triton READY…", flush=True)
         ready = check_model_ready(settings)
         if not ready.get("ok"):
             print(f"ERROR: Triton/modelo no ready: {ready}", file=sys.stderr)
             return 2
+        print("Triton OK.", flush=True)
 
     report = run_csv_batch(
         input_roots,
@@ -205,6 +212,7 @@ def _cmd_extract_csv(args: argparse.Namespace) -> int:
         settings,
         parallel=args.parallel if args.parallel > 0 else None,
         limit=int(args.limit or 0),
+        verbose=bool(getattr(args, "verbose", False)),
     )
     if report.get("jobs_fail_infra", 0) > 0:
         return 1
