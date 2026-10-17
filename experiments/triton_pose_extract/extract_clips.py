@@ -141,6 +141,7 @@ def _cmd_preflight_csv(args: argparse.Namespace) -> int:
         triton_url=args.triton_url or None,
         require_pose_repo=False,
     )
+    list_missing = int(getattr(args, "list_missing", 0) or 0)
     report = run_preflight_report(
         input_roots,
         pipe,
@@ -148,8 +149,9 @@ def _cmd_preflight_csv(args: argparse.Namespace) -> int:
         probe_videos=bool(args.probe_videos),
         measure_video_duration=bool(getattr(args, "measure_video_duration", False)),
         verbose=not getattr(args, "quiet", False),
+        collect_missing_paths=list_missing > 0,
     )
-    print_preflight_report(report, list_missing=int(getattr(args, "list_missing", 15) or 0))
+    print_preflight_report(report, list_missing=list_missing)
     if args.save_json:
         save_preflight_json(report, Path(args.save_json).expanduser())
     inv = report["inventory"]
@@ -237,9 +239,9 @@ def main() -> int:
     pf.add_argument(
         "--list-missing",
         type=int,
-        default=15,
+        default=0,
         metavar="N",
-        help="Mostrar N ejemplos de vídeos no encontrados (0=ninguno)",
+        help="Debug: imprimir N ejemplos de rutas no encontradas (por defecto oculto)",
     )
     pf.set_defaults(func=_cmd_preflight_csv)
 

@@ -34,6 +34,7 @@ def scan_csv_inventory(
     measure_video_duration: bool = False,
     verbose: bool = True,
     log_fn: Optional[Callable[[str], None]] = None,
+    collect_missing_paths: bool = False,
 ) -> Dict[str, Any]:
     """
     probe_videos: ffprobe en clips marcados como completos (lento, preciso).
@@ -53,7 +54,7 @@ def scan_csv_inventory(
     total_frames = 0
     full_without_probe = 0
     rows_seen = 0
-    missing_cap = 5000
+    missing_cap = 5000 if collect_missing_paths else 0
 
     duration_fn = None
     if measure_video_duration:
@@ -208,6 +209,7 @@ def run_preflight_report(
     measure_video_duration: bool = False,
     verbose: bool = True,
     log_fn: Optional[Callable[[str], None]] = None,
+    collect_missing_paths: bool = False,
 ) -> Dict[str, Any]:
     _log("Preflight CSV — buscando *.csv …", log_fn)
     for root in input_roots:
@@ -234,6 +236,7 @@ def run_preflight_report(
         measure_video_duration=measure_video_duration,
         verbose=verbose,
         log_fn=log_fn,
+        collect_missing_paths=collect_missing_paths,
     )
     time_est = estimate_wall_time(inv, pipe, settings)
     return {
@@ -274,9 +277,7 @@ def print_preflight_report(report: Dict[str, Any], *, list_missing: int = 0) -> 
     print(f"      (suma por categoría:    {sum(inv['by_category'].values())})")
     print("")
     print("  Desglose de filas no procesables:")
-    print(f"    Vídeos faltantes:        {miss}")
-    print("      → la ruta de la columna 0 del CSV no existe en disco (path mal, otro")
-    print("        servidor, disco no montado, clip borrado, etc.)")
+    print(f"    Vídeos faltantes:        {miss}  (ruta columna 0 no existe en disco)")
     print(f"    Duración inválida:       {sk_inv}")
     print(f"    Filtro duración (total): {sk}")
     if sk:
@@ -312,7 +313,7 @@ def print_preflight_report(report: Dict[str, Any], *, list_missing: int = 0) -> 
             print(f"      CSV: {ent['video_csv'][:100]}{'…' if len(ent['video_csv']) > 100 else ''}")
             print(f"      →   {ent['path_resolved']}")
         if miss > list_missing:
-            print(f"    … y {miss - list_missing} más (guarda --save-json para lista)")
+            print(f"    … y {miss - list_missing} más")
 
 
 def save_preflight_json(report: Dict[str, Any], out_path: Path) -> None:
