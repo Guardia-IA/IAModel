@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
+from dataset_plan_summary import SPLIT_LABELS, SPLIT_ORDER
+
 # ANSI
 RESET = "\033[0m"
 BOLD = "\033[1m"
@@ -68,6 +70,98 @@ def format_category_table(category_counts: Dict[str, int], robbery_class: int = 
         )
     lines.append(_row("TOTAL", f"{total:,} clips", w, GREEN + BOLD))
     lines.append(_box_end(w))
+    return lines
+
+
+def format_dataset_overview_block(summary: Dict[str, Any], robbery_class: int = 6) -> List[str]:
+    """Clips totales, ventanas 8 s y augment (sintético on-the-fly)."""
+    lines: List[str] = []
+    w = 72
+    total = int(summary.get("num_clips_total") or 0)
+    lines.append("")
+    lines.append(_box_title("Inventario total (clips .npy)", w))
+    lines.append(_row("Clips en manifest/caché", f"{total:,}", w, GREEN + BOLD))
+    lines.append(_box_end(w))
+
+    win = summary.get("windows") or {}
+    aug = summary.get("augment") or {}
+    lines.append("")
+    lines.append(_box_title("Ventanas 8 s @ 12 Hz (muestras train_v2)", w))
+    lines.append(
+        _row(
+            "Contrato",
+            f"{win.get('window_seconds', 8)} s, stride {win.get('stride_seconds', 1)} s, "
+            f"máx {win.get('max_windows_per_clip', '?')}/clip",
+            w,
+            CYAN,
+        )
+    )
+    lines.append(_row("Política label", str(win.get("window_label_policy", "?")), w, CYAN))
+    by_split = win.get("by_split") or {}
+    pos_split = win.get("positive_labels_by_split") or {}
+    neg_split = win.get("negative_labels_by_split") or {}
+    lines.append(
+        f"{DIM}│{RESET}  {'Partición':<26} {'Ventanas':>10} {'y=1':>8} {'y=0':>8}  {DIM}│{RESET}"
+    )
+    lines.append(f"{DIM}│{RESET}  {'─' * 26} {'─' * 10} {'─' * 8} {'─' * 8}  {DIM}│{RESET}")
+    for key in SPLIT_ORDER:
+        if key not in by_split:
+            continue
+        nv = int(by_split[key])
+        np_ = int(pos_split.get(key, 0))
+        nn = int(neg_split.get(key, 0))
+        lines.append(
+            f"{DIM}│{RESET}  {CYAN}{SPLIT_LABELS.get(key, key):<26}{RESET} "
+            f"{GREEN}{nv:>10,}{RESET} {MAGENTA}{np_:>8,}{RESET} {nn:>8,}  {DIM}│{RESET}"
+        )
+    train_w = int(by_split.get("train", 0))
+    lines.append(_box_end(w))
+
+    lines.append("")
+    lines.append(_box_title("Datos sintéticos (augment)", w))
+    if aug.get("enabled"):
+        lines.append(_row("Modo", "on-the-fly solo en train", w, GREEN))
+        lines.append(
+            _row(
+                "Filas extra en disco",
+                "0 (no mass-augment legacy)",
+                w,
+                GREEN,
+            )
+        )
+        lines.append(
+            _row(
+                "Efecto por época",
+                f"~{train_w:,} ventanas × transform. aleatorias",
+                w,
+                YELLOW,
+            )
+        )
+    else:
+        lines.append(_row("Augment", "desactivado", w, YELLOW))
+    note = str(aug.get("note_es") or "")
+    if note:
+        wrapped = note[: w - 6]
+        lines.append(f"{DIM}│{RESET}  {DIM}{wrapped}{RESET}{' ' * max(0, w - len(wrapped) - 4)}{DIM}│{RESET}")
+    lines.append(_box_end(w))
+
+    cat_by_sp = summary.get("category_counts_by_split") or {}
+    if cat_by_sp:
+        lines.append("")
+        lines.append(_box_title("Clips por categoría y split", w))
+        for key in SPLIT_ORDER:
+            if key not in cat_by_sp:
+                continue
+            cats = cat_by_sp[key]
+            if not cats:
+                continue
+            parts = [f"{c}:{n}" for c, n in sorted(cats.items(), key=lambda x: int(x[0]))]
+            line = f"{SPLIT_LABELS.get(key, key)}: " + ", ".join(parts)
+            if len(line) > w - 4:
+                line = line[: w - 7] + "..."
+            lines.append(f"{DIM}│{RESET}  {line:<{w - 4}}{DIM}│{RESET}")
+        lines.append(_box_end(w))
+
     return lines
 
 
@@ -263,6 +357,8 @@ def render_preflight_summary(
     parts.append(f"{BOLD}{GREEN}{'═' * 72}{RESET}")
 
     parts.extend(format_category_table(report.get("category_counts") or {}, robbery_class))
+    if report.get("training_data_summary"):
+        parts.extend(format_dataset_overview_block(report["training_data_summary"], robbery_class))
     parts.extend(format_split_table(report.get("split_summary") or {}))
     parts.extend(format_cache_block(report.get("cache"), float(report.get("wall_seconds", 0))))
     if report.get("time_estimate"):

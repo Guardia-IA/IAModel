@@ -40,6 +40,7 @@ from time_estimate import build_time_estimate_report, estimate_job_queue_wall  #
 from campaign2_paths import parallel_recommendation_path  # noqa: E402
 from training_time_estimate import fmt_duration  # noqa: E402
 from preflight_display import render_preflight_summary  # noqa: E402
+from dataset_plan_summary import SPLIT_LABELS, SPLIT_ORDER, summarize_training_dataset  # noqa: E402
 from p0_jobs import build_p0_job_queue  # noqa: E402
 from p1_jobs import build_p1_job_queue  # noqa: E402
 from matrix_jobs import build_matrix_job_queue, cache_dir_for_pose, matrix_settings  # noqa: E402
@@ -445,8 +446,58 @@ def main() -> int:
         if manifest_path.is_file()
         else []
     )
+    manifest_entries_early: List[Dict[str, Any]] = []
+    if manifest_path.is_file():
+        manifest_entries_early = json.loads(manifest_path.read_text(encoding="utf-8")).get("entries", [])
+
+    training_data_summary: Optional[Dict[str, Any]] = None
+    if manifest_entries_early:
+        training_data_summary = summarize_training_dataset(
+            manifest_entries_early,
+            cfg,
+            debug_mode=bool(args.debug),
+        )
+        log(f"\n{BOLD}4) Dataset para entrenamiento v2 (clips + ventanas 8 s){RESET}")
+        log(
+            f"  {BOLD}Total clips:{RESET} {GREEN}{training_data_summary['num_clips_total']:,}{RESET} "
+            f"(manifest/caché)"
+        )
+        log(f"  {BOLD}Por categoría (label carpeta):{RESET}")
+        for cat_s, n in sorted(
+            (training_data_summary.get("category_counts") or {}).items(),
+            key=lambda x: int(x[0]),
+        ):
+            mark = f" {MAGENTA}← robo{RESET}" if int(cat_s) == int(cfg.get("robbery_class", 6)) else ""
+            log(f"    cat {cat_s}: {n:,}{mark}")
+        win = training_data_summary.get("windows") or {}
+        log(
+            f"  {BOLD}Ventanas indexadas:{RESET} "
+            f"{win.get('window_seconds')}s stride {win.get('stride_seconds')}s, "
+            f"policy={win.get('window_label_policy')}, max/clip={win.get('max_windows_per_clip')}"
+        )
+        for sp in SPLIT_ORDER:
+            sc = (training_data_summary.get("split_clips") or {}).get(sp)
+            if not sc:
+                continue
+            nw = int((win.get("by_split") or {}).get(sp, 0))
+            np_ = int((win.get("positive_labels_by_split") or {}).get(sp, 0))
+            log(
+                f"    {CYAN}{SPLIT_LABELS.get(sp, sp)}{RESET}: "
+                f"{sc['clips']:,} clips ({sc['robbery']:,} robos) → "
+                f"{nw:,} ventanas (y=1: {np_:,})"
+            )
+        aug = training_data_summary.get("augment") or {}
+        if aug.get("enabled"):
+            tw = int((win.get("by_split") or {}).get("train", 0))
+            log(
+                f"  {BOLD}Sintético (augment):{RESET} {YELLOW}on-the-fly{RESET} en train — "
+                f"0 filas extra en disco; ~{tw:,} ventanas × transform./época"
+            )
+        else:
+            log(f"  {BOLD}Sintético (augment):{RESET} desactivado")
+
     if split_sum:
-        log(f"\n{BOLD}4) Split (provisional Sprint 1, por group_id hash){RESET}")
+        log(f"\n{BOLD}4b) Split resumido (clips / robos){RESET}")
         for sp, counts in sorted(split_sum.items()):
             log(f"  {sp}: clips={counts['clips']} robbery={counts['robbery']}")
 
@@ -541,7 +592,16 @@ def main() -> int:
     if manifest_path.is_file():
         manifest_entries = json.loads(manifest_path.read_text(encoding="utf-8")).get("entries", [])
 
-    category_counts = _category_table(records) if records else _category_table_from_manifest(manifest_entries)
+    if manifest_entries:
+        category_counts = _category_table_from_manifest(manifest_entries)
+    elif records and not matrix_jobs_built:
+        category_counts = _category_table(records)
+    elif records:
+        category_counts = _category_table_from_manifest(
+            records[: len(records) // max(1, len(manifest_by_pose) or 1)]
+        )
+    else:
+        category_counts = {}
     if not cache_result and manifest_path.is_file():
         cache_result_reuse = _cache_info_from_manifest(manifest_path)
     else:
@@ -695,6 +755,7 @@ def main() -> int:
             else cache_result_reuse
         ),
         "split_summary": split_sum,
+        "training_data_summary": training_data_summary,
         "job_queue": str(qpath),
         "num_jobs": len(jobs),
         "wall_seconds": round(time.perf_counter() - t0, 2),
@@ -722,6 +783,12 @@ def main() -> int:
     with open(report_path, "w", encoding="utf-8") as f:
         json.dump(preflight_report, f, indent=2, ensure_ascii=False)
         f.write("\n")
+    if training_data_summary:
+        tdp = layout["reports_dir"] / "training_data_plan.json"
+        with open(tdp, "w", encoding="utf-8") as f:
+            json.dump(training_data_summary, f, indent=2, ensure_ascii=False)
+            f.write("\n")
+        log(f"{DIM}Plan dataset: {tdp}{RESET}")
 
     meta = {
         "run_id": run_id,
