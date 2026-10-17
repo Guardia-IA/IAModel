@@ -219,7 +219,7 @@ def main() -> int:
     ap.add_argument(
         "--debug",
         action="store_true",
-        help="Modo rápido: ~50 clips, P1 corto (ver debug en campaign2_config.json). Usa con --p1.",
+        help="Modo rápido: ~10 clips (debug.max_clips), P1 corto. Usa con --p1 o --matrix.",
     )
     ap.add_argument(
         "--matrix",
@@ -235,7 +235,7 @@ def main() -> int:
     if args.debug:
         dbg = cfg.get("debug") or {}
         if args.max_clips <= 0:
-            args.max_clips = int(dbg.get("max_clips", 50))
+            args.max_clips = int(dbg.get("max_clips", 10))
     phase = str(cfg.get("phase") or "sprint1_infra")
     if args.debug:
         phase = "debug_p1"
@@ -276,6 +276,9 @@ def main() -> int:
     temporal = cfg.get("temporal") or {}
     cache_cfg = cfg.get("cache") or {}
     split_cfg = cfg.get("split") or {}
+    min_rob_eval = int(split_cfg.get("min_robbery_per_eval_split", 5))
+    if args.debug:
+        min_rob_eval = min(min_rob_eval, 1)
 
     records: List[Dict[str, Any]] = []
     fps_audit_report: Optional[Dict[str, Any]] = None
@@ -349,7 +352,7 @@ def main() -> int:
                 target_hz=float(temporal.get("target_hz", 12.0)),
                 split_ratios=dict(split_cfg.get("ratios") or {}),
                 split_seed=int(split_cfg.get("seed", 42)),
-                min_robbery_per_eval_split=int(split_cfg.get("min_robbery_per_eval_split", 5)),
+                min_robbery_per_eval_split=min_rob_eval,
                 use_shm=bool(cache_cfg.get("use_shm", True)),
                 shm_basename=f"{cache_cfg.get('shm_basename', 'kanvis_pose_12hz')}_{ps}",
                 log_fn=log,
@@ -417,7 +420,7 @@ def main() -> int:
                 target_hz=float(temporal.get("target_hz", 12.0)),
                 split_ratios=dict(split_cfg.get("ratios") or {}),
                 split_seed=int(split_cfg.get("seed", 42)),
-                min_robbery_per_eval_split=int(split_cfg.get("min_robbery_per_eval_split", 5)),
+                min_robbery_per_eval_split=min_rob_eval,
                 use_shm=bool(cache_cfg.get("use_shm", True)),
                 shm_basename=str(cache_cfg.get("shm_basename", "kanvis_pose_12hz")),
                 log_fn=log,

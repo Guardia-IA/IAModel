@@ -42,8 +42,13 @@ def build_matrix_job_queue(
     warnings: List[str] = []
     jobs: List[JobSpec] = []
 
-    # P0 legacy: por pose_source y cada .pt configurado
-    if ms["run_p0_legacy"] and not smoke:
+    dbg = cfg.get("debug") or {}
+    run_p0 = ms["run_p0_legacy"]
+    if debug and dbg.get("run_p0_legacy") is False:
+        run_p0 = False
+
+    # P0 legacy: por pose_source y cada .pt configurado (opcional, solo comparación)
+    if run_p0 and not smoke:
         p0_cfg = dict(cfg.get("p0_incumbent") or {})
         p0_cfg["modes"] = ms["p0_modes"]
         p0_cfg["single_user_variants"] = ms["single_user_variants"]

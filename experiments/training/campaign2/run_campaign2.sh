@@ -66,8 +66,10 @@ Uso: $0 <comando> [args...]
   p1-promote           Copia mejor checkpoint a models/promoted/
   debug-gate           Comprueba RUN (robos en split, best.pt, etc.)
   debug-pipeline       new-run + probe + preflight --debug --p1 + train + eval + resúmenes
-  matrix-pipeline      full+filtered, legacy eval + train v2 + eval + ranking ensembles
-  debug-matrix         matrix-pipeline en modo debug (~50 clips)
+  matrix-pipeline      train v2 (matriz arq×semillas) + calibrate + eval + leaderboard
+  debug-matrix         matrix-pipeline en debug (~10 clips, sin P0 legacy)
+  launch-debug         alias: validate + debug-matrix (pasa --data-root)
+  launch-train         alias: matrix-pipeline full dataset (~19k clips)
   ensemble-leaderboard Mejor par #A+#B por pose_source (tras eval)
   pipeline             new-run + probe + preflight (sin train; Sprint 1)
   smoke-pipeline       new-run + probe + preflight --smoke-test + train
@@ -76,6 +78,8 @@ Variables:
   RUN_ID, CAMPAIGN2_MAX_PARALLEL, PYTHON
 
 Ejemplo:
+  $0 launch-debug --data-root /media/8TB/.../data_clips/
+  $0 launch-train --data-root /media/8TB/.../data_clips/
   $0 new-run
   $0 preflight --data-root /media/8TB/.../data_result
   export CAMPAIGN2_MODEL_41=/ruta/modelo_41.pt CAMPAIGN2_MODEL_48=/ruta/modelo_48.pt
@@ -230,7 +234,29 @@ EOF
     "$0" ensemble-leaderboard --run-id "$RUN_ID"
     "$0" p1-promote --run-id "$RUN_ID" || true
     "$0" debug-gate --run-id "$RUN_ID"
-    echo "[debug-matrix] OK — para producción: ./run_campaign2.sh matrix-pipeline --data-root ..."
+    echo "[debug-matrix] OK — para producción: ./run_campaign2.sh launch-train --data-root ..."
+    ;;
+  launch-debug)
+    DATA_OK=0
+    for a in "${EXTRA_ARGS[@]}"; do
+      [[ "$a" == --data-root || "$a" == --data-root=* ]] && DATA_OK=1
+    done
+    if [[ "$DATA_OK" -eq 0 ]]; then
+      echo "Uso: $0 launch-debug --data-root /media/8TB/.../data_clips/" >&2
+      exit 2
+    fi
+    "$0" debug-matrix "${EXTRA_ARGS[@]}"
+    ;;
+  launch-train)
+    DATA_OK=0
+    for a in "${EXTRA_ARGS[@]}"; do
+      [[ "$a" == --data-root || "$a" == --data-root=* ]] && DATA_OK=1
+    done
+    if [[ "$DATA_OK" -eq 0 ]]; then
+      echo "Uso: $0 launch-train --data-root /media/8TB/.../data_clips/" >&2
+      exit 2
+    fi
+    "$0" matrix-pipeline "${EXTRA_ARGS[@]}"
     ;;
   debug-gate)
     parse_run_id_from_args "${EXTRA_ARGS[@]}" || true

@@ -97,9 +97,11 @@
   },
   "campaign_matrix": {
     "enabled": true,
-    "pose_sources": ["full", "filtered"],
+    "pose_sources": ["full"],
+    "_pose_sources_launch_comment": "Prod v2: poses_full (+ valid_mask) alineado con C1. Añade 'filtered' para ablation (duplica trains).",
     "run_p1_train": true,
-    "run_p0_legacy": true,
+    "run_p0_legacy": false,
+    "_run_p0_legacy_comment": "true solo para comparar #41/#48 en el mismo run; no es el modelo a desplegar. Opcional: export CAMPAIGN2_MODEL_41/48 y preflight --p0.",
     "p0_modes": ["windows"],
     "single_user_variants": [false],
     "ensemble_pairs": [
@@ -115,8 +117,9 @@
     "inventory_limit": 6000,
     "reuse_inventory_across_pose_sources": true,
     "_inventory_comment": "Debug: no escanear ~19k clips; 2º pose_source reutiliza lista",
-    "max_clips": 50,
-    "min_robbery_clips": 8,
+    "max_clips": 10,
+    "min_robbery_clips": 2,
+    "run_p0_legacy": false,
     "max_windows_per_clip": 8,
     "early_stop_patience": 2,
     "p1_job_matrix": [
@@ -135,7 +138,7 @@
         "seeds": 1
       }
     ],
-    "_comment": "preflight --debug --p1: 2 jobs paralelos, pocas épocas, ~50 clips"
+    "_comment": "preflight --debug --matrix: 2 arq × 1 seed, 4 épocas, ~10 clips"
   },
   "p0_incumbent": {
     "models_dir": "",
