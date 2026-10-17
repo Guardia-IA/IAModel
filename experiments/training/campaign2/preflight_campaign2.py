@@ -566,11 +566,16 @@ def main() -> int:
     log(f"  Ventanas/época (train / val_dev): {time_est['window_train_rows_per_epoch']} / {time_est['window_val_rows_per_epoch']}")
     log(f"  Jobs planificados: {time_est['p1_planned_jobs']} × semillas → {time_est['p1_planned_training_runs']} entrenamientos")
     log(f"  Factor calibración (subestimación legacy): ×{time_est['calibration_factor_applied']}")
-    log(f"  {BOLD}P1 secuencial (1 GPU, 1 job):{RESET} {CYAN}{time_est['p1_serial_human']}{RESET}")
+    log(f"  {BOLD}P1 secuencial GPU (1 job tras otro):{RESET} {CYAN}{time_est.get('p1_serial_gpu_human', time_est['p1_serial_human'])}{RESET}")
     log(
-        f"  {BOLD}P1 paralelo ({max_parallel} jobs):{RESET} {GREEN}{time_est['p1_parallel_human']}{RESET} "
-        f"({time_est['p1_parallel_seconds'] / 3600:.2f} h)"
+        f"  {BOLD}P1 paralelo GPU (×{max_parallel} jobs):{RESET} {GREEN}{time_est.get('p1_parallel_gpu_human', time_est['p1_parallel_human'])}{RESET} "
+        f"({time_est.get('p1_parallel_gpu_seconds', time_est['p1_parallel_seconds']) / 3600:.2f} h)"
     )
+    if time_est.get("p1_serial_cpu_human"):
+        log(
+            f"  {BOLD}P1 referencia CPU{RESET} (×8 vs GPU heurístico; train_v2 no soporta CPU hoy): "
+            f"sec {time_est['p1_serial_cpu_human']} → par×{max_parallel} {time_est.get('p1_parallel_cpu_human', '?')}"
+        )
     if time_est.get("legacy_campaign_20_models_reference"):
         leg = time_est["legacy_campaign_20_models_reference"]
         log(

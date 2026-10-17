@@ -17,7 +17,9 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 
 CAMPAIGN2_DIR = Path(__file__).resolve().parent
-for p in (CAMPAIGN2_DIR.parent, CAMPAIGN2_DIR):
+TRAINING_DIR = CAMPAIGN2_DIR.parent
+CAMPAIGN_DIR = TRAINING_DIR / "campaign"
+for p in (TRAINING_DIR, CAMPAIGN2_DIR, CAMPAIGN_DIR):
     if str(p) not in sys.path:
         sys.path.insert(0, str(p))
 

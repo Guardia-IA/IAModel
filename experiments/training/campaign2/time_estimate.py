@@ -178,7 +178,10 @@ def build_time_estimate_report(
     jobs = default_p1_job_plan(cfg)
     num_runs = sum(int(j.get("seeds", 1)) for j in jobs)
     plan = estimate_job_plan(jobs, train_rows=train_rows, val_rows=val_rows, calibration_factor=calib)
-    parallel_s = parallel_wall_seconds(plan["serial_seconds"], num_runs, max_parallel_jobs)
+    on_gpu = plan.get("cuda_available", cuda_available())
+    parallel_gpu_s = parallel_wall_seconds(plan["serial_gpu_seconds"], num_runs, max_parallel_jobs)
+    parallel_cpu_s = parallel_wall_seconds(plan["serial_cpu_seconds"], num_runs, max_parallel_jobs)
+    parallel_s = parallel_gpu_s if on_gpu else parallel_cpu_s
 
     # Legacy reference: 20 models × 1 cell sequential calibrated
     legacy_20 = None
@@ -215,8 +218,17 @@ def build_time_estimate_report(
         ),
         "p1_serial_seconds": plan["serial_seconds"],
         "p1_parallel_seconds": parallel_s,
+        "p1_serial_gpu_seconds": plan["serial_gpu_seconds"],
+        "p1_serial_cpu_seconds": plan["serial_cpu_seconds"],
+        "p1_parallel_gpu_seconds": parallel_gpu_s,
+        "p1_parallel_cpu_seconds": parallel_cpu_s,
         "p1_serial_human": fmt_duration(plan["serial_seconds"]),
         "p1_parallel_human": fmt_duration(parallel_s),
+        "p1_serial_gpu_human": fmt_duration(plan["serial_gpu_seconds"]),
+        "p1_serial_cpu_human": fmt_duration(plan["serial_cpu_seconds"]),
+        "p1_parallel_gpu_human": fmt_duration(parallel_gpu_s),
+        "p1_parallel_cpu_human": fmt_duration(parallel_cpu_s),
+        "cuda_available": on_gpu,
         "per_job": plan["jobs"],
         "legacy_campaign_20_models_reference": legacy_20,
         "phase": str(cfg.get("phase", "sprint1_infra")),
