@@ -112,6 +112,9 @@
     "_comment": "Un run: caché full+filtered, eval legacy .pt + entrena v2; tras train: calibrate T + p1-eval + ensemble-leaderboard"
   },
   "debug": {
+    "inventory_limit": 6000,
+    "reuse_inventory_across_pose_sources": true,
+    "_inventory_comment": "Debug: no escanear ~19k clips; 2º pose_source reutiliza lista",
     "max_clips": 50,
     "min_robbery_clips": 8,
     "max_windows_per_clip": 8,

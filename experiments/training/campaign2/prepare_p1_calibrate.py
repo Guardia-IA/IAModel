@@ -13,6 +13,7 @@ for p in (TRAINING_DIR, CAMPAIGN2_DIR):
         sys.path.insert(0, str(p))
 
 from campaign2_paths import load_campaign2_config, read_current_run_id, run_layout  # noqa: E402
+from manifest_paths import default_manifest_path  # noqa: E402
 from p1_calibrate_jobs import build_p1_calibrate_job_queue, write_calibrate_queue  # noqa: E402
 
 
@@ -28,9 +29,12 @@ def main() -> int:
         return 2
     cfg = load_campaign2_config(Path(args.config) if args.config else None)
     layout = run_layout(run_id)
-    manifest = layout["cache_dir"] / "manifest.json"
-    if not manifest.is_file():
-        print(f"ERROR: falta {manifest}", file=sys.stderr)
+    manifest = default_manifest_path(run_id)
+    if manifest is None or not manifest.is_file():
+        print(
+            "ERROR: falta manifest (cache/manifest.json o cache/full|filtered/manifest.json)",
+            file=sys.stderr,
+        )
         return 2
 
     jobs, warnings = build_p1_calibrate_job_queue(

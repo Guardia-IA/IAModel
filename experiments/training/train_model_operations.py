@@ -1461,6 +1461,7 @@ def _collect_examples_from_root(
     min_valid_frames: int,
     min_valid_pct: float,
     max_occlusion_ratio: float,
+    max_examples: int = 0,
 ) -> List[PoseExample]:
     examples: List[PoseExample] = []
 
@@ -1557,6 +1558,8 @@ def _collect_examples_from_root(
                         action_label=int(folder_cat),
                     )
                 )
+                if max_examples > 0 and len(examples) >= max_examples:
+                    return examples
     return examples
 
 
@@ -1568,6 +1571,7 @@ def collect_examples(
     min_valid_pct: float = MIN_VALID_PCT,
     max_occlusion_ratio: float = MAX_OCCLUSION_RATIO,
     data_root: str | Path | None = None,
+    max_examples: int = 0,
 ) -> List[PoseExample]:
     """
     Recorre data_result/{cat}/{clip_name}/ y construye ejemplos por usuario.
@@ -1579,6 +1583,11 @@ def collect_examples(
 
     examples: List[PoseExample] = []
     for root in roots:
+        remaining = 0
+        if max_examples > 0:
+            remaining = max(0, max_examples - len(examples))
+            if remaining <= 0:
+                break
         examples.extend(
             _collect_examples_from_root(
                 root,
@@ -1588,6 +1597,7 @@ def collect_examples(
                 min_valid_frames=min_valid_frames,
                 min_valid_pct=min_valid_pct,
                 max_occlusion_ratio=max_occlusion_ratio,
+                max_examples=remaining,
             )
         )
 

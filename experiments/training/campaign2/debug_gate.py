@@ -29,7 +29,14 @@ def main() -> int:
     errors: list[str] = []
     warnings: list[str] = []
 
-    man_paths = list(layout["cache_dir"].glob("**/manifest.json"))
+    from manifest_paths import discover_manifest_by_pose, load_run_meta
+
+    meta = load_run_meta(run_id)
+    man_paths: list[Path] = []
+    for _ps, pstr in (meta.get("manifest_by_pose") or {}).items():
+        man_paths.append(Path(str(pstr)))
+    if not man_paths:
+        man_paths = list(discover_manifest_by_pose(layout["cache_dir"]).values())
     if not man_paths:
         man_paths = [layout["cache_dir"] / "manifest.json"]
     robbery_in_eval = 0

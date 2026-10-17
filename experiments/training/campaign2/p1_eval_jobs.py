@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 from gpu_scheduler import JobSpec
+from manifest_paths import manifest_for_job_id
 
 
 def discover_trained_checkpoints(jobs_dir: Path) -> List[Tuple[str, Path]]:
@@ -28,6 +29,7 @@ def build_p1_eval_job_queue(
     run_id: str,
     jobs_dir: Path,
     only_job_ids: List[str] | None = None,
+    use_per_job_manifest: bool = True,
 ) -> Tuple[List[JobSpec], List[str]]:
     warnings: List[str] = []
     ckpts = discover_trained_checkpoints(jobs_dir)
@@ -52,10 +54,15 @@ def build_p1_eval_job_queue(
         if thr_path.is_file():
             with open(thr_path, "r", encoding="utf-8") as f:
                 thr = float(json.load(f).get("threshold", threshold))
+        man = manifest_path
+        if use_per_job_manifest:
+            mp = manifest_for_job_id(run_id, job_id)
+            if mp is not None and mp.is_file():
+                man = str(mp)
         params: Dict[str, Any] = {
             "source_job_id": job_id,
             "checkpoint_path": str(ckpt_path),
-            "manifest_path": manifest_path,
+            "manifest_path": man,
             "eval_split": eval_split,
             "threshold": thr,
             "batch_size": batch_size,

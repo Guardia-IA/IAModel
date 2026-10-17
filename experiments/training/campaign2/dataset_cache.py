@@ -200,6 +200,32 @@ def subsample_records_stratified(
     return picked[:max_clips]
 
 
+def swap_pose_source_on_records(
+    records: List[Dict[str, Any]],
+    pose_source: str,
+) -> List[Dict[str, Any]]:
+    """Reutiliza inventario debug: mismos clips, otro npy (full ↔ filtered)."""
+    pose_filename = "poses.npy" if pose_source == "filtered" else "poses_full.npy"
+    out: List[Dict[str, Any]] = []
+    for rec in records:
+        old = Path(str(rec["pose_path"]))
+        user_dir = old.parent
+        new_path = user_dir / pose_filename
+        if not new_path.is_file():
+            continue
+        valid_mask_path = rec.get("valid_mask_path")
+        if pose_source == "filtered":
+            valid_mask_path = None
+        else:
+            mask_path = user_dir / "valid_mask.npy"
+            valid_mask_path = str(mask_path) if mask_path.is_file() else None
+        rec2 = dict(rec)
+        rec2["pose_path"] = str(new_path)
+        rec2["valid_mask_path"] = valid_mask_path
+        out.append(rec2)
+    return out
+
+
 def collect_clip_records(
     data_roots: List[Path],
     *,
@@ -207,6 +233,7 @@ def collect_clip_records(
     single_user_only: bool = False,
     robbery_class: int = 6,
     split_strategy: str = "stratified_group_hybrid",
+    inventory_limit: int = 0,
     log_fn=None,
 ) -> List[Dict[str, Any]]:
     from train_model_operations import collect_examples, _example_uid  # type: ignore
@@ -221,12 +248,23 @@ def collect_clip_records(
     for root in data_roots:
         _log(f"  Escaneando data_result: {root}")
         _log(f"    pose_source={pose_source!r} single_user_only={single_user_only}")
+        max_ex = 0
+        if inventory_limit > 0:
+            max_ex = max(0, inventory_limit - len(records))
+            if max_ex <= 0:
+                break
         examples = collect_examples(
             pose_source=pose_source,
             single_user_only=single_user_only,
             data_root=str(root),
+            max_examples=max_ex,
         )
-        _log(f"    → {len(examples)} ejemplos (tracks/clips) en esta raíz")
+        if inventory_limit > 0:
+            _log(
+                f"    → {len(examples)} ejemplos (límite inventario debug={inventory_limit})"
+            )
+        else:
+            _log(f"    → {len(examples)} ejemplos (tracks/clips) en esta raíz")
         for ex in examples:
             clip_dir = Path(ex.pose_path).parent.parent
             meta_path = clip_dir / "meta.json"

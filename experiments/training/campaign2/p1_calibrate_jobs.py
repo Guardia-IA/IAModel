@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Tuple
 
 from gpu_scheduler import JobSpec
 
+from manifest_paths import manifest_for_job_id
 from p1_eval_jobs import discover_trained_checkpoints
 
 
@@ -32,10 +33,14 @@ def build_p1_calibrate_job_queue(
     jobs: List[JobSpec] = []
     for job_id, ckpt_path in ckpts:
         cid = f"calib_{job_id}"
+        man = manifest_path
+        mp = manifest_for_job_id(run_id, job_id)
+        if mp is not None and mp.is_file():
+            man = str(mp)
         params: Dict[str, Any] = {
             "source_job_id": job_id,
             "checkpoint_path": str(ckpt_path),
-            "manifest_path": manifest_path,
+            "manifest_path": man,
             "calib_split": calib_split,
             "batch_size": batch_size,
             "temporal": temporal,

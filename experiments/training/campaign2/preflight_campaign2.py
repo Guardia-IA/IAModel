@@ -29,7 +29,12 @@ from campaign2_paths import (  # noqa: E402
     run_layout,
     run_meta_path,
 )
-from dataset_cache import build_pose_cache, collect_clip_records, subsample_records_stratified  # noqa: E402
+from dataset_cache import (  # noqa: E402
+    build_pose_cache,
+    collect_clip_records,
+    subsample_records_stratified,
+    swap_pose_source_on_records,
+)
 from gpu_scheduler import JobSpec  # noqa: E402
 from time_estimate import build_time_estimate_report  # noqa: E402
 from campaign2_paths import parallel_recommendation_path  # noqa: E402
@@ -38,6 +43,7 @@ from preflight_display import render_preflight_summary  # noqa: E402
 from p0_jobs import build_p0_job_queue  # noqa: E402
 from p1_jobs import build_p1_job_queue  # noqa: E402
 from matrix_jobs import build_matrix_job_queue, cache_dir_for_pose, matrix_settings  # noqa: E402
+from manifest_paths import write_run_meta  # noqa: E402
 from fps_audit import audit_clip_timing  # noqa: E402
 from hard_neg_manifest import (  # noqa: E402
     build_hard_neg_manifest,
@@ -289,18 +295,35 @@ def main() -> int:
         log(f"\n{BOLD}2–3) Modo MATRIZ: caché por pose_source {ms['pose_sources']}{RESET}")
         single_user_only = bool(cfg.get("single_user_only", False))
         robbery_class = int(cfg.get("robbery_class", 6))
+        dbg_cfg = cfg.get("debug") or {}
+        inventory_limit = int(dbg_cfg.get("inventory_limit", 6000)) if args.debug else 0
+        reuse_inv = bool(dbg_cfg.get("reuse_inventory_across_pose_sources", True))
+        if inventory_limit > 0:
+            log(
+                f"  {YELLOW}DEBUG inventario rápido: máx {inventory_limit} clips/scan "
+                f"(reuse_pose={reuse_inv}){RESET}"
+            )
+        rec_sampled: Optional[List[Dict[str, Any]]] = None
         for ps in ms["pose_sources"]:
             log(f"\n  {BOLD}pose_source={CYAN}{ps}{RESET}")
             t_inv = time.perf_counter()
-            rec_ps = collect_clip_records(
-                data_roots,
-                pose_source=str(ps),
-                single_user_only=single_user_only,
-                robbery_class=robbery_class,
-                split_strategy=str(split_cfg.get("strategy", "stratified_group_hybrid")),
-                log_fn=log,
-            )
-            log(f"    Inventario {len(rec_ps)} clips en {time.perf_counter() - t_inv:.1f}s")
+            if rec_sampled is not None and reuse_inv and args.debug:
+                rec_ps = swap_pose_source_on_records(rec_sampled, str(ps))
+                log(
+                    f"    Inventario reutilizado ({len(rec_ps)} clips, sin re-escaneo) "
+                    f"en {time.perf_counter() - t_inv:.1f}s"
+                )
+            else:
+                rec_ps = collect_clip_records(
+                    data_roots,
+                    pose_source=str(ps),
+                    single_user_only=single_user_only,
+                    robbery_class=robbery_class,
+                    split_strategy=str(split_cfg.get("strategy", "stratified_group_hybrid")),
+                    inventory_limit=inventory_limit,
+                    log_fn=log,
+                )
+                log(f"    Inventario {len(rec_ps)} clips en {time.perf_counter() - t_inv:.1f}s")
             if args.max_clips > 0:
                 dbg = cfg.get("debug") or {}
                 min_rob = int(dbg.get("min_robbery_clips", 8)) if args.debug else 0
@@ -314,6 +337,8 @@ def main() -> int:
                     )
                 else:
                     rec_ps = rec_ps[: args.max_clips]
+            if rec_sampled is None and args.debug and reuse_inv:
+                rec_sampled = list(rec_ps)
             if not rec_ps:
                 log(f"    {YELLOW}WARN: 0 clips para {ps}{RESET}")
                 continue
@@ -344,12 +369,17 @@ def main() -> int:
         pose_source = str(args.pose_source or cfg.get("pose_source", "full"))
         single_user_only = bool(cfg.get("single_user_only", False))
         robbery_class = int(cfg.get("robbery_class", 6))
+        dbg_cfg = cfg.get("debug") or {}
+        inventory_limit = int(dbg_cfg.get("inventory_limit", 6000)) if args.debug else 0
+        if inventory_limit > 0:
+            log(f"  {YELLOW}DEBUG inventario rápido: máx {inventory_limit} clips{RESET}")
         records = collect_clip_records(
             data_roots,
             pose_source=pose_source,
             single_user_only=single_user_only,
             robbery_class=robbery_class,
             split_strategy=str(split_cfg.get("strategy", "stratified_group_hybrid")),
+            inventory_limit=inventory_limit,
             log_fn=log,
         )
         log(f"  Inventario en {time.perf_counter() - t_inv:.1f}s — {len(records)} registros")
@@ -558,8 +588,12 @@ def main() -> int:
             log(f"  Scheduler: preflight --smoke-test && ./run_campaign2.sh train")
     elif queue_purpose == "p0_baseline":
         log(f"  Siguiente: ./run_campaign2.sh train && ./run_campaign2.sh p0-summary")
-    elif "p1" in queue_purpose:
+    elif "p1" in queue_purpose or queue_purpose == "campaign_matrix":
         log(f"  Siguiente: ./run_campaign2.sh train  (checkpoints en jobs/<job_id>/best.pt)")
+    elif enable_smoke and jobs:
+        log(f"  {YELLOW}Modo smoke-test:{RESET} {len(jobs)} jobs (scheduler, NO modelo Kanvis)")
+    elif jobs:
+        log(f"  {len(jobs)} jobs en cola ({queue_purpose})")
     else:
         log(f"  {YELLOW}Modo smoke-test:{RESET} {len(jobs)} jobs (scheduler, NO modelo Kanvis)")
         for j in jobs:
@@ -619,6 +653,21 @@ def main() -> int:
         "max_parallel_jobs": max_parallel,
         "time_estimate": time_est,
     }
+    manifest_meta = {k: str(v) for k, v in manifest_by_pose.items()}
+    if not manifest_meta and manifest_path.is_file():
+        manifest_meta = {"default": str(manifest_path)}
+    write_run_meta(
+        run_id,
+        {
+            "run_id": run_id,
+            "purpose": queue_purpose,
+            "matrix_mode": bool(manifest_by_pose),
+            "manifest_by_pose": manifest_meta,
+            "default_manifest": str(manifest_path) if manifest_path.is_file() else None,
+            "debug": bool(args.debug),
+        },
+    )
+
     report_path = layout["reports_dir"] / "preflight_summary.json"
     with open(report_path, "w", encoding="utf-8") as f:
         json.dump(preflight_report, f, indent=2, ensure_ascii=False)
