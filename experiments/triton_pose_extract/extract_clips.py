@@ -178,6 +178,7 @@ def _cmd_extract_csv(args: argparse.Namespace) -> int:
     pipe = load_pipeline_config(raw, output_base=ob)
     if getattr(args, "no_single_user_only", False):
         pipe.filters.single_user_only = False
+        pipe.filters.export_primary_user_on_multi_track = False
     input_roots = _resolve_input_roots(args, raw)
 
     settings = ExtractSettings.load(
@@ -186,7 +187,10 @@ def _cmd_extract_csv(args: argparse.Namespace) -> int:
         parallel_clips=args.parallel if args.parallel > 0 else None,
         require_pose_repo=True,
     )
-    settings.single_user_only = pipe.filters.single_user_only
+    if pipe.filters.export_primary_user_on_multi_track and not getattr(args, "no_single_user_only", False):
+        settings.single_user_only = False
+    else:
+        settings.single_user_only = pipe.filters.single_user_only
     ensure_pose_core_importable(settings.triton_pose_repo)
 
     if not args.skip_ready:

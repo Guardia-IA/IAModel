@@ -18,6 +18,7 @@ from triton_pose_extract.ffmpeg_cut import cut_clip, video_duration_cv2
 from triton_pose_extract.pipeline_config import PipelineConfig
 from triton_pose_extract.settings import ExtractSettings
 from triton_pose_extract.export_diagnosis import infer_export_status, is_infra_failure
+from triton_pose_extract.primary_user import prune_to_primary_user
 from triton_pose_extract.validate_output import validate_clip_dir
 
 logger = logging.getLogger(__name__)
@@ -95,11 +96,20 @@ def _process_one_job(job: ExtractClipJob, pipe: PipelineConfig, settings: Extrac
             meta["full_clip"] = r.use_full_clip
             meta["csv"] = str(r.csv_path)
             meta["iamodel_single_user_only"] = pipe.filters.single_user_only
+            meta["iamodel_export_primary_user"] = pipe.filters.export_primary_user_on_multi_track
+
+        if pipe.filters.export_primary_user_on_multi_track:
+            pr_ok, pr_err = prune_to_primary_user(result.out_dir)
+            if pr_ok and meta_path.is_file():
+                meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            elif pr_err and not list(result.out_dir.glob("user_*")):
+                pass
 
         errs = validate_clip_dir(result.out_dir)
+        effective_strict = pipe.filters.single_user_only and not pipe.filters.export_primary_user_on_multi_track
         export_status, export_hint = infer_export_status(
             meta or None,
-            single_user_only=pipe.filters.single_user_only,
+            single_user_only=effective_strict,
             validation_errors=errs,
         )
         meta["iamodel_export_status"] = export_status

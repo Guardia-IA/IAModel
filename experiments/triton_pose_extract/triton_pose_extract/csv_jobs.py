@@ -8,6 +8,7 @@ from typing import Dict, List, Optional, Tuple
 from triton_pose_extract.csv_io import CsvClipRow, discover_csv_files, iter_csv_clip_rows, make_clip_name
 from triton_pose_extract.ffmpeg_cut import video_duration_cv2
 from triton_pose_extract.pipeline_config import PipelineConfig, PipelineFilters
+from triton_pose_extract.primary_user import has_complete_export
 
 
 @dataclass
@@ -33,7 +34,7 @@ def _apply_prefilters(
 ) -> Optional[str]:
     if not r.video_path.is_file():
         return "video_no_encontrado"
-    if filters.skip_existing_output and data_dir.is_dir():
+    if filters.skip_existing_output and has_complete_export(data_dir):
         return "ya_existe_salida"
     dur = r.duration_sec
     if r.use_full_clip and dur <= 0:

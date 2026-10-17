@@ -38,7 +38,9 @@
   },
   "filters": {
     "single_user_only": true,
-    "_single_user_only_comment": "true = descarta clips multi-track (DatosOnline clip_buffer); false = exporta todos los tracks",
+    "_single_user_only_comment": "pose_core: si true y 2+ track IDs → no npy. IAModel usa export_primary_user_on_multi_track",
+    "export_primary_user_on_multi_track": true,
+    "_export_primary_comment": "Si ByteTrack ve 2+ IDs, exporta todos y deja solo el track con más frames válidos",
     "skip_existing_output": true,
     "min_kp_conf": 0.5,
     "min_clip_duration_sec": { "enabled": true, "value": 2.0 },

@@ -16,6 +16,7 @@ class FilterToggle:
 @dataclass
 class PipelineFilters:
     single_user_only: bool = True
+    export_primary_user_on_multi_track: bool = True
     min_clip_duration_sec: FilterToggle = field(default_factory=lambda: FilterToggle(True, 0.5))
     max_clip_duration_sec: FilterToggle = field(default_factory=lambda: FilterToggle(True, 120.0))
     min_user_seconds: FilterToggle = field(default_factory=lambda: FilterToggle(False, 0.0))
@@ -102,6 +103,9 @@ def load_pipeline_config(raw: Dict[str, Any], *, output_base: Path | None = None
         min_coverage_ratio=_toggle(filt.get("min_coverage_ratio"), True, 0.8),
         skip_existing_output=bool(filt.get("skip_existing_output", True)),
         min_kp_conf=float(filt.get("min_kp_conf", 0.5)),
+        export_primary_user_on_multi_track=bool(
+            filt.get("export_primary_user_on_multi_track", True)
+        ),
     )
 
     est = raw.get("time_estimate") or {}
