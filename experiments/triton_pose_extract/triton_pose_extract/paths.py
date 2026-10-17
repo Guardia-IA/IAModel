@@ -2,8 +2,32 @@
 from __future__ import annotations
 
 import os
+import shutil
 import sys
 from pathlib import Path
+
+_COPY2_PATCHED = False
+
+
+def patch_shutil_copy2_for_restricted_fs() -> None:
+    """
+    pose_core.clip_extractor usa shutil.copy2 al guardar clip.mp4.
+    En algunos montajes (NTFS/exFAT/NFS con noatime) copystat/utime falla con EPERM
+    aunque el copyfile haya ido bien.
+    """
+    global _COPY2_PATCHED
+    if _COPY2_PATCHED:
+        return
+    _orig = shutil.copy2
+
+    def _copy2_safe(src, dst, *, follow_symlinks=True):
+        try:
+            return _orig(src, dst, follow_symlinks=follow_symlinks)
+        except PermissionError:
+            shutil.copyfile(src, dst, follow_symlinks=follow_symlinks)
+
+    shutil.copy2 = _copy2_safe  # type: ignore[assignment]
+    _COPY2_PATCHED = True
 
 
 def _repo_candidates() -> list[Path]:
@@ -12,6 +36,7 @@ def _repo_candidates() -> list[Path]:
     iamodel = here.parents[3] if len(here.parents) > 3 else here
     roots = [
         home / "kanvis-triton-pose",
+        home / "kanvis" / "piloto_v1" / "kanvis-triton-pose",
         home / "dev" / "kanvis-triton-pose",
         home / "dev" / "Proyectos" / "kanvis-triton-pose",
         iamodel.parent / "kanvis-triton-pose",
@@ -50,6 +75,7 @@ def ensure_pose_core_importable(repo: Path | None = None) -> Path:
             "Exporta KANVIS_TRITON_POSE_ROOT=/ruta/al/repo o clónalo. "
             f"Probado: {tried} …"
         )
+    patch_shutil_copy2_for_restricted_fs()
     root_s = str(root)
     if root_s not in sys.path:
         sys.path.insert(0, root_s)

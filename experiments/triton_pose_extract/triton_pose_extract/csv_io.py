@@ -1,6 +1,7 @@
 """Lectura de CSVs de anotación (mismo contrato que pose_extractor_clean)."""
 from __future__ import annotations
 
+import hashlib
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -9,6 +10,27 @@ from typing import Dict, Iterator, List, Optional
 import pandas as pd
 
 HMS_PATTERN = re.compile(r"^\d{1,2}:\d{2}:\d{2}$")
+_SPANISH_MONTH = {
+    "enero": "01",
+    "febrero": "02",
+    "marzo": "03",
+    "abril": "04",
+    "mayo": "05",
+    "junio": "06",
+    "julio": "07",
+    "agosto": "08",
+    "septiembre": "09",
+    "setiembre": "09",
+    "octubre": "10",
+    "noviembre": "11",
+    "diciembre": "12",
+}
+_DATE_SPANISH_RE = re.compile(
+    r"(\d{1,2})\s*(Enero|Febrero|Marzo|Abril|Mayo|Junio|Julio|Agosto|"
+    r"Septiembre|Setiembre|Octubre|Noviembre|Diciembre)\s*(\d{4})",
+    re.IGNORECASE,
+)
+_DATE_COMPACT_RE = re.compile(r"(20\d{2})(\d{2})(\d{2})")
 
 
 def is_hms_format(val) -> bool:
@@ -128,6 +150,45 @@ def _hms_to_compact(t: str) -> str:
     return str(t).replace(":", "").strip()
 
 
+def _sanitize_token(s: str, *, max_len: int = 24) -> str:
+    out = re.sub(r"[^a-zA-Z0-9_-]+", "_", str(s).strip())
+    out = re.sub(r"_+", "_", out).strip("_")
+    return (out[:max_len] if out else "clip")
+
+
+def _date_token_from_paths(*hints: str | None) -> str:
+    for raw in hints:
+        if not raw:
+            continue
+        text = str(raw)
+        m = _DATE_SPANISH_RE.search(text)
+        if m:
+            day, month_name, year = m.group(1), m.group(2).lower(), m.group(3)
+            mm = _SPANISH_MONTH.get(month_name, "00")
+            return f"{int(day):02d}{mm}{year}"
+        m2 = _DATE_COMPACT_RE.search(text.replace("-", "").replace("_", ""))
+        if m2:
+            y, mo, d = m2.group(1), m2.group(2), m2.group(3)
+            return f"{d}{mo}{y}"
+    return "nodate"
+
+
+def _short_video_slug(video_rel_path: str) -> str:
+    """Últimos segmentos del path (sin prefijos /home/... enormes)."""
+    p = Path(str(video_rel_path).strip().strip('"').strip("'"))
+    stem = _sanitize_token(p.stem, max_len=16)
+    parent = p.parent.name if p.parent.name else ""
+    parent = _sanitize_token(parent, max_len=10)
+    if parent and parent.lower() not in ("videos", "sessions", "datos", "data"):
+        return f"{parent}_{stem}"[:28]
+    return stem[:20] or "clip"
+
+
+def _clip_fingerprint(video_rel_path: str, t_start: str, t_end: str, category: str) -> str:
+    key = f"{video_rel_path}|{normalize_hms(t_start)}|{normalize_hms(t_end)}|{category}"
+    return hashlib.sha256(key.encode("utf-8")).hexdigest()[:6]
+
+
 def make_clip_name(
     video_rel_path: str,
     t_start: str,
@@ -136,20 +197,19 @@ def make_clip_name(
     used_names: set,
     dir_rel_path: str | None = None,
 ) -> str:
-    p = Path(video_rel_path)
-    path_parts = list(p.parent.parts) + [p.stem]
-    path_norm = "_".join(path_parts) if path_parts else p.stem or "clip"
-    path_norm = path_norm.replace(" ", "_").replace("/", "_")
-    if dir_rel_path:
-        dir_norm = str(dir_rel_path).replace(" ", "_").replace("/", "_").replace("\\", "_")
-        if dir_norm and dir_norm != ".":
-            path_norm = f"{dir_norm}_{path_norm}"
+    """
+    Nombre corto para data_result: fecha + slug vídeo + tramo HMS + cat + hash.
+    Ej: 21122025_clipbuf_000003_000006_c0_a3f2bc
+    """
+    date_tok = _date_token_from_paths(dir_rel_path, video_rel_path)
+    slug = _short_video_slug(video_rel_path)
     t1 = _hms_to_compact(t_start)
     t2 = _hms_to_compact(t_end)
+    fp = _clip_fingerprint(video_rel_path, t_start, t_end, category)
     if is_full_clip_range(t_start, t_end):
-        base = f"{path_norm}_full_{category}"
+        base = f"{date_tok}_{slug}_full_c{category}_{fp}"
     else:
-        base = f"{path_norm}_{t1}_{t2}_{category}"
+        base = f"{date_tok}_{slug}_{t1}_{t2}_c{category}_{fp}"
     name = base
     n = 2
     while name in used_names:

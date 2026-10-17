@@ -26,6 +26,8 @@ Cada fila: `video_path, t_start, t_end, category`
 
 Salida: `{output_base}/data_result/{cat}/{clip_name}/user_*/poses_full.npy`, `meta.json`, etc.
 
+Nombres de carpeta **cortos** (fecha del path + stem + HMS + `c{cat}` + hash 6 chars), no la ruta absoluta del CSV.
+
 ## Filtros (activar/desactivar)
 
 En `triton_pose_extract_config.json` → sección **`filters`**:
@@ -75,6 +77,8 @@ chmod +x run_extract.sh
 ```
 
 Informes: `{output_base}/logs/csv_extract_report.json`, preflight JSON opcional.
+
+**Montaje `/media/…` y `PermissionError` en `clip.mp4`:** algunos discos no permiten `utime` tras `shutil.copy2` en `pose_core`. IAModel parchea `copy2` → fallback a `copyfile` al cargar el vendor. Si un clip falló a medias, borra su carpeta en `data_result/…` y relanza.
 
 ## Un solo vídeo
 
