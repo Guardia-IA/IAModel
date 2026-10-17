@@ -149,7 +149,7 @@ def _cmd_preflight_csv(args: argparse.Namespace) -> int:
         measure_video_duration=bool(getattr(args, "measure_video_duration", False)),
         verbose=not getattr(args, "quiet", False),
     )
-    print_preflight_report(report)
+    print_preflight_report(report, list_missing=int(getattr(args, "list_missing", 15) or 0))
     if args.save_json:
         save_preflight_json(report, Path(args.save_json).expanduser())
     inv = report["inventory"]
@@ -234,6 +234,13 @@ def main() -> int:
     )
     pf.add_argument("--quiet", action="store_true", help="Solo resumen final")
     pf.add_argument("--save-json", type=str, default="", help="Guardar informe JSON")
+    pf.add_argument(
+        "--list-missing",
+        type=int,
+        default=15,
+        metavar="N",
+        help="Mostrar N ejemplos de vídeos no encontrados (0=ninguno)",
+    )
     pf.set_defaults(func=_cmd_preflight_csv)
 
     excsv = sub.add_parser("extract-csv", help="Pipeline CSV → FFmpeg → Triton (como pose_extractor_clean)")

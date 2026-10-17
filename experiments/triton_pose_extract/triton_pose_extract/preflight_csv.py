@@ -45,10 +45,15 @@ def scan_csv_inventory(
     total = 0
     missing = 0
     skipped_prefilter = 0
+    skipped_too_short = 0
+    skipped_too_long = 0
+    skipped_invalid_duration = 0
+    missing_entries: List[Dict[str, Any]] = []
     total_seconds = 0.0
     total_frames = 0
     full_without_probe = 0
     rows_seen = 0
+    missing_cap = 5000
 
     duration_fn = None
     if measure_video_duration:
@@ -84,6 +89,16 @@ def scan_csv_inventory(
                 _log(f"  … {rows_seen} filas CSV leídas, {total} clips válidos", log_fn)
             if not r.video_path.is_file():
                 missing += 1
+                if len(missing_entries) < missing_cap:
+                    missing_entries.append(
+                        {
+                            "csv": str(r.csv_path),
+                            "row": r.row_csv,
+                            "category": r.category,
+                            "video_csv": r.video_rel,
+                            "path_resolved": str(r.video_path),
+                        }
+                    )
                 continue
 
             dur = r.duration_sec
@@ -113,13 +128,16 @@ def scan_csv_inventory(
                     dur = pipe.estimate_full_clip_sec
                     full_without_probe += 1
             elif dur <= 0:
+                skipped_invalid_duration += 1
                 continue
 
             if pipe.filters.min_clip_duration_sec.enabled and dur < pipe.filters.min_clip_duration_sec.value:
                 skipped_prefilter += 1
+                skipped_too_short += 1
                 continue
             if pipe.filters.max_clip_duration_sec.enabled and dur > pipe.filters.max_clip_duration_sec.value:
                 skipped_prefilter += 1
+                skipped_too_long += 1
                 continue
 
             fps = pipe.estimate_fps
@@ -143,6 +161,11 @@ def scan_csv_inventory(
         "by_category": by_category,
         "missing_videos": missing,
         "skipped_prefilter": skipped_prefilter,
+        "skipped_too_short": skipped_too_short,
+        "skipped_too_long": skipped_too_long,
+        "skipped_invalid_duration": skipped_invalid_duration,
+        "missing_entries": missing_entries,
+        "missing_entries_truncated": missing > len(missing_entries),
         "total_seconds_video": total_seconds,
         "total_frames_est": total_frames,
         "full_clip_without_probe": full_without_probe,
@@ -228,24 +251,45 @@ def run_preflight_report(
     }
 
 
-def print_preflight_report(report: Dict[str, Any]) -> None:
+def print_preflight_report(report: Dict[str, Any], *, list_missing: int = 0) -> None:
     inv = report["inventory"]
     te = report["time_estimate"]
+    rows = int(inv.get("csv_rows_seen") or 0)
+    ok = int(inv["total_clips"])
+    miss = int(inv["missing_videos"])
+    sk = int(inv["skipped_prefilter"])
+    sk_inv = int(inv.get("skipped_invalid_duration") or 0)
+    accounted = ok + miss + sk + sk_inv
+
     print("=" * 72)
     print("  TRITON POSE EXTRACT — PREFLIGHT CSV")
     print("=" * 72)
     print("  Carpetas entrada:")
     for p in report.get("input_roots") or []:
         print(f"    - {p}")
-    print(f"  CSV encontrados:  {inv['num_csv']}")
-    print(f"  Filas CSV leídas: {inv.get('csv_rows_seen', '?')}")
-    print(f"  Clips a procesar: {inv['total_clips']}")
-    print(f"  Vídeos faltantes: {inv['missing_videos']}")
-    print(f"  Omitidos (filtros duración): {inv['skipped_prefilter']}")
-    print(f"  Salida data_result: {report['output_data_result']}")
-    print("\n  Clips por categoría:")
+    print(f"  CSV encontrados:     {inv['num_csv']}")
+    print(f"  Filas CSV (válidas): {rows}")
+    print("")
+    print(f"  >>> TOTAL CLIPS A PROCESAR: {ok} <<<")
+    print(f"      (suma por categoría:    {sum(inv['by_category'].values())})")
+    print("")
+    print("  Desglose de filas no procesables:")
+    print(f"    Vídeos faltantes:        {miss}")
+    print("      → la ruta de la columna 0 del CSV no existe en disco (path mal, otro")
+    print("        servidor, disco no montado, clip borrado, etc.)")
+    print(f"    Duración inválida:       {sk_inv}")
+    print(f"    Filtro duración (total): {sk}")
+    if sk:
+        print(f"      · demasiado cortos:    {inv.get('skipped_too_short', 0)}")
+        print(f"      · demasiado largos:    {inv.get('skipped_too_long', 0)}")
+    if rows and accounted != rows:
+        print(f"    (Nota: {accounted} contabilizadas vs {rows} filas; resto = límites cat. en CSV)")
+    print(f"\n  Salida data_result: {report['output_data_result']}")
+    print("\n  Clips a procesar por categoría:")
     for cat in sorted(inv["by_category"], key=lambda x: int(x)):
         print(f"    cat {cat:>2}: {inv['by_category'][cat]:>5}")
+    print(f"    {'─' * 20}")
+    print(f"    {'TOTAL':>6}: {sum(inv['by_category'].values()):>5}")
     mins = inv["total_seconds_video"] / 60.0
     print(f"\n  Duración vídeo (estimada): {mins:.1f} min")
     print(f"  Frames estimados: {inv['total_frames_est']}")
@@ -260,6 +304,15 @@ def print_preflight_report(report: Dict[str, Any]) -> None:
     print(f"    FFmpeg ≈ {_fmt_duration(te['ffmpeg_seconds'])}")
     print(f"    TOTAL pared ≈ {te['wall_parallel_human']}  (serial ≈ {te['wall_serial_human']})")
     print("=" * 72)
+
+    if list_missing > 0 and inv.get("missing_entries"):
+        print(f"\n  Ejemplos vídeos faltantes (máx {list_missing}):")
+        for ent in inv["missing_entries"][:list_missing]:
+            print(f"    fila {ent['row']} cat={ent['category']}")
+            print(f"      CSV: {ent['video_csv'][:100]}{'…' if len(ent['video_csv']) > 100 else ''}")
+            print(f"      →   {ent['path_resolved']}")
+        if miss > list_missing:
+            print(f"    … y {miss - list_missing} más (guarda --save-json para lista)")
 
 
 def save_preflight_json(report: Dict[str, Any], out_path: Path) -> None:
