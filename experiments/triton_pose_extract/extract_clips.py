@@ -135,6 +135,7 @@ def _cmd_preflight_csv(args: argparse.Namespace) -> int:
     ob = Path(args.output_base).expanduser() if args.output_base else None
     pipe = load_pipeline_config(raw, output_base=ob)
     input_roots = _resolve_input_roots(args, raw)
+    print(f"Preflight: {len(input_roots)} carpeta(s), salida → {pipe.paths.data_result_dir}", flush=True)
     settings = ExtractSettings.load(
         _config_path(args),
         triton_url=args.triton_url or None,
@@ -145,6 +146,8 @@ def _cmd_preflight_csv(args: argparse.Namespace) -> int:
         pipe,
         settings,
         probe_videos=bool(args.probe_videos),
+        measure_video_duration=bool(getattr(args, "measure_video_duration", False)),
+        verbose=not getattr(args, "quiet", False),
     )
     print_preflight_report(report)
     if args.save_json:
@@ -223,7 +226,13 @@ def main() -> int:
         help="Carpeta con *.csv (repetible; busca recursivo). Ej: .../DatosOnline_3/sessions",
     )
     pf.add_argument("--output-base", type=str, default="", help="OUTPUT_BASE (data_result/ dentro)")
-    pf.add_argument("--probe-videos", action="store_true", help="ffprobe duración real (lento)")
+    pf.add_argument("--probe-videos", action="store_true", help="ffprobe en clips 00:00:00–00:00:00 (más lento)")
+    pf.add_argument(
+        "--measure-video-duration",
+        action="store_true",
+        help="OpenCV en cada vídeo (MUY lento; solo debug)",
+    )
+    pf.add_argument("--quiet", action="store_true", help="Solo resumen final")
     pf.add_argument("--save-json", type=str, default="", help="Guardar informe JSON")
     pf.set_defaults(func=_cmd_preflight_csv)
 

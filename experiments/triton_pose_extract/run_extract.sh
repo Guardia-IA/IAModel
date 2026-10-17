@@ -5,6 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 PY="${PYTHON:-python3}"
 export PYTHONPATH="${SCRIPT_DIR}:${PYTHONPATH:-}"
+export PYTHONUNBUFFERED=1
 
 CMD="${1:-help}"
 shift || true

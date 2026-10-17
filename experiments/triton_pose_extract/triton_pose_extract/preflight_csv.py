@@ -3,8 +3,9 @@ from __future__ import annotations
 
 import json
 import subprocess
+import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from triton_pose_extract.capacity import capacity_report, recommend_parallel_clips
 from triton_pose_extract.csv_io import discover_csv_files_many, iter_csv_clip_rows
@@ -20,12 +21,25 @@ def _fmt_duration(seconds: float) -> str:
     return f"{seconds / 3600:.2f} h"
 
 
+def _log(msg: str, log_fn: Optional[Callable[[str], None]] = None) -> None:
+    fn = log_fn or (lambda s: print(s, flush=True))
+    fn(msg)
+
+
 def scan_csv_inventory(
     csv_files: List[Path],
     pipe: PipelineConfig,
     *,
     probe_videos: bool = False,
+    measure_video_duration: bool = False,
+    verbose: bool = True,
+    log_fn: Optional[Callable[[str], None]] = None,
 ) -> Dict[str, Any]:
+    """
+    probe_videos: ffprobe en clips marcados como completos (lento, preciso).
+    measure_video_duration: abre cada vídeo con OpenCV para duración (MUY lento).
+    Por defecto solo HMS del CSV + estimación 10s en 00:00:00–00:00:00.
+    """
     category_counters: Dict[str, int] = {}
     by_category: Dict[str, int] = {}
     total = 0
@@ -34,21 +48,40 @@ def scan_csv_inventory(
     total_seconds = 0.0
     total_frames = 0
     full_without_probe = 0
+    rows_seen = 0
 
-    for csv_path in csv_files:
+    duration_fn = None
+    if measure_video_duration:
         from triton_pose_extract.ffmpeg_cut import video_duration_cv2
 
-        def _dur_fn(p: Path) -> float:
-            return video_duration_cv2(p)
+        cache: Dict[str, float] = {}
+
+        def duration_fn(p: Path) -> float:
+            key = str(p.resolve())
+            if key not in cache:
+                cache[key] = video_duration_cv2(p)
+            return cache[key]
+
+    n_csv = len(csv_files)
+    t0 = time.perf_counter()
+    for csv_idx, csv_path in enumerate(csv_files, start=1):
+        if verbose:
+            _log(f"[{csv_idx}/{n_csv}] CSV {csv_path}", log_fn)
+        n_clip_before = total
+        rows_in_file = 0
 
         for r in iter_csv_clip_rows(
             csv_path,
             path_root=None,
             category_limits=pipe.category_limits,
             category_counters=category_counters,
-            video_duration_fn=_dur_fn,
+            video_duration_fn=duration_fn,
             end_equals_full_epsilon=pipe.end_equals_full_epsilon,
         ):
+            rows_in_file += 1
+            rows_seen += 1
+            if verbose and rows_seen % 2000 == 0:
+                _log(f"  … {rows_seen} filas CSV leídas, {total} clips válidos", log_fn)
             if not r.video_path.is_file():
                 missing += 1
                 continue
@@ -96,8 +129,16 @@ def scan_csv_inventory(
             total_frames += int(cap_dur * fps + 0.5)
             by_category[r.category] = by_category.get(r.category, 0) + 1
 
+        if verbose:
+            added = total - n_clip_before
+            _log(f"  → {rows_in_file} filas, {added} clips válidos en este CSV", log_fn)
+
+    if verbose:
+        _log(f"Inventario CSV en {time.perf_counter() - t0:.1f}s", log_fn)
+
     return {
         "num_csv": len(csv_files),
+        "csv_rows_seen": rows_seen,
         "total_clips": total,
         "by_category": by_category,
         "missing_videos": missing,
@@ -141,9 +182,36 @@ def run_preflight_report(
     settings: ExtractSettings,
     *,
     probe_videos: bool = False,
+    measure_video_duration: bool = False,
+    verbose: bool = True,
+    log_fn: Optional[Callable[[str], None]] = None,
 ) -> Dict[str, Any]:
+    _log("Preflight CSV — buscando *.csv …", log_fn)
+    for root in input_roots:
+        _log(f"  raíz: {root}", log_fn)
+    t_disc = time.perf_counter()
     csv_files = discover_csv_files_many(input_roots)
-    inv = scan_csv_inventory(csv_files, pipe, probe_videos=probe_videos)
+    _log(f"Encontrados {len(csv_files)} CSV ({time.perf_counter() - t_disc:.1f}s)", log_fn)
+    if not csv_files:
+        _log("AVISO: ningún CSV; revisa --input-root", log_fn)
+    if probe_videos:
+        _log("Modo: ffprobe en clips completos (más lento)", log_fn)
+    elif measure_video_duration:
+        _log("Modo: duración por OpenCV por vídeo (muy lento)", log_fn)
+    else:
+        _log(
+            "Modo: rápido (tiempos del CSV; 00:00:00–00:00:00 ≈ "
+            f"{pipe.estimate_full_clip_sec}s). Usa --probe-videos para precisión.",
+            log_fn,
+        )
+    inv = scan_csv_inventory(
+        csv_files,
+        pipe,
+        probe_videos=probe_videos,
+        measure_video_duration=measure_video_duration,
+        verbose=verbose,
+        log_fn=log_fn,
+    )
     time_est = estimate_wall_time(inv, pipe, settings)
     return {
         "input_roots": [str(p) for p in input_roots],
@@ -170,6 +238,7 @@ def print_preflight_report(report: Dict[str, Any]) -> None:
     for p in report.get("input_roots") or []:
         print(f"    - {p}")
     print(f"  CSV encontrados:  {inv['num_csv']}")
+    print(f"  Filas CSV leídas: {inv.get('csv_rows_seen', '?')}")
     print(f"  Clips a procesar: {inv['total_clips']}")
     print(f"  Vídeos faltantes: {inv['missing_videos']}")
     print(f"  Omitidos (filtros duración): {inv['skipped_prefilter']}")
