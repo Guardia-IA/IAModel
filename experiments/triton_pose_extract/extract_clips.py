@@ -20,12 +20,6 @@ from triton_pose_extract.paths import ensure_pose_core_importable, default_trito
 from triton_pose_extract.settings import ExtractSettings  # noqa: E402
 from triton_pose_extract.validate_output import validate_clip_dir  # noqa: E402
 from triton_pose_extract.pipeline_config import load_pipeline_config  # noqa: E402
-from triton_pose_extract.preflight_csv import (  # noqa: E402
-    print_preflight_report,
-    run_preflight_report,
-    save_preflight_json,
-)
-from triton_pose_extract.batch_csv import run_csv_batch  # noqa: E402
 
 
 def _config_path(args: argparse.Namespace) -> Path | None:
@@ -44,6 +38,7 @@ def _cmd_check(args: argparse.Namespace) -> int:
     settings = ExtractSettings.load(
         Path(args.config) if args.config else None,
         triton_url=args.triton_url or None,
+        require_pose_repo=False,
     )
     code = print_health(settings)
     if code != 0:
@@ -60,6 +55,7 @@ def _cmd_extract(args: argparse.Namespace) -> int:
         Path(args.config) if args.config else None,
         triton_url=args.triton_url or None,
         parallel_clips=args.parallel if args.parallel > 0 else None,
+        require_pose_repo=True,
     )
     ensure_pose_core_importable(settings.triton_pose_repo)
 
@@ -106,11 +102,21 @@ def _cmd_extract(args: argparse.Namespace) -> int:
 
 
 def _cmd_preflight_csv(args: argparse.Namespace) -> int:
+    from triton_pose_extract.preflight_csv import (
+        print_preflight_report,
+        run_preflight_report,
+        save_preflight_json,
+    )
+
     raw = _load_raw_config(args)
     ob = Path(args.output_base).expanduser() if args.output_base else None
     pipe = load_pipeline_config(raw, output_base=ob)
     input_root = Path(args.input_root).expanduser().resolve()
-    settings = ExtractSettings.load(_config_path(args), triton_url=args.triton_url or None)
+    settings = ExtractSettings.load(
+        _config_path(args),
+        triton_url=args.triton_url or None,
+        require_pose_repo=False,
+    )
     report = run_preflight_report(
         input_root,
         pipe,
@@ -127,6 +133,8 @@ def _cmd_preflight_csv(args: argparse.Namespace) -> int:
 
 
 def _cmd_extract_csv(args: argparse.Namespace) -> int:
+    from triton_pose_extract.batch_csv import run_csv_batch
+
     logging.basicConfig(level=logging.INFO if args.verbose else logging.WARNING)
     raw = _load_raw_config(args)
     ob = Path(args.output_base).expanduser() if args.output_base else None
@@ -137,6 +145,7 @@ def _cmd_extract_csv(args: argparse.Namespace) -> int:
         _config_path(args),
         triton_url=args.triton_url or None,
         parallel_clips=args.parallel if args.parallel > 0 else None,
+        require_pose_repo=True,
     )
     settings.single_user_only = pipe.filters.single_user_only
     ensure_pose_core_importable(settings.triton_pose_repo)

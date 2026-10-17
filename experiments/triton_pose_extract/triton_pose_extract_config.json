@@ -1,7 +1,8 @@
 {
   "kanvis_triton_pose_root": "",
-  "triton_url": "kanvis-pilot.ai:47811",
-  "http_health_base": "http://kanvis-pilot.ai:47810",
+  "triton_url": "127.0.0.1:47811",
+  "http_health_base": "http://127.0.0.1:47810",
+  "_url_comment": "Mismo host que contenedor kanvis-triton-pose (47810/47811). Remoto: kanvis-pilot.ai",
   "model_name": "yolo26s-pose",
   "pose_config": "",
   "bundle_json": "",
@@ -10,6 +11,17 @@
   "tracker": "bytetrack",
   "parse_conf": 0.18,
   "parallel_clips": null,
+  "triton": {
+    "model_name": "yolo26s-pose",
+    "max_batch_size": 32,
+    "gpu_instance_count": 2,
+    "input_fp16": true
+  },
+  "clip": {
+    "triton_batch_size": 8,
+    "tracker": "bytetrack",
+    "parse_conf": 0.18
+  },
   "output_base": "/media/8TB/DatosEntrenamiento/data_clips/data_triton_pose",
   "pipeline": {
     "input_root": "",

@@ -26,6 +26,8 @@ def check_model_ready(settings: ExtractSettings, *, timeout: float = 10.0) -> di
 
 def smoke_infer_optional(settings: ExtractSettings) -> dict[str, Any]:
     """Ejecuta check_triton_pose_batch.py del vendor si está disponible."""
+    if settings.triton_pose_repo is None:
+        return {"skipped": True, "reason": "sin KANVIS_TRITON_POSE_ROOT (opcional para smoke)"}
     script = settings.triton_pose_repo / "scripts" / "check_triton_pose_batch.py"
     if not script.is_file():
         return {"skipped": True, "reason": "sin check_triton_pose_batch.py"}
