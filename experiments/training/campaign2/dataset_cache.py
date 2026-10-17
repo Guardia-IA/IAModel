@@ -289,6 +289,53 @@ def collect_clip_records(
     return records
 
 
+def manifest_entries_for_time_estimate(
+    records: List[Dict[str, Any]],
+    *,
+    target_hz: float,
+    split_ratios: Dict[str, float],
+    split_seed: int,
+    min_robbery_per_eval_split: int = 5,
+    log_fn=None,
+) -> List[Dict[str, Any]]:
+    """Entradas tipo manifest (split + num_frames @ target_hz) sin construir caché mmap."""
+    split_by_group = assign_splits_stratified_group(
+        records,
+        split_ratios,
+        split_seed,
+        min_robbery_per_eval_split=min_robbery_per_eval_split,
+    )
+
+    def _log(msg: str) -> None:
+        if log_fn:
+            log_fn(msg)
+        else:
+            print(msg, flush=True)
+
+    entries: List[Dict[str, Any]] = []
+    n_rec = len(records)
+    hz = max(float(target_hz), 1e-6)
+    for idx, rec in enumerate(records):
+        if n_rec >= 800 and (idx == 0 or (idx + 1) % 1000 == 0 or idx + 1 == n_rec):
+            _log(f"  Duraciones estimadas: clip {idx + 1}/{n_rec}")
+        try:
+            poses = np.load(rec["pose_path"], mmap_mode="r")
+            t_src = int(poses.shape[0])
+        except OSError:
+            t_src = int(round(8.0 * hz))
+        fps = _fps_from_meta(rec.get("meta") or {})
+        duration_s = t_src / max(float(fps), 1e-6)
+        t = max(1, int(round(duration_s * hz)))
+        gid = str(rec.get("group_id") or rec.get("uid"))
+        entries.append(
+            {
+                "split": split_by_group.get(gid, "train"),
+                "num_frames": t,
+            }
+        )
+    return entries
+
+
 def build_pose_cache(
     records: List[Dict[str, Any]],
     cache_dir: Path,

@@ -48,7 +48,7 @@ Uso: $0 <comando> [args...]
 
   new-run              Crea RUN_ID campaign2_YYYYMMDD_HHMMSS
   validate             Tests rápidos (~5 s, sin GPU ni datos)
-  estimate-time        Estimación P1 GPU vs CPU (heurística; usa manifest del RUN_ID si existe)
+  estimate-time        Estimación P1 GPU vs CPU (--data-root = dataset completo; --matrix = matrix-pipeline)
   probe [--run-id ID]  gpu_probe_campaign2.py
   preflight            Inventario + caché 12Hz (añade --p0 para cola baseline)
   train                Ejecuta jobs/queue.json (P0 tras preflight --p0)
