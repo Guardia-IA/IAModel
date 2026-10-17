@@ -79,6 +79,13 @@ class ExtractSettings:
                 "(check-triton funciona sin repo; extract-csv sí lo necesita)."
             )
 
+        filt_raw = raw.get("filters") or {}
+        su_raw = filt_raw.get("single_user_only", raw.get("single_user_only", True))
+        if isinstance(su_raw, dict):
+            single_user_only = bool(su_raw.get("enabled", True))
+        else:
+            single_user_only = bool(su_raw)
+
         url = (
             triton_url
             or os.environ.get("KANVIS_TRITON_URL", "").strip()
@@ -110,7 +117,7 @@ class ExtractSettings:
             triton_batch_size=int(raw.get("triton_batch_size") or clip_cfg.get("triton_batch_size") or 8),
             tracker=str(raw.get("tracker") or clip_cfg.get("tracker") or "bytetrack"),
             parse_conf=float(raw.get("parse_conf") or clip_cfg.get("parse_conf") or 0.18),
-            single_user_only=bool(raw.get("single_user_only", False)),
+            single_user_only=single_user_only,
             parallel_clips=parallel_clips if parallel_clips is not None else raw.get("parallel_clips"),
             max_batch_size=int(triton_cfg.get("max_batch_size") or 32),
             gpu_instance_count=int(triton_cfg.get("gpu_instance_count") or 2),

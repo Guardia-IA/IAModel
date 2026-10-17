@@ -211,6 +211,8 @@ def run_csv_batch(
     ok_n = sum(1 for r in results if r.status == "ok")
     skip_n = sum(1 for r in results if r.status in ("skip_no_export", "skip_no_tracks"))
     fail_n = sum(1 for r in results if r.status == "fail_infra")
+    planned = len(jobs)
+    yield_pct = (100.0 * ok_n / planned) if planned else 0.0
     report = {
         "ok": ok_n > 0,
         "batch_completed": fail_n == 0,
@@ -221,6 +223,10 @@ def run_csv_batch(
         "jobs_ok": ok_n,
         "jobs_skip_no_export": skip_n,
         "jobs_fail_infra": fail_n,
+        "yield_ok_pct": round(yield_pct, 2),
+        "min_clip_duration_sec": pipe.filters.min_clip_duration_sec.value
+        if pipe.filters.min_clip_duration_sec.enabled
+        else None,
         "workers": n_workers,
         "by_category_planned": by_cat,
         "wall_seconds": round(time.perf_counter() - t0, 2),
@@ -234,8 +240,14 @@ def run_csv_batch(
     out_report.write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     print(
         f"Resumen: OK={ok_n} SKIP={skip_n} FAIL={fail_n} "
-        f"(single_user_only={pipe.filters.single_user_only})",
+        f"de {planned} ({yield_pct:.1f}% con npy) · single_user_only={pipe.filters.single_user_only}",
         flush=True,
     )
+    if skip_n > ok_n and pipe.filters.single_user_only:
+        print(
+            "  Nota: SKIP alto en clip_buffer/DatosOnline es habitual (varias personas); "
+            "no implica que el resto de CSVs de datos_1 rinden igual.",
+            flush=True,
+        )
     print(f"Informe: {out_report}", flush=True)
     return report

@@ -74,12 +74,20 @@ def _cmd_check(args: argparse.Namespace) -> int:
 
 def _cmd_extract(args: argparse.Namespace) -> int:
     logging.basicConfig(level=logging.INFO if args.verbose else logging.WARNING)
+    raw = _load_raw_config(args)
     settings = ExtractSettings.load(
-        Path(args.config) if args.config else None,
+        _config_path(args),
         triton_url=args.triton_url or None,
         parallel_clips=args.parallel if args.parallel > 0 else None,
         require_pose_repo=True,
     )
+    pipe = load_pipeline_config(raw, output_base=None)
+    if getattr(args, "no_single_user_only", False):
+        settings.single_user_only = False
+    elif getattr(args, "single_user_only", False):
+        settings.single_user_only = True
+    else:
+        settings.single_user_only = pipe.filters.single_user_only
     ensure_pose_core_importable(settings.triton_pose_repo)
 
     if not args.skip_ready:
@@ -101,7 +109,8 @@ def _cmd_extract(args: argparse.Namespace) -> int:
     cap = capacity_report(settings)
     print(
         f"Extracción: {len(jobs)} clip(s), parallel={args.parallel or cap['parallel_clips']}, "
-        f"batch={settings.triton_batch_size}, url={settings.triton_url}",
+        f"batch={settings.triton_batch_size}, url={settings.triton_url}, "
+        f"single_user_only={settings.single_user_only}",
         flush=True,
     )
 
@@ -222,6 +231,16 @@ def main() -> int:
     ext.add_argument("--limit", type=int, default=0)
     ext.add_argument("--parallel", type=int, default=0, help="Workers simultáneos (0=auto)")
     ext.add_argument("--skip-ready", action="store_true")
+    ext.add_argument(
+        "--no-single-user-only",
+        action="store_true",
+        help="Permitir export con varios tracks",
+    )
+    ext.add_argument(
+        "--single-user-only",
+        action="store_true",
+        help="Forzar single-user (default: filters.single_user_only del JSON)",
+    )
     ext.add_argument("--validate", action="store_true", help="Comprobar npy tras cada clip")
     ext.add_argument("-v", "--verbose", action="store_true")
     ext.set_defaults(func=_cmd_extract)

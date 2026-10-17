@@ -38,12 +38,13 @@ def infer_export_status(
     if single_user_only:
         return (
             "skip_no_export",
-            "users vacío con single_user_only (multi-track típico en clip_buffer o filtros BODY_VISIBLE)",
+            "sin npy: users[] (casi siempre 2+ personas con single_user_only; "
+            f"ver log -v «single_user_only y N tracks»; {frame_count} frames procesados)",
         )
 
     return (
         "skip_no_export",
-        "users vacío (tracks no pasaron filtros BODY_VISIBLE o calidad)",
+        f"sin npy: users[] tras filtros BODY_VISIBLE/calidad ({frame_count} frames)",
     )
 
 

@@ -41,7 +41,7 @@
     "_single_user_only_comment": "true = descarta clips multi-track (DatosOnline clip_buffer); false = exporta todos los tracks",
     "skip_existing_output": true,
     "min_kp_conf": 0.5,
-    "min_clip_duration_sec": { "enabled": true, "value": 0.5 },
+    "min_clip_duration_sec": { "enabled": true, "value": 2.0 },
     "max_clip_duration_sec": { "enabled": true, "value": 120.0 },
     "min_user_seconds": { "enabled": false, "value": 0.0 },
     "min_coverage_ratio": { "enabled": true, "value": 0.8 }
