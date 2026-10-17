@@ -17,7 +17,15 @@ def validate_clip_dir(clip_root: Path) -> list[str]:
     users = meta.get("users") or []
     user_dirs = list(clip_root.glob("user_*"))
     if not user_dirs:
-        errors.append("sin carpetas user_*")
+        hint = meta.get("skip_reason") or meta.get("export_skip") or meta.get("reject_reason")
+        if hint:
+            errors.append(f"sin_export: {hint}")
+        elif meta.get("single_user_only") and int(meta.get("track_count") or 0) > 1:
+            errors.append("sin_export: single_user_only y varios tracks")
+        else:
+            errors.append(
+                "sin carpetas user_* (multi-persona, decode vacío o filtros de calidad en pose_core)"
+            )
     for ud in user_dirs:
         pf = ud / "poses_full.npy"
         vm = ud / "valid_mask.npy"

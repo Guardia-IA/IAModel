@@ -122,7 +122,7 @@ Reglas export IAModel / MinIO: [POSE_EXPORT_IAMODEL.md](POSE_EXPORT_IAMODEL.md).
 |---------|----------------|
 | `HTTP 000` / connection refused | Triton caído, puertos mal en `.env.docker`, URL incorrecta (`47811` host vs `8001` red interna) |
 | `Modelo no READY` | Esperar compilación TRT (`model.plan`) o revisar `docker compose logs triton-pose` |
-| Clip sin `user_*` | Decode vacío, tracker sin IDs, o filtros de calidad |
+| Clip sin `user_*` | Con `single_user_only`: **multi-track esperado** (no elige dominante); si no, decode/tracker o filtros `BODY_VISIBLE_*`. Ver [TRITON_EXTRACT_C1_HANDOFF.md](./TRITON_EXTRACT_C1_HANDOFF.md) |
 | Drift vs IAModel histórico | Distinto `pose_bundle_id`, `model_color`, tracker o umbrales |
 
 ---

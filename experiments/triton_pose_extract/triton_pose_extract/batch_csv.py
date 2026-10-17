@@ -17,6 +17,7 @@ from triton_pose_extract.factory import build_clip_extractor
 from triton_pose_extract.ffmpeg_cut import cut_clip, video_duration_cv2
 from triton_pose_extract.pipeline_config import PipelineConfig
 from triton_pose_extract.settings import ExtractSettings
+from triton_pose_extract.export_diagnosis import infer_export_status, is_infra_failure
 from triton_pose_extract.validate_output import validate_clip_dir
 
 logger = logging.getLogger(__name__)
@@ -24,7 +25,10 @@ _THREAD_EXTRACTOR = threading.local()
 
 
 def _init_worker(settings: ExtractSettings) -> None:
+    name = threading.current_thread().name
+    print(f"[worker {name}] Triton + tracker (1ª vez ~30–90s si carga yolo*.pt)…", flush=True)
     _THREAD_EXTRACTOR.extractor = build_clip_extractor(settings)
+    print(f"[worker {name}] listo", flush=True)
 
 
 def _get_extractor():
@@ -42,6 +46,7 @@ class JobResult:
     error: Optional[str]
     seconds: float
     csv_row: int
+    status: str = "fail_infra"
 
 
 def _process_one_job(job: ExtractClipJob, pipe: PipelineConfig, settings: ExtractSettings) -> JobResult:
@@ -65,6 +70,7 @@ def _process_one_job(job: ExtractClipJob, pipe: PipelineConfig, settings: Extrac
                         "ffmpeg_falló",
                         time.perf_counter() - t0,
                         r.row_csv,
+                        status="fail_infra",
                     )
 
         ext = _get_extractor()
@@ -76,6 +82,7 @@ def _process_one_job(job: ExtractClipJob, pipe: PipelineConfig, settings: Extrac
             clip_folder=job.clip_name,
         )
         meta_path = result.out_dir / "meta.json"
+        meta: dict = {}
         if meta_path.is_file():
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
             meta["video_source"] = str(r.video_path.resolve())
@@ -84,32 +91,45 @@ def _process_one_job(job: ExtractClipJob, pipe: PipelineConfig, settings: Extrac
             meta["t_end"] = r.t_end
             meta["full_clip"] = r.use_full_clip
             meta["csv"] = str(r.csv_path)
-            meta_path.write_text(json.dumps(meta, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+            meta["iamodel_single_user_only"] = pipe.filters.single_user_only
 
         errs = validate_clip_dir(result.out_dir)
-        if errs:
+        export_status, export_hint = infer_export_status(
+            meta or None,
+            single_user_only=pipe.filters.single_user_only,
+            validation_errors=errs,
+        )
+        meta["iamodel_export_status"] = export_status
+        if export_hint:
+            meta["iamodel_export_hint"] = export_hint
+        if meta_path.is_file() or meta:
+            meta_path.write_text(json.dumps(meta, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+        if export_status == "ok":
+            if pipe.ffmpeg.delete_temp_videos and job.clip_is_temp and job.work_video.is_file():
+                try:
+                    os.remove(job.work_video)
+                except OSError:
+                    pass
             return JobResult(
                 job.clip_name,
-                False,
+                True,
                 str(result.out_dir),
-                ";".join(errs),
+                None,
                 time.perf_counter() - t0,
                 r.row_csv,
+                status="ok",
             )
 
-        if pipe.ffmpeg.delete_temp_videos and job.clip_is_temp and job.work_video.is_file():
-            try:
-                os.remove(job.work_video)
-            except OSError:
-                pass
-
+        err_msg = export_hint or (errs[0] if errs else export_status)
         return JobResult(
             job.clip_name,
-            True,
+            False,
             str(result.out_dir),
-            None,
+            err_msg,
             time.perf_counter() - t0,
             r.row_csv,
+            status=export_status,
         )
     except Exception as exc:
         logger.exception("job %s", job.clip_name)
@@ -120,6 +140,7 @@ def _process_one_job(job: ExtractClipJob, pipe: PipelineConfig, settings: Extrac
             str(exc),
             time.perf_counter() - t0,
             r.row_csv,
+            status="fail_infra",
         )
 
 
@@ -151,6 +172,13 @@ def run_csv_batch(
     results: List[JobResult] = []
     t0 = time.perf_counter()
 
+    print(
+        f"Cola: {len(jobs)} clips · {n_workers} workers en paralelo. "
+        "Tras «triton_connected» verás pausa: cada worker calienta inferencia y "
+        "ByteTrack (pose_core carga model/weights/yolo26s-pose.pt en local; la pose sí va a Triton).",
+        flush=True,
+    )
+
     with ThreadPoolExecutor(
         max_workers=n_workers,
         initializer=_init_worker,
@@ -161,30 +189,48 @@ def run_csv_batch(
         for fut in as_completed(futs):
             res = fut.result()
             results.append(res)
-            tag = "OK" if res.ok else "FAIL"
+            if res.ok:
+                tag = "OK"
+            elif res.status in ("skip_no_export", "skip_no_tracks"):
+                tag = "SKIP"
+            elif is_infra_failure(res.status, res.error):  # type: ignore[arg-type]
+                tag = "FAIL"
+            else:
+                tag = "SKIP"
             print(
                 f"[{tag}] {res.clip_name} fila={res.csv_row} {res.seconds:.1f}s"
-                + (f" {res.error}" if res.error else ""),
+                + (f" — {res.error}" if res.error else ""),
                 flush=True,
             )
 
-    ok_n = sum(1 for r in results if r.ok)
+    ok_n = sum(1 for r in results if r.status == "ok")
+    skip_n = sum(1 for r in results if r.status in ("skip_no_export", "skip_no_tracks"))
+    fail_n = sum(1 for r in results if r.status == "fail_infra")
     report = {
         "ok": ok_n > 0,
+        "batch_completed": fail_n == 0,
+        "single_user_only": pipe.filters.single_user_only,
         "input_roots": [str(p) for p in input_roots],
         "num_csv": len(csv_files),
         "jobs_planned": len(jobs),
         "jobs_ok": ok_n,
-        "jobs_failed": len(jobs) - ok_n,
+        "jobs_skip_no_export": skip_n,
+        "jobs_fail_infra": fail_n,
         "workers": n_workers,
         "by_category_planned": by_cat,
         "wall_seconds": round(time.perf_counter() - t0, 2),
         "data_result": str(pipe.paths.data_result_dir),
         "results": [asdict(r) for r in results],
-        "skipped_count": len(skipped),
+        "skipped_prefilter_csv": len(skipped),
+        "handoff_doc": "IAModel/docs/TRITON_EXTRACT_C1_HANDOFF.md",
     }
     out_report = pipe.paths.output_base / "logs" / "csv_extract_report.json"
     out_report.parent.mkdir(parents=True, exist_ok=True)
     out_report.write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    print(
+        f"Resumen: OK={ok_n} SKIP={skip_n} FAIL={fail_n} "
+        f"(single_user_only={pipe.filters.single_user_only})",
+        flush=True,
+    )
     print(f"Informe: {out_report}", flush=True)
     return report

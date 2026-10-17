@@ -167,6 +167,8 @@ def _cmd_extract_csv(args: argparse.Namespace) -> int:
     raw = _load_raw_config(args)
     ob = Path(args.output_base).expanduser() if args.output_base else None
     pipe = load_pipeline_config(raw, output_base=ob)
+    if getattr(args, "no_single_user_only", False):
+        pipe.filters.single_user_only = False
     input_roots = _resolve_input_roots(args, raw)
 
     settings = ExtractSettings.load(
@@ -191,7 +193,13 @@ def _cmd_extract_csv(args: argparse.Namespace) -> int:
         parallel=args.parallel if args.parallel > 0 else None,
         limit=int(args.limit or 0),
     )
-    return 0 if report.get("ok") else 1
+    if report.get("jobs_fail_infra", 0) > 0:
+        return 1
+    if report.get("jobs_ok", 0) > 0:
+        return 0
+    if report.get("jobs_skip_no_export", 0) == report.get("jobs_planned"):
+        return 0
+    return 1
 
 
 def main() -> int:
@@ -258,6 +266,11 @@ def main() -> int:
     excsv.add_argument("--limit", type=int, default=0)
     excsv.add_argument("--parallel", type=int, default=0)
     excsv.add_argument("--skip-ready", action="store_true")
+    excsv.add_argument(
+        "--no-single-user-only",
+        action="store_true",
+        help="Exportar aunque haya varios tracks (ClipExtractConfig; ver TRITON_EXTRACT_C1_HANDOFF.md)",
+    )
     excsv.add_argument("-v", "--verbose", action="store_true")
     excsv.set_defaults(func=_cmd_extract_csv)
 

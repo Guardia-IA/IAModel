@@ -72,8 +72,16 @@ chmod +x run_extract.sh
   --input-root /media/8TB/DatosEntrenamiento/datos_3/csv_buenos \
   --output-base /media/8TB/DatosEntrenamiento/data_clips/data_triton_pose
 
-# Debug: primeros N clips
-./run_extract.sh extract-csv --input-root ... --output-base ... --limit 5
+# Debug: primeros N clips (1 worker = log más claro; 4 = más rápido en lote)
+./run_extract.sh extract-csv --input-root ... --output-base ... --limit 5 --parallel 1 -v
+
+# Calentar Triton antes del batch (1ª infer GPU puede tardar 1–3 min)
+./run_extract.sh check-triton --smoke
+```
+
+**¿Por qué tarda al inicio?** Cada worker hace `triton_connected` y luego `pose_core` carga **ByteTrack + `yolo26s-pose.pt` en disco** (no sustituye la inferencia TRT en Triton). Eso explica ~1 min de silencio con 4 workers.
+
+**`[SKIP] sin carpetas user_*` / `single_user_only y 2 tracks`:** el clip se procesó pero **no se exportó npy** (varias personas en cámara o filtros de calidad). Es normal en `clip_buffer` de sesiones online; no es fallo de red Triton. Para prueba rápida usa un `.mp4` con una persona: `./run_extract.sh smoke-one --video …`
 ```
 
 Informes: `{output_base}/logs/csv_extract_report.json`, preflight JSON opcional.

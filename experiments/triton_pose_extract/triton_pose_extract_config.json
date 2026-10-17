@@ -37,6 +37,7 @@
   },
   "filters": {
     "single_user_only": true,
+    "_single_user_only_comment": "true = descarta clips multi-track (DatosOnline clip_buffer); false = exporta todos los tracks",
     "skip_existing_output": true,
     "min_kp_conf": 0.5,
     "min_clip_duration_sec": { "enabled": true, "value": 0.5 },
