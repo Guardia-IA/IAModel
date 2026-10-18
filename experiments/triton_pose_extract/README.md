@@ -99,8 +99,12 @@ Procesa **50 clips reales** (respeta `skip_existing`), mide mediana/p90 y proyec
 ./run_extract.sh bench-csv \
   --input-root /ruta/csv ... \
   --output-base /media/8TB/.../data_triton_pose \
-  --sample 50 --parallel 2 -v
+  --sample 50 --parallel 2 \
+  --total-clips 22409 -v
 ```
+
+Sin `--with-inventory` (default): **no** escanea 22k filas antes (evita ~7 min en 8TB).  
+`triton.use_system_shm` debe ser **`false`** (pose_core actual no lo implementa).
 
 Informe: `{output_base}/logs/bench_extract_YYYYMMDD_HHMMSS.json`
 

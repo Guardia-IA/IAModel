@@ -2,12 +2,15 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from triton_pose_extract.paths import ensure_pose_core_importable
 from triton_pose_extract.settings import ExtractSettings
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -33,13 +36,20 @@ def build_extract_stack(settings: ExtractSettings) -> PoseExtractStack:
     preprocess_cfg = cfg.get("preprocess") or {}
     clip_cfg_yaml = cfg.get("clip") or {}
 
+    use_shm = bool(settings.use_system_shm)
+    if use_shm:
+        # pose_core actual (kanvis-triton-pose): connect() lanza NotImplementedError si True
+        logger.warning(
+            "use_system_shm=true en config pero pose_core no lo soporta aún; usando gRPC numpy"
+        )
+        use_shm = False
     client = TritonPoseClient(
         url=settings.triton_url,
         model_name=settings.model_name,
         imgsz=int(triton.get("tracking_imgsz") or 640),
         input_fp16=settings.input_fp16,
         infer_timeout_seconds=float(settings.infer_timeout_seconds),
-        use_system_shm=settings.use_system_shm,
+        use_system_shm=use_shm,
     )
     client.connect()
 

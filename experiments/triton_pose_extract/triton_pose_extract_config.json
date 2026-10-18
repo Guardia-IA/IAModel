@@ -17,8 +17,8 @@
     "max_batch_size": 32,
     "gpu_instance_count": 2,
     "input_fp16": true,
-    "use_system_shm": true,
-    "_use_system_shm_comment": "Mismo host + ipc host Triton/cliente; si falla conectar, poner false"
+    "use_system_shm": false,
+    "_use_system_shm_comment": "pose_core actual no implementa SHM (NotImplementedError). Dejar false hasta vendor Fase 5"
   },
   "clip": {
     "triton_batch_size": 8,

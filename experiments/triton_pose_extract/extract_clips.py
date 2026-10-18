@@ -254,6 +254,8 @@ def _cmd_bench_csv(args: argparse.Namespace) -> int:
         sample=sample,
         parallel=args.parallel if args.parallel > 0 else None,
         count_pending=bool(args.count_pending),
+        with_inventory=bool(getattr(args, "with_inventory", False)),
+        total_clips=int(getattr(args, "total_clips", 0) or 0),
         verbose=bool(args.verbose),
     )
     return 0
@@ -367,6 +369,17 @@ def main() -> int:
         "--count-pending",
         action="store_true",
         help="Construir cola completa para pending exacto (lento, OpenCV)",
+    )
+    bench.add_argument(
+        "--with-inventory",
+        action="store_true",
+        help="Escanear todos los CSV antes (lento en 8TB, ~7 min)",
+    )
+    bench.add_argument(
+        "--total-clips",
+        type=int,
+        default=0,
+        help="Total clips para ETA sin escaneo (p.ej. 22409)",
     )
     bench.add_argument("--skip-ready", action="store_true")
     bench.add_argument("-v", "--verbose", action="store_true")

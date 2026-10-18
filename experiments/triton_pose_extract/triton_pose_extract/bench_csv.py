@@ -27,20 +27,35 @@ def run_bench_csv(
     sample: int = 50,
     parallel: int | None = None,
     count_pending: bool = False,
+    with_inventory: bool = False,
+    total_clips: int = 0,
     verbose: bool = True,
 ) -> Dict[str, Any]:
     if sample <= 0:
         raise ValueError("sample debe ser > 0")
 
-    print(f"Bench: inventario CSV rápido (sin OpenCV por vídeo)…", flush=True)
-    t0 = time.perf_counter()
     csv_files = resolve_csv_list(input_roots)
-    inv = scan_csv_inventory(csv_files, pipe, verbose=False)
-    inventory_clips = int(inv["total_clips"])
-    print(f"  {len(csv_files)} CSV · {inventory_clips} clips inventario ({time.perf_counter() - t0:.1f}s)", flush=True)
-
+    inventory_clips = int(total_clips or 0)
     pending_jobs = inventory_clips
-    pending_source = "inventario CSV (no resta skip_existing ni cola exacta)"
+    pending_source = "total_clips manual (--total-clips) o desconocido"
+
+    if with_inventory:
+        print("Bench: inventario CSV (22k filas en 8TB puede tardar ~7 min)…", flush=True)
+        t0 = time.perf_counter()
+        inv = scan_csv_inventory(csv_files, pipe, verbose=False)
+        inventory_clips = int(inv["total_clips"])
+        pending_jobs = inventory_clips
+        pending_source = "inventario CSV (no resta skip_existing ni cola exacta)"
+        print(f"  {len(csv_files)} CSV · {inventory_clips} clips ({time.perf_counter() - t0:.1f}s)", flush=True)
+    elif inventory_clips > 0:
+        pending_source = f"--total-clips {inventory_clips} (sin escaneo CSV)"
+        print(f"Bench: proyección sobre {inventory_clips} clips (sin inventario previo)", flush=True)
+    else:
+        print(
+            "Bench: sin inventario (rápido). Proyección batch: pasa --total-clips 22409 o --with-inventory",
+            flush=True,
+        )
+        pending_source = "desconocido; añade --total-clips para ETA"
 
     if count_pending:
         print(
