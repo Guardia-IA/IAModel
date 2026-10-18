@@ -237,7 +237,15 @@ def _cmd_bench_csv(args: argparse.Namespace) -> int:
         parallel_clips=args.parallel if args.parallel > 0 else None,
         require_pose_repo=True,
     )
-    settings.single_user_only = pipe.filters.single_user_only
+    if pipe.filters.export_primary_user_on_multi_track:
+        settings.single_user_only = False
+    else:
+        settings.single_user_only = pipe.filters.single_user_only
+    print(
+        f"bench-csv: primary_user={pipe.filters.export_primary_user_on_multi_track} · "
+        f"pose single_user_only={settings.single_user_only}",
+        flush=True,
+    )
     ensure_pose_core_importable(settings.triton_pose_repo)
 
     if not args.skip_ready:

@@ -38,8 +38,8 @@ def infer_export_status(
     if single_user_only:
         return (
             "skip_no_export",
-            "sin npy: users[] (casi siempre 2+ personas con single_user_only; "
-            f"ver log -v «single_user_only y N tracks»; {frame_count} frames procesados)",
+            "sin npy: users[] por multi-track + single_user_only "
+            f"(no es «sin persona»; ver log «single_user_only y N tracks»; {frame_count} frames)",
         )
 
     return (
