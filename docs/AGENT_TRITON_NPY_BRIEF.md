@@ -2,7 +2,7 @@
 
 Mensaje de handoff para integradores (IAModel, batch offline, herramientas que consumen pose). Repo: **kanvis-triton-pose**.
 
-Ver también: [INTEGRATION_CONSUMERS.md](INTEGRATION_CONSUMERS.md), [DOCKER_POSE_TOOLS.md](DOCKER_POSE_TOOLS.md), [C1_AGENT_BRIEF.md](C1_AGENT_BRIEF.md), [TRITON_SYSTEM_SHM.md](TRITON_SYSTEM_SHM.md).
+Ver también: [INTEGRATION_CONSUMERS.md](INTEGRATION_CONSUMERS.md), [DOCKER_POSE_TOOLS.md](DOCKER_POSE_TOOLS.md), [C1_AGENT_BRIEF.md](C1_AGENT_BRIEF.md), [TRITON_SYSTEM_SHM.md](TRITON_SYSTEM_SHM.md), [TRITON_EXTRACT_PERF.md](./TRITON_EXTRACT_PERF.md) (rendimiento offline vs C1 / NVDEC).
 
 ---
 

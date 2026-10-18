@@ -223,6 +223,54 @@ def _cmd_extract_csv(args: argparse.Namespace) -> int:
     return 1
 
 
+def _cmd_bench_csv(args: argparse.Namespace) -> int:
+    from triton_pose_extract.bench_csv import run_bench_csv
+
+    logging.basicConfig(level=logging.INFO if args.verbose else logging.WARNING)
+    raw = _load_raw_config(args)
+    ob = Path(args.output_base).expanduser() if args.output_base else None
+    pipe = load_pipeline_config(raw, output_base=ob)
+    input_roots = _resolve_input_roots(args, raw)
+    settings = ExtractSettings.load(
+        _config_path(args),
+        triton_url=args.triton_url or None,
+        parallel_clips=args.parallel if args.parallel > 0 else None,
+        require_pose_repo=True,
+    )
+    settings.single_user_only = pipe.filters.single_user_only
+    ensure_pose_core_importable(settings.triton_pose_repo)
+
+    if not args.skip_ready:
+        ready = check_model_ready(settings)
+        if not ready.get("ok"):
+            print(f"ERROR: Triton/modelo no ready: {ready}", file=sys.stderr)
+            return 2
+
+    sample = int(args.sample or 50)
+    run_bench_csv(
+        input_roots,
+        pipe,
+        settings,
+        sample=sample,
+        parallel=args.parallel if args.parallel > 0 else None,
+        count_pending=bool(args.count_pending),
+        verbose=bool(args.verbose),
+    )
+    return 0
+
+
+def _cmd_bench_analyze(args: argparse.Namespace) -> int:
+    from triton_pose_extract.bench_estimate import analyze_report_file
+
+    path = Path(args.report).expanduser()
+    if not path.is_file():
+        print(f"ERROR: no existe {path}", file=sys.stderr)
+        return 2
+    pending = int(args.pending_jobs) if args.pending_jobs else None
+    analyze_report_file(path, pending_jobs=pending)
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="IAModel extracción pose vía Triton (kanvis-triton-pose)")
     sub = ap.add_subparsers(dest="command", required=True)
@@ -304,6 +352,35 @@ def main() -> int:
     )
     excsv.add_argument("-v", "--verbose", action="store_true")
     excsv.set_defaults(func=_cmd_extract_csv)
+
+    bench = sub.add_parser(
+        "bench-csv",
+        help="Procesar N clips (muestra), medir tiempos y estimar ETA del batch",
+    )
+    bench.add_argument("--config", type=str, default="")
+    bench.add_argument("--triton-url", type=str, default="")
+    bench.add_argument("--input-root", action="append", default=[])
+    bench.add_argument("--output-base", type=str, default="")
+    bench.add_argument("--sample", type=int, default=50, help="Clips a procesar (default 50)")
+    bench.add_argument("--parallel", type=int, default=0)
+    bench.add_argument(
+        "--count-pending",
+        action="store_true",
+        help="Construir cola completa para pending exacto (lento, OpenCV)",
+    )
+    bench.add_argument("--skip-ready", action="store_true")
+    bench.add_argument("-v", "--verbose", action="store_true")
+    bench.set_defaults(func=_cmd_bench_csv)
+
+    ban = sub.add_parser("bench-analyze", help="Re-analizar informe bench o csv_extract_report.json")
+    ban.add_argument("report", type=str, help="Ruta al JSON")
+    ban.add_argument(
+        "--pending-jobs",
+        type=int,
+        default=0,
+        help="Pendientes manuales (p.ej. 15686); 0 = usar valor del informe",
+    )
+    ban.set_defaults(func=_cmd_bench_analyze)
 
     args = ap.parse_args()
     return int(args.func(args))

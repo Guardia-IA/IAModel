@@ -6,7 +6,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-
 @dataclass
 class FilterToggle:
     enabled: bool = True
@@ -23,6 +22,37 @@ class PipelineFilters:
     min_coverage_ratio: FilterToggle = field(default_factory=lambda: FilterToggle(True, 0.8))
     skip_existing_output: bool = True
     min_kp_conf: float = 0.5
+
+
+@dataclass
+class C1LikeExtractConfig:
+    """Motor IAModel tipo C1 (NVDEC + preprocess paralelo); no toca el repo vendor."""
+
+    engine: str = "clip_extractor"
+    """clip_extractor | c1_like"""
+    decode_backend: str = "ffmpeg_nvdec"
+    """ffmpeg_nvdec | opencv"""
+    preprocess_workers: int = 8
+    fallback_opencv_decode: bool = True
+    ffmpeg_hwaccel: str = "cuda"
+
+    @classmethod
+    def from_raw(cls, raw: dict | None) -> "C1LikeExtractConfig":
+        ex = raw or {}
+        engine = str(ex.get("engine") or "clip_extractor").strip().lower()
+        backend = str(ex.get("decode_backend") or "ffmpeg_nvdec").strip().lower()
+        if backend not in ("ffmpeg_nvdec", "opencv"):
+            backend = "ffmpeg_nvdec"
+        return cls(
+            engine=engine if engine in ("clip_extractor", "c1_like") else "clip_extractor",
+            decode_backend=backend,
+            preprocess_workers=max(1, min(int(ex.get("preprocess_workers") or 8), 32)),
+            fallback_opencv_decode=bool(ex.get("fallback_opencv_decode", True)),
+            ffmpeg_hwaccel=str(ex.get("ffmpeg_hwaccel") or "cuda"),
+        )
+
+    def use_c1_like(self) -> bool:
+        return self.engine == "c1_like"
 
 
 @dataclass
@@ -43,6 +73,7 @@ class PipelinePaths:
 class PipelineConfig:
     input_roots: List[Path]
     filters: PipelineFilters
+    extract: C1LikeExtractConfig
     ffmpeg: FfmpegConfig
     paths: PipelinePaths
     category_limits: Dict[str, int]
@@ -125,6 +156,7 @@ def load_pipeline_config(raw: Dict[str, Any], *, output_base: Path | None = None
     return PipelineConfig(
         input_roots=input_roots,
         filters=filters,
+        extract=C1LikeExtractConfig.from_raw(raw.get("extract")),
         ffmpeg=FfmpegConfig(
             clip_scale_height=int(ff["clip_scale_height"])
             if "clip_scale_height" in ff

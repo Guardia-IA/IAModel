@@ -13,7 +13,8 @@ from typing import Any, Dict, List, Optional  # noqa: F401
 
 from triton_pose_extract.capacity import recommend_parallel_clips
 from triton_pose_extract.csv_jobs import ExtractClipJob, build_jobs_from_csvs, resolve_csv_list
-from triton_pose_extract.factory import build_clip_extractor
+from triton_pose_extract.c1_like_extract import extract_clip_c1_like
+from triton_pose_extract.factory import build_clip_extractor, build_pose_stack
 from triton_pose_extract.ffmpeg_cut import cut_clip, video_duration_cv2
 from triton_pose_extract.pipeline_config import PipelineConfig
 from triton_pose_extract.settings import ExtractSettings
@@ -23,12 +24,20 @@ from triton_pose_extract.validate_output import validate_clip_dir
 
 logger = logging.getLogger(__name__)
 _THREAD_EXTRACTOR = threading.local()
+_USE_C1_LIKE = False
 
 
 def _init_worker(settings: ExtractSettings) -> None:
     name = threading.current_thread().name
     print(f"[worker {name}] Triton + tracker (1ª vez ~30–90s si carga yolo*.pt)…", flush=True)
-    _THREAD_EXTRACTOR.extractor = build_clip_extractor(settings)
+    _THREAD_EXTRACTOR.stack = build_pose_stack(settings)
+    if not _USE_C1_LIKE:
+        from pose_core.clip_extractor import ClipExtractor
+
+        s = _THREAD_EXTRACTOR.stack
+        _THREAD_EXTRACTOR.extractor = ClipExtractor(
+            s.client, s.preprocess, s.tracker, s.bundle, extract_cfg=s.extract_cfg
+        )
     print(f"[worker {name}] listo", flush=True)
 
 
@@ -37,6 +46,13 @@ def _get_extractor():
     if ext is None:
         raise RuntimeError("Worker sin ClipExtractor")
     return ext
+
+
+def _get_stack():
+    st = getattr(_THREAD_EXTRACTOR, "stack", None)
+    if st is None:
+        raise RuntimeError("Worker sin PoseExtractStack")
+    return st
 
 
 @dataclass
@@ -77,14 +93,23 @@ def _process_one_job(job: ExtractClipJob, pipe: PipelineConfig, settings: Extrac
                         status="fail_infra",
                     )
 
-        ext = _get_extractor()
         job.data_dir.parent.mkdir(parents=True, exist_ok=True)
-        result = ext.extract(
-            job.work_video,
-            out_dir=job.data_dir.parent,
-            cat=r.category,
-            clip_folder=job.clip_name,
-        )
+        if pipe.extract.use_c1_like():
+            result, _timings = extract_clip_c1_like(
+                _get_stack(),
+                job.work_video,
+                out_dir=job.data_dir.parent,
+                cat=r.category,
+                clip_folder=job.clip_name,
+                pipe_cfg=pipe.extract,
+            )
+        else:
+            result = _get_extractor().extract(
+                job.work_video,
+                out_dir=job.data_dir.parent,
+                cat=r.category,
+                clip_folder=job.clip_name,
+            )
         meta_path = result.out_dir / "meta.json"
         meta: dict = {}
         if meta_path.is_file():
@@ -192,8 +217,15 @@ def run_csv_batch(
     results: List[JobResult] = []
     t0 = time.perf_counter()
 
+    global _USE_C1_LIKE
+    _USE_C1_LIKE = pipe.extract.use_c1_like()
+    engine_msg = (
+        f"c1_like decode={pipe.extract.decode_backend} prep_workers={pipe.extract.preprocess_workers}"
+        if _USE_C1_LIKE
+        else "clip_extractor (OpenCV en pose_core)"
+    )
     print(
-        f"Cola: {len(jobs)} clips · {n_workers} workers en paralelo. "
+        f"Cola: {len(jobs)} clips · {n_workers} workers · motor {engine_msg}. "
         "Tras «triton_connected» verás pausa: cada worker calienta inferencia y "
         "ByteTrack (pose_core carga model/weights/yolo26s-pose.pt en local; la pose sí va a Triton).",
         flush=True,

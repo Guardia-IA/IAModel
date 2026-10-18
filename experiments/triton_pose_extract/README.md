@@ -2,7 +2,7 @@
 
 Reemplazo del flujo **`pose_extractor_clean.py`** (YOLO local) por **Triton + `pose_core`**, con el mismo **CSV → recorte FFmpeg → npy** y **preflight** de conteos/tiempos.
 
-Handoff: [`../../docs/AGENT_TRITON_NPY_BRIEF.md`](../../docs/AGENT_TRITON_NPY_BRIEF.md).
+Handoff: [`../../docs/AGENT_TRITON_NPY_BRIEF.md`](../../docs/AGENT_TRITON_NPY_BRIEF.md). Rendimiento / NVDEC / C1: [`../../docs/TRITON_EXTRACT_PERF.md`](../../docs/TRITON_EXTRACT_PERF.md).
 
 ## Despliegue en el mismo host que Triton
 
@@ -44,6 +44,22 @@ En `triton_pose_extract_config.json` → sección **`filters`**:
 
 Cuerpo visible / kp conf: **`pose_core`** (`BODY_VISIBLE_MIN_*`, mismo criterio que producción).
 
+## Motor `c1_like` (más rápido, solo IAModel)
+
+Por defecto en `triton_pose_extract_config.json` → **`extract`**:
+
+| Campo | Default | Efecto |
+|--------|---------|--------|
+| `engine` | `c1_like` | NVDEC + preprocess paralelo **sin tocar** el repo vendor |
+| `decode_backend` | `ffmpeg_nvdec` | FFmpeg `h264_cuvid` / `hevc_cuvid` → BGR |
+| `preprocess_workers` | 8 | Letterbox como `triton_preprocess_workers` en C1 |
+| `fallback_opencv_decode` | true | Si NVDEC falla, OpenCV |
+
+Triton sigue igual (gRPC + mismas primitivas `pose_core`: infer, decode, ByteTrack, export).  
+Volver al camino antiguo: `"engine": "clip_extractor"`.
+
+En `meta.json` verás `iamodel_extract_engine: c1_like` en clips nuevos.
+
 ## Paralelismo
 
 Auto: `min(gpu_instance_count×2, max_batch_size // triton_batch_size)` desde `config/pose.yaml` del vendor (~**4 workers** en piloto).
@@ -74,6 +90,31 @@ chmod +x run_extract.sh
 
 # Debug: primeros N clips (`--limit` usa máx. 2 workers; `--parallel 1` = log más claro)
 ./run_extract.sh extract-csv --input-root ... --output-base ... --limit 5 --parallel 1 -v
+
+## Bench / ETA (más fiable que preflight)
+
+Procesa **50 clips reales** (respeta `skip_existing`), mide mediana/p90 y proyecta horas restantes:
+
+```bash
+./run_extract.sh bench-csv \
+  --input-root /ruta/csv ... \
+  --output-base /media/8TB/.../data_triton_pose \
+  --sample 50 --parallel 2 -v
+```
+
+Informe: `{output_base}/logs/bench_extract_YYYYMMDD_HHMMSS.json`
+
+Pending **exacto** (resta ya exportados; **lento** — construye cola completa):
+
+```bash
+./run_extract.sh bench-csv ... --sample 50 --count-pending -v
+```
+
+Re-analizar un informe con pendientes manuales (p.ej. tras contar npy):
+
+```bash
+./run_extract.sh bench-analyze logs/bench_extract_....json --pending-jobs 15686
+```
 
 # Calentar Triton antes del batch (1ª infer GPU puede tardar 1–3 min)
 ./run_extract.sh check-triton --smoke

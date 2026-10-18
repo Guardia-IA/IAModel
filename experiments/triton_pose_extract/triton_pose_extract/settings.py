@@ -27,6 +27,7 @@ class ExtractSettings:
     max_batch_size: int
     gpu_instance_count: int
     input_fp16: bool
+    use_system_shm: bool
 
     @classmethod
     def load(
@@ -122,7 +123,19 @@ class ExtractSettings:
             max_batch_size=int(triton_cfg.get("max_batch_size") or 32),
             gpu_instance_count=int(triton_cfg.get("gpu_instance_count") or 2),
             input_fp16=bool(triton_cfg.get("input_fp16", True)),
+            use_system_shm=_resolve_use_system_shm(raw, triton_cfg),
         )
+
+
+def _resolve_use_system_shm(raw: dict, triton_cfg: dict) -> bool:
+    env = os.environ.get("KANVIS_POSE_TRITON_SYSTEM_SHM_ENABLED", "").strip().lower()
+    if env in ("1", "true", "yes"):
+        return True
+    if env in ("0", "false", "no"):
+        return False
+    if "use_system_shm" in triton_cfg:
+        return bool(triton_cfg.get("use_system_shm"))
+    return bool(raw.get("use_system_shm", False))
 
 
 def _grpc_to_http_health(grpc_url: str) -> str:

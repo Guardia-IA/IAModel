@@ -35,4 +35,4 @@ Diagnosticar con log `-v` + `users` vacío vs poblado. Ver ejemplos A/B/C en res
 - CLI override: `extract-csv --no-single-user-only`  
 - Informe: `logs/csv_extract_report.json` → `jobs_ok`, `jobs_skip_no_export`, `jobs_fail_infra`  
 
-Referencias: [AGENT_TRITON_NPY_BRIEF.md](./AGENT_TRITON_NPY_BRIEF.md), README `experiments/triton_pose_extract/`.
+Referencias: [AGENT_TRITON_NPY_BRIEF.md](./AGENT_TRITON_NPY_BRIEF.md), [TRITON_EXTRACT_PERF.md](./TRITON_EXTRACT_PERF.md), README `experiments/triton_pose_extract/`.

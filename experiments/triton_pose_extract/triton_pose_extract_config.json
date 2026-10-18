@@ -10,12 +10,15 @@
   "triton_batch_size": 8,
   "tracker": "bytetrack",
   "parse_conf": 0.18,
-  "parallel_clips": null,
+  "parallel_clips": 2,
+  "_parallel_clips_comment": "5090: 2 suele ir mejor que 4 si GPU idle (decode CPU). Ver docs/TRITON_EXTRACT_PERF.md",
   "triton": {
     "model_name": "yolo26s-pose",
     "max_batch_size": 32,
     "gpu_instance_count": 2,
-    "input_fp16": true
+    "input_fp16": true,
+    "use_system_shm": true,
+    "_use_system_shm_comment": "Mismo host + ipc host Triton/cliente; si falla conectar, poner false"
   },
   "clip": {
     "triton_batch_size": 8,
@@ -29,6 +32,14 @@
     "end_equals_full_epsilon": 0.35,
     "data_result_subdir": "data_result",
     "temp_clips_subdir": "temp_clips"
+  },
+  "extract": {
+    "engine": "c1_like",
+    "_engine_comment": "c1_like = NVDEC FFmpeg + preprocess paralelo (solo IAModel). clip_extractor = OpenCV en pose_core",
+    "decode_backend": "ffmpeg_nvdec",
+    "preprocess_workers": 8,
+    "fallback_opencv_decode": true,
+    "ffmpeg_hwaccel": "cuda"
   },
   "ffmpeg": {
     "clip_scale_height": 0,

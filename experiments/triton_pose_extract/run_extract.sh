@@ -20,6 +20,12 @@ case "$CMD" in
   extract-csv)
     "$PY" extract_clips.py extract-csv "$@"
     ;;
+  bench-csv)
+    "$PY" extract_clips.py bench-csv "$@"
+    ;;
+  bench-analyze)
+    "$PY" extract_clips.py bench-analyze "$@"
+    ;;
   extract)
     "$PY" extract_clips.py extract "$@"
     ;;
@@ -33,6 +39,8 @@ Uso: $0 <comando> [args]
   check-triton [--smoke]              Triton READY + capacidad paralela
   preflight-csv --input-root DIR      CSVs, clips/cat, tiempo estimado Triton
   extract-csv --input-root DIR        Batch CSV → FFmpeg → Triton (paralelo)
+  bench-csv --input-root DIR          Muestra (50 clips) + ETA batch real
+  bench-analyze REPORT.json           Re-proyectar ETA desde un informe
   extract --video FILE --out DIR      Un clip o carpeta suelta
   smoke-one [--video PATH]            Prueba 1 clip
 
