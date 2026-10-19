@@ -330,7 +330,8 @@ def _chunk_offline_indices(
 ) -> tuple[np.ndarray, dict[str, Any]]:
     """
     Índices en offline poses_full por fila del chunk.
-    Por defecto solo .npy: emparejar chunk ts ↔ merged_pose_timestamps ↔ offline.
+    Gold chunk (§10.2): align=playback — pose_frame_timestamps → tiempo en clip_buffer → k_i.
+    merged_ts: empareja ts del chunk con merged_pose_timestamps (no sustituye §10.2).
     """
     ts_path = chunk_dir / "pose_frame_timestamps.npy"
     if not ts_path.is_file():
@@ -398,7 +399,7 @@ def compare_chunk_timestamp_slice(
     chunk_id: str,
     epsilon: float,
     *,
-    align: str = "merged_ts",
+    align: str = "playback",
 ) -> dict[str, Any]:
     chunk_dir = c1_session / chunk_id
     if not chunk_dir.is_dir():
@@ -441,9 +442,9 @@ def main() -> int:
     ap.add_argument("--skip-chunk", action="store_true")
     ap.add_argument(
         "--align",
-        choices=("merged_ts", "relative", "playback"),
-        default="merged_ts",
-        help="Chunk↔offline: merged_ts (solo .npy, default), relative, playback (frontend)",
+        choices=("playback", "merged_ts", "relative"),
+        default="playback",
+        help="Chunk↔offline: playback=§10.2 (default), merged_ts, relative",
     )
     args = ap.parse_args()
 
