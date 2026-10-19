@@ -11,23 +11,44 @@ from pathlib import Path
 from typing import Any
 
 from triton_pose_extract.capacity import capacity_report, recommend_parallel_clips
+from triton_pose_extract.c1_like_extract import extract_clip_c1_like
 from triton_pose_extract.discovery import VideoJob
-from triton_pose_extract.factory import build_clip_extractor
+from triton_pose_extract.factory import build_pose_stack
+from triton_pose_extract.pipeline_config import C1LikeExtractConfig, PipelineConfig
 from triton_pose_extract.settings import ExtractSettings
 
 logger = logging.getLogger(__name__)
-_THREAD_EXTRACTOR = threading.local()
+_THREAD = threading.local()
 
 
-def _init_worker(settings: ExtractSettings) -> None:
-    _THREAD_EXTRACTOR.extractor = build_clip_extractor(settings)
+def _init_worker(settings: ExtractSettings, use_c1_like: bool) -> None:
+    stack = build_pose_stack(settings)
+    _THREAD.stack = stack
+    _THREAD.use_c1_like = use_c1_like
+    if not use_c1_like:
+        from pose_core.clip_extractor import ClipExtractor
+
+        _THREAD.extractor = ClipExtractor(
+            stack.client,
+            stack.preprocess,
+            stack.tracker,
+            stack.bundle,
+            extract_cfg=stack.extract_cfg,
+        )
 
 
 def _get_extractor() -> Any:
-    ext = getattr(_THREAD_EXTRACTOR, "extractor", None)
+    ext = getattr(_THREAD, "extractor", None)
     if ext is None:
         raise RuntimeError("Worker sin ClipExtractor (fallo init pool)")
     return ext
+
+
+def _get_stack() -> Any:
+    st = getattr(_THREAD, "stack", None)
+    if st is None:
+        raise RuntimeError("Worker sin PoseExtractStack (fallo init pool)")
+    return st
 
 
 @dataclass
@@ -40,17 +61,34 @@ class ExtractResult:
     seconds: float
 
 
-def extract_one_job(settings: ExtractSettings, job: VideoJob, out_base: Path) -> ExtractResult:
+def extract_one_job(
+    settings: ExtractSettings,
+    job: VideoJob,
+    out_base: Path,
+    *,
+    pipe_extract: C1LikeExtractConfig | None = None,
+) -> ExtractResult:
     t0 = time.perf_counter()
     try:
-        ext = _get_extractor()
         cat_folder = str(job.cat) if job.cat is not None else "0"
-        result = ext.extract(
-            job.video_path,
-            out_dir=out_base / cat_folder,
-            cat=cat_folder,
-            clip_folder=job.clip_folder,
-        )
+        if getattr(_THREAD, "use_c1_like", False):
+            if pipe_extract is None:
+                raise RuntimeError("c1_like requiere pipe.extract")
+            result, _timings = extract_clip_c1_like(
+                _get_stack(),
+                job.video_path,
+                out_dir=out_base / cat_folder,
+                cat=cat_folder,
+                clip_folder=job.clip_folder,
+                pipe_cfg=pipe_extract,
+            )
+        else:
+            result = _get_extractor().extract(
+                job.video_path,
+                out_dir=out_base / cat_folder,
+                cat=cat_folder,
+                clip_folder=job.clip_folder,
+            )
         return ExtractResult(
             video=str(job.video_path),
             ok=True,
@@ -77,6 +115,7 @@ def run_parallel_extract(
     out_base: Path,
     *,
     parallel: int | None = None,
+    pipe: PipelineConfig | None = None,
 ) -> dict[str, Any]:
     if not jobs:
         return {"ok": False, "error": "sin vídeos", "results": []}
@@ -86,6 +125,9 @@ def run_parallel_extract(
     cap = capacity_report(settings)
     cap["workers_used"] = n_workers
 
+    use_c1_like = bool(pipe and pipe.extract.use_c1_like())
+    pipe_extract = pipe.extract if pipe else None
+
     out_base.mkdir(parents=True, exist_ok=True)
     results: list[ExtractResult] = []
     t0 = time.perf_counter()
@@ -93,10 +135,13 @@ def run_parallel_extract(
     with ThreadPoolExecutor(
         max_workers=n_workers,
         initializer=_init_worker,
-        initargs=(settings,),
+        initargs=(settings, use_c1_like),
         thread_name_prefix="triton_extract",
     ) as pool:
-        futures = {pool.submit(extract_one_job, settings, job, out_base): job for job in jobs}
+        futures = {
+            pool.submit(extract_one_job, settings, job, out_base, pipe_extract=pipe_extract): job
+            for job in jobs
+        }
         for fut in as_completed(futures):
             res = fut.result()
             results.append(res)
@@ -110,6 +155,7 @@ def run_parallel_extract(
     ok_n = sum(1 for r in results if r.ok)
     report = {
         "ok": ok_n > 0,
+        "extract_engine": "c1_like" if use_c1_like else "clip_extractor",
         "capacity": cap,
         "num_jobs": len(jobs),
         "num_ok": ok_n,

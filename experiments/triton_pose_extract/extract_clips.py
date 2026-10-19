@@ -107,8 +107,10 @@ def _cmd_extract(args: argparse.Namespace) -> int:
         return 2
 
     cap = capacity_report(settings)
+    engine = "c1_like" if pipe.extract.use_c1_like() else "clip_extractor"
     print(
-        f"Extracción: {len(jobs)} clip(s), parallel={args.parallel or cap['parallel_clips']}, "
+        f"Extracción: {len(jobs)} clip(s), engine={engine}, "
+        f"parallel={args.parallel or cap['parallel_clips']}, "
         f"batch={settings.triton_batch_size}, url={settings.triton_url}, "
         f"single_user_only={settings.single_user_only}",
         flush=True,
@@ -119,6 +121,7 @@ def _cmd_extract(args: argparse.Namespace) -> int:
         jobs,
         Path(args.out),
         parallel=args.parallel if args.parallel > 0 else None,
+        pipe=pipe,
     )
     if args.validate:
         for row in report.get("results") or []:
