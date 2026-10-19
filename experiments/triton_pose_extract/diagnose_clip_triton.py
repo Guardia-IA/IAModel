@@ -13,23 +13,22 @@ import json
 import sys
 from pathlib import Path
 
-import numpy as np
-
 PKG = Path(__file__).resolve().parent
 sys.path.insert(0, str(PKG))
+DEFAULT_CONFIG = PKG / "triton_pose_extract_config.json"
 
 
-def _load_config(config: Path | None):
+def _load_config(config_path: Path | None):
     from extract_clips import _load_raw_config  # noqa: PLC0415
     from triton_pose_extract.pipeline_config import load_pipeline_config  # noqa: PLC0415
     from triton_pose_extract.settings import ExtractSettings  # noqa: PLC0415
 
     class _Args:
-        config = str(config) if config else ""
+        config = str(config_path) if config_path else ""
 
     raw = _load_raw_config(_Args())
     settings = ExtractSettings.load(
-        config or PKG / "triton_pose_extract_config.json",
+        config_path or DEFAULT_CONFIG,
         require_pose_repo=True,
     )
     pipe = load_pipeline_config(raw, output_base=None)
