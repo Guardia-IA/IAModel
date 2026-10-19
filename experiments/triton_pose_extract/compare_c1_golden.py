@@ -13,6 +13,8 @@ Usage:
 
   --offline-clip: carpeta con user_*/poses_full.npy (salida triton_pose_extract).
   --c1-session: raíz export sesión (clip_buffer.mp4, merged*.npy, meta.json, chunk_*).
+  Gold principal: merged.npy ↔ offline (mismo clip_buffer). Chunk usa pose_frame_timestamps
+  + merged_pose_timestamps.npy (sin frontend_playback).
 """
 from __future__ import annotations
 
@@ -224,47 +226,103 @@ def compare_merged_whole(
     return result
 
 
+def _chunk_offline_indices(
+    c1_session: Path,
+    chunk_dir: Path,
+    meta_sess: dict[str, Any],
+    *,
+    off_len: int,
+    align: str,
+) -> tuple[np.ndarray, dict[str, Any]]:
+    """
+    Índices en offline poses_full por fila del chunk.
+    Por defecto solo .npy: emparejar chunk ts ↔ merged_pose_timestamps ↔ offline.
+    """
+    ts_path = chunk_dir / "pose_frame_timestamps.npy"
+    if not ts_path.is_file():
+        raise FileNotFoundError(f"falta {ts_path}")
+    ts = np.load(ts_path).astype(np.float64)
+
+    video = c1_session / "clip_buffer.mp4"
+    fps_ref = float(meta_sess.get("pose_fps") or 0)
+    if fps_ref <= 0 and video.is_file():
+        fps_ref = _ffprobe_fps(video)
+    if fps_ref <= 0:
+        fps_ref = 12.0
+    dt_tol = 0.5 / fps_ref
+
+    meta_align: dict[str, Any] = {"align_mode": align, "fps_ref": fps_ref, "dt_tol_seconds": dt_tol}
+    indices: list[int] = []
+    dt_violations = 0
+
+    mode = align
+    mts_path = c1_session / "merged_pose_timestamps.npy"
+    if mode == "merged_ts" and not mts_path.is_file():
+        mode = "relative"
+        meta_align["align_fallback"] = "merged_pose_timestamps.npy ausente → relative"
+
+    if mode == "merged_ts":
+        mts = np.load(mts_path).astype(np.float64)
+        n_ref = min(len(mts), off_len)
+        meta_align["align_mode"] = "merged_ts"
+        meta_align["merged_ts_len"] = int(len(mts))
+        for t_i in ts:
+            j = int(np.argmin(np.abs(mts[:n_ref] - t_i)))
+            if abs(mts[j] - t_i) > dt_tol:
+                dt_violations += 1
+            indices.append(max(0, min(off_len - 1, j)))
+    elif mode == "relative":
+        meta_align["align_mode"] = "relative"
+        t0 = float(ts[0]) if len(ts) else 0.0
+        for t_i in ts:
+            k = int(round((float(t_i) - t0) * fps_ref))
+            indices.append(max(0, min(off_len - 1, k)))
+    elif mode == "playback":
+        t0_playback, t0_source = _resolve_playback_t0(c1_session, meta_sess)
+        meta_align["align_mode"] = "playback"
+        meta_align["playback_t0_source"] = t0_source
+        meta_align["playback_t0_epoch"] = t0_playback
+        if video.is_file():
+            meta_align["ffprobe_frame_count"] = _ffprobe_frame_count(video)
+        for t_i in ts:
+            video_time_s = float(t_i - t0_playback)
+            k = int(round(video_time_s * fps_ref))
+            indices.append(max(0, min(off_len - 1, k)))
+            t_impl = k / fps_ref
+            if abs(video_time_s - t_impl) > dt_tol:
+                dt_violations += 1
+    else:
+        raise ValueError(f"align desconocido: {align}")
+
+    meta_align["dt_alignment_violations"] = dt_violations
+    return np.array(indices, dtype=np.int64), meta_align
+
+
 def compare_chunk_timestamp_slice(
     c1_session: Path,
     offline_user: Path,
     chunk_id: str,
     epsilon: float,
+    *,
+    align: str = "merged_ts",
 ) -> dict[str, Any]:
     chunk_dir = c1_session / chunk_id
     if not chunk_dir.is_dir():
         raise FileNotFoundError(f"chunk no encontrado: {chunk_dir}")
     meta_sess = json.loads((c1_session / "meta.json").read_text(encoding="utf-8"))
-    t0_playback, t0_source = _resolve_playback_t0(c1_session, meta_sess)
 
-    video = c1_session / "clip_buffer.mp4"
-    if not video.is_file():
-        raise FileNotFoundError(f"falta clip_buffer.mp4 en {c1_session}")
-    frame_count = _ffprobe_frame_count(video)
-    fps_ref = float(meta_sess.get("pose_fps") or 0) or _ffprobe_fps(video)
-
-    ts_path = chunk_dir / "pose_frame_timestamps.npy"
     chunk_pf = np.load(chunk_dir / "poses_full.npy")
     chunk_vm = np.load(chunk_dir / "valid_mask.npy")
-    if not ts_path.is_file():
-        raise FileNotFoundError(f"falta {ts_path}")
-    ts = np.load(ts_path).astype(np.float64)
-
     off_pf = np.load(offline_user / "poses_full.npy")
     off_vm = np.load(offline_user / "valid_mask.npy")
 
-    dt_tol = 0.5 / fps_ref
-    indices: list[int] = []
-    dt_violations = 0
-    for t_i in ts:
-        video_time_s = float(t_i - t0_playback)
-        k = int(round(video_time_s * fps_ref))
-        k = max(0, min(frame_count - 1, k))
-        indices.append(k)
-        t_impl = k / fps_ref
-        if abs(video_time_s - t_impl) > dt_tol:
-            dt_violations += 1
-
-    idx = np.array(indices, dtype=np.int64)
+    idx, meta_align = _chunk_offline_indices(
+        c1_session,
+        chunk_dir,
+        meta_sess,
+        off_len=int(off_pf.shape[0]),
+        align=align,
+    )
     off_slice_pf = off_pf[idx]
     off_slice_vm = off_vm[idx]
     cmp = _compare_aligned_rows(off_slice_pf, off_slice_vm, chunk_pf, chunk_vm, epsilon)
@@ -272,12 +330,8 @@ def compare_chunk_timestamp_slice(
         "test": "chunk_timestamp_slice",
         "chunk": chunk_id,
         "chunk_T": int(chunk_pf.shape[0]),
-        "fps_ref": fps_ref,
-        "frame_count": frame_count,
-        "playback_t0_source": t0_source,
-        "playback_t0_epoch": t0_playback,
-        "dt_alignment_violations": dt_violations,
-        "dt_tol_seconds": dt_tol,
+        "offline_T": int(off_pf.shape[0]),
+        **meta_align,
         **cmp,
     }
 
@@ -291,6 +345,12 @@ def main() -> int:
     ap.add_argument("--json", type=Path, help="escribir informe JSON")
     ap.add_argument("--skip-merged", action="store_true")
     ap.add_argument("--skip-chunk", action="store_true")
+    ap.add_argument(
+        "--align",
+        choices=("merged_ts", "relative", "playback"),
+        default="merged_ts",
+        help="Chunk↔offline: merged_ts (solo .npy, default), relative, playback (frontend)",
+    )
     args = ap.parse_args()
 
     offline_user = _pick_offline_user(args.offline_clip)
@@ -309,7 +369,11 @@ def main() -> int:
     if not args.skip_chunk:
         report["tests"].append(
             compare_chunk_timestamp_slice(
-                args.c1_session, offline_user, args.chunk, args.epsilon
+                args.c1_session,
+                offline_user,
+                args.chunk,
+                args.epsilon,
+                align=args.align,
             )
         )
 
