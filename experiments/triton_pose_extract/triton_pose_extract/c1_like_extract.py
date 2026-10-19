@@ -114,7 +114,12 @@ def extract_clip_c1_like(
         _accumulate_frame(users, mock, cfg, frame_policy=cfg.frame_policy)
 
     if cfg.single_user_only and len(users) > 1:
-        logger.info("skip clip %s: single_user_only y %d tracks", clip_name, len(users))
+        logger.warning(
+            "clip %s: single_user_only y %d tracks → sin export (usa export_primary_user "
+            "o --no-single-user-only)",
+            clip_name,
+            len(users),
+        )
         users = {}
 
     user_dirs: list[Path] = []

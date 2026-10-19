@@ -18,6 +18,7 @@ from triton_pose_extract.health import check_model_ready, print_health, smoke_in
 from triton_pose_extract.parallel_extract import run_parallel_extract  # noqa: E402
 from triton_pose_extract.paths import ensure_pose_core_importable, default_triton_pose_repo  # noqa: E402
 from triton_pose_extract.settings import ExtractSettings  # noqa: E402
+from triton_pose_extract.primary_user import prune_to_primary_user  # noqa: E402
 from triton_pose_extract.validate_output import validate_clip_dir  # noqa: E402
 from triton_pose_extract.pipeline_config import load_pipeline_config  # noqa: E402
 
@@ -87,7 +88,9 @@ def _cmd_extract(args: argparse.Namespace) -> int:
     elif getattr(args, "single_user_only", False):
         settings.single_user_only = True
     else:
-        settings.single_user_only = pipe.filters.single_user_only
+        # Igual que extract-csv: con primary_user exportamos multi-track y podamos después.
+        strict = pipe.filters.single_user_only and not pipe.filters.export_primary_user_on_multi_track
+        settings.single_user_only = strict
     ensure_pose_core_importable(settings.triton_pose_repo)
 
     if not args.skip_ready:
@@ -112,7 +115,8 @@ def _cmd_extract(args: argparse.Namespace) -> int:
         f"Extracción: {len(jobs)} clip(s), engine={engine}, "
         f"parallel={args.parallel or cap['parallel_clips']}, "
         f"batch={settings.triton_batch_size}, url={settings.triton_url}, "
-        f"single_user_only={settings.single_user_only}",
+        f"single_user_only={settings.single_user_only}, "
+        f"primary_user={pipe.filters.export_primary_user_on_multi_track}",
         flush=True,
     )
 
@@ -123,6 +127,18 @@ def _cmd_extract(args: argparse.Namespace) -> int:
         parallel=args.parallel if args.parallel > 0 else None,
         pipe=pipe,
     )
+    for row in report.get("results") or []:
+        if not row.get("ok") or not row.get("out_dir"):
+            continue
+        out = Path(row["out_dir"])
+        if pipe.filters.export_primary_user_on_multi_track and not getattr(
+            args, "no_single_user_only", False
+        ):
+            pr_ok, pr_err = prune_to_primary_user(out)
+            if pr_err and not pr_ok:
+                print(f"PRIMARY_USER WARN {out}: {pr_err}", file=sys.stderr)
+            elif pr_ok and pr_err is None and list(out.glob("user_*")):
+                print(f"PRIMARY_USER OK {out}", flush=True)
     if args.validate:
         for row in report.get("results") or []:
             if not row.get("ok") or not row.get("out_dir"):
