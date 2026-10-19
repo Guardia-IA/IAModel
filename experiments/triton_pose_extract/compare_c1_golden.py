@@ -39,6 +39,57 @@ def _parse_iso_epoch(s: str) -> float:
     return dt.timestamp()
 
 
+def _resolve_playback_t0(c1_session: Path, meta_sess: dict[str, Any]) -> tuple[float, str]:
+    """
+    Epoch UTC del instante t=0 del clip_buffer (§10.2).
+    Algunos exports MinIO no incluyen playback_start_at en meta.json raíz.
+    """
+    for key in ("playback_start_at", "clip_playback_start_at", "video_playback_start_at"):
+        raw = meta_sess.get(key)
+        if raw:
+            return _parse_iso_epoch(str(raw)), f"meta.json:{key}"
+
+    sync = meta_sess.get("sync")
+    if isinstance(sync, dict):
+        for key in ("playback_start_at", "video_start_at"):
+            raw = sync.get(key)
+            if raw:
+                return _parse_iso_epoch(str(raw)), f"meta.json:sync.{key}"
+
+    fb_path = c1_session / "frontend_playback.json"
+    if fb_path.is_file():
+        fb = json.loads(fb_path.read_text(encoding="utf-8"))
+        sync_fb = fb.get("sync") if isinstance(fb.get("sync"), dict) else fb
+        if isinstance(sync_fb, dict):
+            for key in ("playback_start_at", "video_start_at"):
+                raw = sync_fb.get(key)
+                if raw:
+                    return _parse_iso_epoch(str(raw)), f"frontend_playback.json:sync.{key}"
+            pts = sync_fb.get("pose_timeline_start_at")
+            if pts:
+                offset = float(
+                    sync_fb.get("pose_offset_seconds")
+                    or sync_fb.get("overlay_start_video_time_s")
+                    or fb.get("pose_offset_seconds")
+                    or 0.0
+                )
+                t0 = _parse_iso_epoch(str(pts)) - offset
+                return t0, "frontend_playback.json:pose_timeline_start_at - offset"
+
+    chunk_meta_path = c1_session / "chunk_001" / "meta.json"
+    if chunk_meta_path.is_file():
+        cm = json.loads(chunk_meta_path.read_text(encoding="utf-8"))
+        for key in ("playback_start_at", "session_playback_start_at"):
+            raw = cm.get(key)
+            if raw:
+                return _parse_iso_epoch(str(raw)), f"chunk_001/meta.json:{key}"
+
+    raise KeyError(
+        "No se encontró playback_start_at (meta.json, frontend_playback.json sync, "
+        "o pose_timeline_start_at + pose_offset_seconds). §10.2"
+    )
+
+
 def _ffprobe_fps(video: Path) -> float:
     cmd = [
         "ffprobe",
@@ -183,10 +234,7 @@ def compare_chunk_timestamp_slice(
     if not chunk_dir.is_dir():
         raise FileNotFoundError(f"chunk no encontrado: {chunk_dir}")
     meta_sess = json.loads((c1_session / "meta.json").read_text(encoding="utf-8"))
-    playback_start = meta_sess.get("playback_start_at")
-    if not playback_start:
-        raise KeyError("meta.json sesión sin playback_start_at (§10.2)")
-    t0_playback = _parse_iso_epoch(playback_start)
+    t0_playback, t0_source = _resolve_playback_t0(c1_session, meta_sess)
 
     video = c1_session / "clip_buffer.mp4"
     if not video.is_file():
@@ -226,6 +274,8 @@ def compare_chunk_timestamp_slice(
         "chunk_T": int(chunk_pf.shape[0]),
         "fps_ref": fps_ref,
         "frame_count": frame_count,
+        "playback_t0_source": t0_source,
+        "playback_t0_epoch": t0_playback,
         "dt_alignment_violations": dt_violations,
         "dt_tol_seconds": dt_tol,
         **cmp,
