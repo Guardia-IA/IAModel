@@ -51,6 +51,10 @@ def main() -> int:
     args = ap.parse_args()
 
     settings, pipe = _load_config(args.config)
+    from triton_pose_extract.paths import ensure_pose_core_importable  # noqa: PLC0415
+
+    ensure_pose_core_importable(settings.triton_pose_repo)
+
     from triton_pose_extract.extract_stack import build_extract_stack  # noqa: PLC0415
     from triton_pose_extract.video_decode import read_frames_bgr  # noqa: PLC0415
     from triton_pose_extract.c1_like_extract import _infer_batched  # noqa: PLC0415
