@@ -73,6 +73,23 @@ python3 compare_c1_golden.py \
 
 **Nota script (oct-2026):** si `merged_T < offline_T` (p. ej. regen RTSP pisa merged denso), el informe **no aborta**: `merged_whole_clip` con `pass=false`, `align_failed` o `T_equal=false`, y el test **chunk** sigue. Con **N2 feliz** (`merged_T == offline_T`), `--merged-align auto` usa comparación **fila i ↔ i** (`dense_index`).
 
+### Sesión `c1a198…` (oct-2026)
+
+| Fuente | T | Notas |
+|--------|---|--------|
+| C1 merged | **172** | `clip_buffer_reinfer`, `regenerate_skipped`, **T = ffprobe** |
+| IAModel extract (antes) | **162** | decode NVDEC ≠ `ffprobe -count_frames` → **`T_equal` bloqueado** |
+| Chunk MinIO | NaN / sync | Sin `playback_start_at` en bundle → `has_sync_start=false`; usar `--align auto` o `merged_dense` |
+
+**IAModel (fix):** `read_frames_bgr` reconcilia T con **`ffprobe nb_read_frames`** (fallback ffmpeg software / OpenCV). Tras re-extract con `--validate`, `meta.json` debe tener `frame_count_matches_ffprobe: true`. Entonces:
+
+```bash
+./run_extract.sh extract --video "$SESSION/clip_buffer.mp4" --out "$OUT" --cat gold --parallel 1 --validate
+python3 compare_c1_golden.py ... --merged-align auto --align auto --json gold_report_n2.json
+```
+
+**C1 (pendiente menor):** incluir `playback_start_at` (o `pose_timeline_start_at` + offset) en `meta.json` sesión para §10.2 estricto; chunk post-slice denso no debe quedar solo NaN si el recorte tiene persona.
+
 Adjuntar JSON + commit/PR C1. IAModel (o C1) ejecuta en **wudebian** (mismo Triton que piloto).
 
 **Opcional C2:** mismos npy → `score_pose_ensemble.py` (41→96, 48→64) debe coincidir con C2 en probabilidades.

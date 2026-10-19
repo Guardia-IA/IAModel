@@ -21,6 +21,34 @@ class VideoTiming:
     fps: float
     frame_count: int
     codec: str
+    # ffprobe -count_frames (referencia C1 / gold N2); puede diferir de nb_frames en container
+    nb_read_frames: int | None = None
+    decode_backend_used: str | None = None
+
+
+def ffprobe_nb_read_frames(path: Path) -> int | None:
+    """Mismo criterio que compare_c1_golden y C1 clip_buffer (T denso)."""
+    cmd = [
+        "ffprobe",
+        "-v",
+        "error",
+        "-select_streams",
+        "v:0",
+        "-count_frames",
+        "-show_entries",
+        "stream=nb_read_frames",
+        "-of",
+        "default=nokey=1:noprint_wrappers=1",
+        str(path),
+    ]
+    try:
+        out = subprocess.check_output(cmd, stderr=subprocess.DEVNULL, text=True, timeout=600).strip()
+        if out.isdigit():
+            n = int(out)
+            return n if n > 0 else None
+    except (FileNotFoundError, subprocess.SubprocessError, ValueError):
+        pass
+    return None
 
 
 def probe_video(path: Path) -> VideoTiming:
@@ -71,20 +99,118 @@ def read_frames_bgr(
     backend: str,
     fallback_opencv: bool = True,
     ffmpeg_hwaccel: str = "cuda",
+    reconcile_ffprobe_frames: bool = True,
 ) -> tuple[list[np.ndarray], VideoTiming]:
+    """
+    Decodifica todos los frames posibles. Si reconcile_ffprobe_frames (default),
+    elige el backend cuya T coincide con ffprobe nb_read_frames (gold C1 N2).
+    """
     path = Path(path)
     timing = probe_video(path)
+    target = ffprobe_nb_read_frames(path) if reconcile_ffprobe_frames else None
+    timing = VideoTiming(
+        timing.width,
+        timing.height,
+        timing.fps,
+        timing.frame_count,
+        timing.codec,
+        nb_read_frames=target,
+    )
+
+    attempts: list[tuple[str, list[np.ndarray], VideoTiming]] = []
+
+    def _record(name: str, frames: list[np.ndarray], t: VideoTiming) -> None:
+        attempts.append(
+            (
+                name,
+                frames,
+                VideoTiming(
+                    t.width,
+                    t.height,
+                    t.fps,
+                    len(frames),
+                    t.codec,
+                    nb_read_frames=target,
+                    decode_backend_used=name,
+                ),
+            )
+        )
+
+    def _needs_more() -> bool:
+        if not reconcile_ffprobe_frames or not target:
+            return False
+        return not any(len(f) == target for _, f, _ in attempts)
+
     if backend == "opencv":
-        return _read_opencv(path, timing)
-    if backend == "ffmpeg_nvdec":
         try:
-            return _read_ffmpeg_nvdec(path, timing, ffmpeg_hwaccel)
+            frames, t = _read_opencv(path, timing)
+            _record("opencv", frames, t)
+        except Exception as exc:
+            logger.warning("opencv falló (%s)", exc)
+    elif backend == "ffmpeg_nvdec":
+        try:
+            frames, t = _read_ffmpeg_nvdec(path, timing, ffmpeg_hwaccel)
+            _record("ffmpeg_nvdec", frames, t)
         except Exception as exc:
             logger.warning("ffmpeg_nvdec falló (%s)", exc)
             if not fallback_opencv:
                 raise
-            return _read_opencv(path, timing)
-    raise ValueError(f"decode backend desconocido: {backend}")
+    else:
+        raise ValueError(f"decode backend desconocido: {backend}")
+
+    if _needs_more():
+        for name, reader in (
+            ("ffmpeg_software", lambda: _read_ffmpeg_software(path, timing)),
+            ("ffmpeg_nvdec", lambda: _read_ffmpeg_nvdec(path, timing, ffmpeg_hwaccel)),
+            ("opencv", lambda: _read_opencv(path, timing)),
+        ):
+            if any(n == name for n, _, _ in attempts):
+                continue
+            try:
+                frames, t = reader()
+                _record(name, frames, t)
+            except Exception as exc:
+                logger.warning("%s reconcile falló (%s)", name, exc)
+            if not _needs_more():
+                break
+
+    if not attempts:
+        raise RuntimeError(f"decode falló sin frames: {path}")
+
+    chosen_name, chosen_frames, chosen_timing = _pick_decode_attempt(attempts, target)
+    if target and len(chosen_frames) != target:
+        logger.warning(
+            "%s: decode=%d != ffprobe nb_read_frames=%d (backend=%s)",
+            path.name,
+            len(chosen_frames),
+            target,
+            chosen_name,
+        )
+    elif target:
+        logger.info(
+            "%s: decode=%d == ffprobe nb_read_frames (%s)",
+            path.name,
+            len(chosen_frames),
+            chosen_name,
+        )
+    return chosen_frames, chosen_timing
+
+
+def _pick_decode_attempt(
+    attempts: list[tuple[str, list[np.ndarray], VideoTiming]],
+    target: int | None,
+) -> tuple[str, list[np.ndarray], VideoTiming]:
+    valid = [(n, f, t) for n, f, t in attempts if f]
+    if not valid:
+        raise RuntimeError("0 frames tras todos los backends")
+    if target is not None and target > 0:
+        exact = [x for x in valid if len(x[1]) == target]
+        if exact:
+            order = {"ffmpeg_nvdec": 0, "ffmpeg_software": 1, "opencv": 2}
+            exact.sort(key=lambda x: order.get(x[0], 9))
+            return exact[0]
+    valid.sort(key=lambda x: len(x[1]), reverse=True)
+    return valid[0]
 
 
 def _parse_fps(raw: str) -> float:
@@ -161,4 +287,39 @@ def _read_ffmpeg_nvdec(path: Path, timing: VideoTiming, hwaccel: str) -> tuple[l
     if not frames:
         raise RuntimeError("ffmpeg nvdec: 0 frames")
     logger.info("nvdec %s → %d frames", path.name, len(frames))
+    return frames, VideoTiming(w, h, timing.fps, len(frames), timing.codec)
+
+
+def _read_ffmpeg_software(path: Path, timing: VideoTiming) -> tuple[list[np.ndarray], VideoTiming]:
+    w, h = timing.width, timing.height
+    cmd: list[str] = [
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-nostdin",
+        "-i",
+        str(path),
+        "-an",
+        "-pix_fmt",
+        "bgr24",
+        "-f",
+        "rawvideo",
+        "pipe:1",
+    ]
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    assert proc.stdout is not None
+    fb = w * h * 3
+    frames: list[np.ndarray] = []
+    while True:
+        buf = proc.stdout.read(fb)
+        if not buf or len(buf) < fb:
+            break
+        frames.append(np.frombuffer(buf, dtype=np.uint8).reshape(h, w, 3).copy())
+    err = proc.stderr.read().decode("utf-8", errors="replace") if proc.stderr else ""
+    if proc.wait() != 0 and not frames:
+        raise RuntimeError(f"ffmpeg software: {err[:350]}")
+    if not frames:
+        raise RuntimeError("ffmpeg software: 0 frames")
+    logger.info("ffmpeg software %s → %d frames", path.name, len(frames))
     return frames, VideoTiming(w, h, timing.fps, len(frames), timing.codec)

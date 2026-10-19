@@ -86,10 +86,24 @@ def _resolve_playback_t0(c1_session: Path, meta_sess: dict[str, Any]) -> tuple[f
             if raw:
                 return _parse_iso_epoch(str(raw)), f"chunk_001/meta.json:{key}"
 
+    pts = meta_sess.get("pose_timeline_start_at")
+    if pts:
+        offset = float(meta_sess.get("pose_offset_seconds") or 0.0)
+        t0 = _parse_iso_epoch(str(pts)) - offset
+        return t0, "meta.json:pose_timeline_start_at - pose_offset_seconds"
+
     raise KeyError(
         "No se encontró playback_start_at (meta.json, frontend_playback.json sync, "
         "o pose_timeline_start_at + pose_offset_seconds). §10.2"
     )
+
+
+def _has_playback_sync_start(c1_session: Path, meta_sess: dict[str, Any]) -> bool:
+    try:
+        _resolve_playback_t0(c1_session, meta_sess)
+        return True
+    except KeyError:
+        return False
 
 
 def _ffprobe_fps(video: Path) -> float:
@@ -313,6 +327,16 @@ def compare_merged_whole(
         fps_ref = _ffprobe_fps(video)
     if fps_ref <= 0:
         fps_ref = 12.0
+    if video.is_file():
+        result["ffprobe_nb_read_frames"] = _ffprobe_frame_count(video)
+        result["ffprobe_T_equal_offline"] = result["ffprobe_nb_read_frames"] == t_off
+        result["ffprobe_T_equal_merged"] = result["ffprobe_nb_read_frames"] == t_m
+        if not result["ffprobe_T_equal_offline"] and result.get("ffprobe_T_equal_merged"):
+            result.setdefault(
+                "note",
+                "offline_T != ffprobe: re-ejecutar triton_pose_extract (--validate) "
+                "tras actualizar decode (reconcile ffprobe nb_read_frames).",
+            )
 
     mode = merged_align
     if mode == "auto":
@@ -447,6 +471,23 @@ def _chunk_offline_indices(
             t_impl = k / fps_ref
             if abs(video_time_s - t_impl) > dt_tol:
                 dt_violations += 1
+    elif mode == "merged_dense":
+        if not mts_path.is_file():
+            raise FileNotFoundError(
+                "align merged_dense requiere merged_pose_timestamps.npy (N2 denso)"
+            )
+        mts = np.load(mts_path).astype(np.float64)
+        meta_align["align_mode"] = "merged_dense"
+        meta_align["merged_ts_len"] = int(len(mts))
+        meta_align["note"] = (
+            "Índice offline = argmin merged_pose_timestamps (sin playback_start_at). "
+            "Válido si offline_T == merged_T == ffprobe."
+        )
+        for t_i in ts:
+            j = int(np.argmin(np.abs(mts - t_i)))
+            if abs(mts[j] - t_i) > dt_tol:
+                dt_violations += 1
+            indices.append(max(0, min(off_len - 1, j)))
     else:
         raise ValueError(f"align desconocido: {align}")
 
@@ -471,6 +512,9 @@ def compare_chunk_timestamp_slice(
     chunk_vm = np.load(chunk_dir / "valid_mask.npy")
     off_pf = np.load(offline_user / "poses_full.npy")
     off_vm = np.load(offline_user / "valid_mask.npy")
+    meta_align_pre: dict[str, Any] = {
+        "has_sync_start": _has_playback_sync_start(c1_session, meta_sess),
+    }
 
     idx, meta_align = _chunk_offline_indices(
         c1_session,
@@ -487,6 +531,7 @@ def compare_chunk_timestamp_slice(
         "chunk": chunk_id,
         "chunk_T": int(chunk_pf.shape[0]),
         "offline_T": int(off_pf.shape[0]),
+        **meta_align_pre,
         **meta_align,
         **cmp,
     }
@@ -503,9 +548,12 @@ def main() -> int:
     ap.add_argument("--skip-chunk", action="store_true")
     ap.add_argument(
         "--align",
-        choices=("playback", "merged_ts", "relative", "dense_index"),
+        choices=("auto", "playback", "merged_ts", "relative", "dense_index", "merged_dense"),
         default="playback",
-        help="Chunk↔offline: playback=§10.2 (default). dense_index solo si T chunk==offline",
+        help=(
+            "Chunk↔offline: playback=§10.2 (default). auto=playback si sync, si no merged_dense. "
+            "merged_dense=N2 sin playback_start_at. dense_index si T chunk==offline"
+        ),
     )
     ap.add_argument(
         "--merged-align",
@@ -562,6 +610,17 @@ def main() -> int:
     if not args.skip_chunk:
         try:
             chunk_align = args.align
+            meta_sess = json.loads((args.c1_session / "meta.json").read_text(encoding="utf-8"))
+            if chunk_align == "auto":
+                chunk_align = (
+                    "playback"
+                    if _has_playback_sync_start(args.c1_session, meta_sess)
+                    else "merged_dense"
+                )
+                report.setdefault("warnings", []).append(
+                    f"align auto → {chunk_align} "
+                    f"(has_sync_start={_has_playback_sync_start(args.c1_session, meta_sess)})"
+                )
             if chunk_align == "dense_index":
                 chunk_pf = np.load(
                     (args.c1_session / args.chunk / "poses_full.npy")

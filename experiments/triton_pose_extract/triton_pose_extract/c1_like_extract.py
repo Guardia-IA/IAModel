@@ -163,11 +163,17 @@ def extract_clip_c1_like(
             shutil.copy2(video_path, dest_mp4)
 
     cat_val = str(cat) if cat is not None else "0"
+    ffprobe_t = timing.nb_read_frames
     meta = {
         "clip_name": clip_name,
         "fps": fps,
         "frame_count": len(prepared_list),
         "video_frame_count": frame_count,
+        "ffprobe_nb_read_frames": ffprobe_t,
+        "decode_backend_used": timing.decode_backend_used or pipe_cfg.decode_backend,
+        "frame_count_matches_ffprobe": (
+            ffprobe_t is not None and len(prepared_list) == int(ffprobe_t)
+        ),
         "cat": cat_val,
         "clip_duration": round(len(prepared_list) / fps, 3) if fps > 0 else 0,
         "yolo_backend": "triton_tensorrt_plan",

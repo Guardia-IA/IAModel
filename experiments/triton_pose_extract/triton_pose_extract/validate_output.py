@@ -41,4 +41,17 @@ def validate_clip_dir(clip_root: Path) -> list[str]:
                 errors.append(f"{ud.name}: valid_mask incompatible con T={arr.shape[0]}")
     if users and len(user_dirs) != len(users):
         errors.append(f"meta.users={len(users)} vs dirs={len(user_dirs)}")
+    ffprobe_t = meta.get("ffprobe_nb_read_frames")
+    fc = int(meta.get("frame_count") or 0)
+    if ffprobe_t is not None and int(ffprobe_t) > 0 and fc != int(ffprobe_t):
+        errors.append(
+            f"frame_count={fc} != ffprobe_nb_read_frames={ffprobe_t} "
+            "(gold N2: T offline debe igualar C1/ffprobe clip_buffer)"
+        )
+    for ud in user_dirs:
+        pf = ud / "poses_full.npy"
+        if pf.is_file():
+            t_user = int(np.load(pf, mmap_mode="r").shape[0])
+            if fc > 0 and t_user != fc:
+                errors.append(f"{ud.name}: poses_full T={t_user} != meta.frame_count={fc}")
     return errors
