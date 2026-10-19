@@ -105,6 +105,7 @@ def read_frames_bgr(
     """
     Decodifica todos los frames posibles. Si reconcile_ffprobe_frames (default),
     elige el backend cuya T coincide con ffprobe nb_read_frames (gold C1 N2).
+    Con decode_c1_pixel_parity, entre backends con T correcta prioriza NVDEC (C1).
     """
     path = Path(path)
     timing = probe_video(path)
@@ -175,12 +176,23 @@ def read_frames_bgr(
             if not _needs_more():
                 break
 
-    if decode_c1_pixel_parity and target and not any(n == "opencv" for n, _, _ in attempts):
-        try:
-            frames, t = _read_opencv(path, timing)
-            _record("opencv", frames, t)
-        except Exception as exc:
-            logger.warning("opencv paridad C1 falló (%s)", exc)
+    if decode_c1_pixel_parity and target:
+        for name, reader in (
+            ("ffmpeg_nvdec", lambda: _read_ffmpeg_nvdec(path, timing, ffmpeg_hwaccel)),
+            ("ffmpeg_software", lambda: _read_ffmpeg_software(path, timing)),
+            ("opencv", lambda: _read_opencv(path, timing)),
+        ):
+            if any(n == name for n, _, _ in attempts):
+                continue
+            try:
+                frames, t = reader()
+                _record(name, frames, t)
+            except Exception as exc:
+                logger.warning("%s paridad C1 falló (%s)", name, exc)
+            if not _needs_more() and any(
+                len(f) == target for _, f, _ in attempts if f
+            ):
+                break
 
     if not attempts:
         raise RuntimeError(f"decode falló sin frames: {path}")
@@ -219,7 +231,7 @@ def _pick_decode_attempt(
         exact = [x for x in valid if len(x[1]) == target]
         if exact:
             if prefer_opencv:
-                order = {"opencv": 0, "ffmpeg_software": 1, "ffmpeg_nvdec": 2}
+                order = {"ffmpeg_nvdec": 0, "ffmpeg_software": 1, "opencv": 2}
             else:
                 order = {"ffmpeg_nvdec": 0, "ffmpeg_software": 1, "opencv": 2}
             exact.sort(key=lambda x: order.get(x[0], 9))

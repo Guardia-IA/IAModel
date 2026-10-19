@@ -33,7 +33,7 @@ class C1LikeExtractConfig:
     decode_backend: str = "ffmpeg_nvdec"
     """ffmpeg_nvdec | opencv"""
     decode_c1_pixel_parity: bool = True
-    """Gold N2: C1 re-infer suele decodificar con OpenCV; preferir OpenCV si T=ffprobe."""
+    """Gold N2: preferir ffmpeg_nvdec (como kanvis-monitoring) si T=ffprobe; OpenCV solo fallback."""
     preprocess_workers: int = 8
     fallback_opencv_decode: bool = True
     ffmpeg_hwaccel: str = "cuda"
