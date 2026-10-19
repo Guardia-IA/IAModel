@@ -703,7 +703,7 @@ def main() -> int:
     if args.json:
         args.json.write_text(text + "\n", encoding="utf-8")
 
-    return 0 if all_pass else 1
+    return 0 if report.get("pass") else 1
 
 
 if __name__ == "__main__":
