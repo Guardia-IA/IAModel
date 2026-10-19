@@ -70,6 +70,7 @@ def extract_clip_c1_like(
         backend=pipe_cfg.decode_backend,
         fallback_opencv=pipe_cfg.fallback_opencv_decode,
         ffmpeg_hwaccel=pipe_cfg.ffmpeg_hwaccel,
+        decode_c1_pixel_parity=pipe_cfg.decode_c1_pixel_parity,
     )
     t_decode = time.perf_counter() - t0
 

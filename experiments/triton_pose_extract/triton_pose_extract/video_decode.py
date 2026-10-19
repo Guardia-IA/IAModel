@@ -100,6 +100,7 @@ def read_frames_bgr(
     fallback_opencv: bool = True,
     ffmpeg_hwaccel: str = "cuda",
     reconcile_ffprobe_frames: bool = True,
+    decode_c1_pixel_parity: bool = True,
 ) -> tuple[list[np.ndarray], VideoTiming]:
     """
     Decodifica todos los frames posibles. Si reconcile_ffprobe_frames (default),
@@ -174,10 +175,19 @@ def read_frames_bgr(
             if not _needs_more():
                 break
 
+    if decode_c1_pixel_parity and target and not any(n == "opencv" for n, _, _ in attempts):
+        try:
+            frames, t = _read_opencv(path, timing)
+            _record("opencv", frames, t)
+        except Exception as exc:
+            logger.warning("opencv paridad C1 falló (%s)", exc)
+
     if not attempts:
         raise RuntimeError(f"decode falló sin frames: {path}")
 
-    chosen_name, chosen_frames, chosen_timing = _pick_decode_attempt(attempts, target)
+    chosen_name, chosen_frames, chosen_timing = _pick_decode_attempt(
+        attempts, target, prefer_opencv=decode_c1_pixel_parity
+    )
     if target and len(chosen_frames) != target:
         logger.warning(
             "%s: decode=%d != ffprobe nb_read_frames=%d (backend=%s)",
@@ -199,6 +209,8 @@ def read_frames_bgr(
 def _pick_decode_attempt(
     attempts: list[tuple[str, list[np.ndarray], VideoTiming]],
     target: int | None,
+    *,
+    prefer_opencv: bool = True,
 ) -> tuple[str, list[np.ndarray], VideoTiming]:
     valid = [(n, f, t) for n, f, t in attempts if f]
     if not valid:
@@ -206,7 +218,10 @@ def _pick_decode_attempt(
     if target is not None and target > 0:
         exact = [x for x in valid if len(x[1]) == target]
         if exact:
-            order = {"ffmpeg_nvdec": 0, "ffmpeg_software": 1, "opencv": 2}
+            if prefer_opencv:
+                order = {"opencv": 0, "ffmpeg_software": 1, "ffmpeg_nvdec": 2}
+            else:
+                order = {"ffmpeg_nvdec": 0, "ffmpeg_software": 1, "opencv": 2}
             exact.sort(key=lambda x: order.get(x[0], 9))
             return exact[0]
     valid.sort(key=lambda x: len(x[1]), reverse=True)

@@ -36,7 +36,9 @@
   "extract": {
     "engine": "c1_like",
     "_engine_comment": "c1_like = NVDEC FFmpeg + preprocess paralelo (solo IAModel). clip_extractor = OpenCV en pose_core",
-    "decode_backend": "ffmpeg_nvdec",
+    "decode_backend": "opencv",
+    "_decode_backend_comment": "Gold N2 / paridad C1 re-infer clip_buffer: OpenCV. Batch masivo: ffmpeg_nvdec + decode_c1_pixel_parity",
+    "decode_c1_pixel_parity": true,
     "preprocess_workers": 8,
     "fallback_opencv_decode": true,
     "ffmpeg_hwaccel": "cuda"

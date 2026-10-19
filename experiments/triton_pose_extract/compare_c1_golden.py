@@ -184,6 +184,8 @@ def _compare_aligned_rows(
     b_full: np.ndarray,
     b_vm: np.ndarray,
     epsilon: float,
+    *,
+    require_rows_both_valid: bool = False,
 ) -> dict[str, Any]:
     n = min(len(a_vm), len(b_vm))
     a_vm, b_vm = a_vm[:n], b_vm[:n]
@@ -195,9 +197,14 @@ def _compare_aligned_rows(
     if n_both > 0:
         diff = np.abs(a_full[both] - b_full[both])
         max_delta = float(np.nanmax(diff))
-    ok_coords = max_delta < epsilon if n_both > 0 else True
+    if n_both > 0:
+        ok_coords = max_delta < epsilon
+    elif require_rows_both_valid:
+        ok_coords = False
+    else:
+        ok_coords = True
     ok_mask = vm_mismatch == 0
-    return {
+    out: dict[str, Any] = {
         "rows_compared": n,
         "valid_mask_mismatch": vm_mismatch,
         "rows_both_valid": n_both,
@@ -207,6 +214,11 @@ def _compare_aligned_rows(
         "pass_coords": ok_coords,
         "pass": ok_mask and ok_coords,
     }
+    if require_rows_both_valid and n_both == 0:
+        out["note"] = (
+            "Sin filas both-valid: chunk vacío/NaN o alineación temporal incorrecta — no es PASS N2."
+        )
+    return out
 
 
 def _offline_indices_for_merged_timeline(
@@ -348,7 +360,18 @@ def compare_merged_whole(
         result.update(cmp)
         result["align_mode"] = "dense_index"
         result["pass_strict_T_equal"] = True
+        off_meta_path = offline_user.parent / "meta.json"
+        if off_meta_path.is_file():
+            off_meta = json.loads(off_meta_path.read_text(encoding="utf-8"))
+            result["offline_decode_backend"] = off_meta.get("decode_backend_used") or off_meta.get(
+                "iamodel_decode_backend"
+            )
         result["note"] = "N2: merged_T == offline_T; comparación índice i (§8 gold denso)."
+        if not cmp.get("pass_coords"):
+            result["note"] += (
+                " Δ coords alto con máscaras OK → offline debe inferir con OpenCV "
+                "(decode_c1_pixel_parity); re-extract y git pull IAModel."
+            )
         return result
 
     if mode == "merged_ts" and mts_path.is_file() and t_off != t_m:
@@ -525,7 +548,14 @@ def compare_chunk_timestamp_slice(
     )
     off_slice_pf = off_pf[idx]
     off_slice_vm = off_vm[idx]
-    cmp = _compare_aligned_rows(off_slice_pf, off_slice_vm, chunk_pf, chunk_vm, epsilon)
+    cmp = _compare_aligned_rows(
+        off_slice_pf,
+        off_slice_vm,
+        chunk_pf,
+        chunk_vm,
+        epsilon,
+        require_rows_both_valid=True,
+    )
     return {
         "test": "chunk_timestamp_slice",
         "chunk": chunk_id,
@@ -650,8 +680,23 @@ def main() -> int:
                 }
             )
 
-    all_pass = all(t.get("pass") is True for t in report["tests"] if not t.get("skipped"))
-    report["pass"] = all_pass
+    active = [t for t in report["tests"] if not t.get("skipped")]
+    merged_ok = next(
+        (t.get("pass") is True for t in active if t.get("test") == "merged_whole_clip"),
+        False,
+    )
+    chunk_ok = next(
+        (t.get("pass") is True for t in active if t.get("test") == "chunk_timestamp_slice"),
+        True,
+    )
+    if args.skip_chunk:
+        report["pass"] = merged_ok
+    elif args.skip_merged:
+        report["pass"] = chunk_ok
+    else:
+        report["pass"] = merged_ok and chunk_ok
+    report["pass_merged"] = merged_ok
+    report["pass_chunk"] = chunk_ok if not args.skip_chunk else None
 
     text = json.dumps(report, indent=2, ensure_ascii=False)
     print(text)

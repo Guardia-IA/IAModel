@@ -32,6 +32,8 @@ class C1LikeExtractConfig:
     """clip_extractor | c1_like"""
     decode_backend: str = "ffmpeg_nvdec"
     """ffmpeg_nvdec | opencv"""
+    decode_c1_pixel_parity: bool = True
+    """Gold N2: C1 re-infer suele decodificar con OpenCV; preferir OpenCV si T=ffprobe."""
     preprocess_workers: int = 8
     fallback_opencv_decode: bool = True
     ffmpeg_hwaccel: str = "cuda"
@@ -46,6 +48,7 @@ class C1LikeExtractConfig:
         return cls(
             engine=engine if engine in ("clip_extractor", "c1_like") else "clip_extractor",
             decode_backend=backend,
+            decode_c1_pixel_parity=bool(ex.get("decode_c1_pixel_parity", True)),
             preprocess_workers=max(1, min(int(ex.get("preprocess_workers") or 8), 32)),
             fallback_opencv_decode=bool(ex.get("fallback_opencv_decode", True)),
             ffmpeg_hwaccel=str(ex.get("ffmpeg_hwaccel") or "cuda"),
