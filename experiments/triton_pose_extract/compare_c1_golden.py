@@ -195,6 +195,54 @@ def _compare_aligned_rows(
     }
 
 
+def _offline_indices_for_merged_timeline(
+    mts: np.ndarray,
+    off_len: int,
+    fps: float,
+    merged: np.ndarray,
+    mvm: np.ndarray,
+    off_pf: np.ndarray,
+    off_vm: np.ndarray,
+    epsilon: float,
+) -> tuple[np.ndarray, dict[str, Any]]:
+    """
+    merged suele ser ventana pose (p.ej. 96 @ 12 Hz), offline = clip MP4 denso (148+).
+    Busca j0 en offline: fila i de merged ↔ offline[j0 + round((t_i - t_0) * fps)].
+    """
+    t_m = int(len(mts))
+    rel_s = (mts.astype(np.float64) - float(mts[0])) / max(fps, 1e-6)
+    span_frames = int(np.ceil(rel_s[-1])) + 1 if t_m else 0
+    j0_max = max(0, off_len - span_frames - 1)
+    best_j0 = 0
+    best_cmp: dict[str, Any] | None = None
+    best_score = float("inf")
+
+    for j0 in range(0, j0_max + 1):
+        idx = np.array(
+            [max(0, min(off_len - 1, j0 + int(round(rel_s[i])))) for i in range(t_m)],
+            dtype=np.int64,
+        )
+        cmp = _compare_aligned_rows(off_pf[idx], off_vm[idx], merged, mvm, epsilon)
+        if cmp["rows_both_valid"] == 0:
+            score = float("inf")
+        else:
+            score = float(cmp["max_abs_delta_coords"])
+        if score < best_score:
+            best_score = score
+            best_j0 = j0
+            best_cmp = cmp
+            best_idx = idx
+
+    meta = {
+        "align_mode": "merged_pose_timestamps",
+        "offline_j0": int(best_j0),
+        "merged_span_seconds": round(float(mts[-1] - mts[0]), 4) if t_m > 1 else 0.0,
+    }
+    if best_cmp is None:
+        raise RuntimeError("no se pudo alinear merged a offline")
+    return best_idx, {**meta, **best_cmp}
+
+
 def compare_merged_whole(
     c1_session: Path,
     offline_user: Path,
@@ -202,6 +250,7 @@ def compare_merged_whole(
 ) -> dict[str, Any]:
     merged_path = c1_session / "merged.npy"
     mvm_path = c1_session / "merged_valid_mask.npy"
+    mts_path = c1_session / "merged_pose_timestamps.npy"
     if not merged_path.is_file():
         return {"skipped": True, "reason": "falta merged.npy"}
     off_pf = np.load(offline_user / "poses_full.npy")
@@ -217,12 +266,57 @@ def compare_merged_whole(
         "merged_T": t_m,
         "T_equal": t_off == t_m,
     }
-    n = min(t_off, t_m)
+
+    meta_sess = {}
+    meta_path = c1_session / "meta.json"
+    if meta_path.is_file():
+        meta_sess = json.loads(meta_path.read_text(encoding="utf-8"))
+    video = c1_session / "clip_buffer.mp4"
+    fps_ref = float(meta_sess.get("pose_fps") or 0)
+    if fps_ref <= 0 and video.is_file():
+        fps_ref = _ffprobe_fps(video)
+    if fps_ref <= 0:
+        fps_ref = 12.0
+
+    if mts_path.is_file() and t_off != t_m:
+        mts = np.load(mts_path).astype(np.float64)
+        if len(mts) != t_m:
+            result["skipped"] = True
+            result["reason"] = f"merged_pose_timestamps len {len(mts)} != merged_T {t_m}"
+            return result
+        _idx, cmp_meta = _offline_indices_for_merged_timeline(
+            mts, t_off, fps_ref, merged, mvm, off_pf, off_vm, epsilon
+        )
+        result.update(cmp_meta)
+        aligned_ok = bool(cmp_meta.get("pass_mask") and cmp_meta.get("pass_coords"))
+        result["pass_aligned"] = aligned_ok
+        result["pass"] = aligned_ok and (t_off == t_m)
+        if t_off != t_m:
+            result["pass_strict_T_equal"] = False
+            result["note"] = (
+                "merged no cubre todo el clip_buffer (RTSP/ventana). "
+                "Coords/máscara evaluadas tras alinear merged_ts → offline; "
+                "gold §8 estricto exige T_merged == T_offline (export desde MP4 denso en C1)."
+            )
+        return result
+
+    if t_off != t_m:
+        n = min(t_off, t_m)
+        cmp = _compare_aligned_rows(
+            off_pf[:n], off_vm[:n], merged[:n], mvm[:n], epsilon
+        )
+        result.update(cmp)
+        result["pass"] = False
+        result["align_mode"] = "head_rows_unaligned"
+        result["note"] = (
+            f"T distinto ({t_m} vs {t_off}) sin merged_pose_timestamps; "
+            "comparación fila 0..n no válida — añadir merged_pose_timestamps.npy"
+        )
+        return result
+
     cmp = _compare_aligned_rows(off_pf, off_vm, merged, mvm, epsilon)
     result.update(cmp)
-    if t_off != t_m:
-        result["pass"] = False
-        result["note"] = f"longitudes distintas (comparadas primeras {n} filas)"
+    result["align_mode"] = "row_index"
     return result
 
 
