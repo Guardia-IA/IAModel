@@ -2,7 +2,8 @@
 
 Reemplazo del flujo **`pose_extractor_clean.py`** (YOLO local) por **Triton + `pose_core`**, con el mismo **CSV → recorte FFmpeg → npy** y **preflight** de conteos/tiempos.
 
-Handoff: [`../../docs/AGENT_TRITON_NPY_BRIEF.md`](../../docs/AGENT_TRITON_NPY_BRIEF.md). Rendimiento / NVDEC / C1: [`../../docs/TRITON_EXTRACT_PERF.md`](../../docs/TRITON_EXTRACT_PERF.md).
+Handoff: [`../../docs/AGENT_TRITON_NPY_BRIEF.md`](../../docs/AGENT_TRITON_NPY_BRIEF.md). Rendimiento / NVDEC / C1: [`../../docs/TRITON_EXTRACT_PERF.md`](../../docs/TRITON_EXTRACT_PERF.md).  
+Gold C1 vs offline (**kanvis_pose_v1**): [`../../docs/MENSAJE_IAMODEL_PARIDAD_POSES_FULL_C1.md`](../../docs/MENSAJE_IAMODEL_PARIDAD_POSES_FULL_C1.md) §10.2; script `compare_c1_golden.py`.
 
 ## Despliegue en el mismo host que Triton
 
