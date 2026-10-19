@@ -451,9 +451,9 @@ def compare_merged_whole(
             "N2: comparación merged ↔ offline (primero índice i; si falla coords, "
             "re-ancla con merged_pose_timestamps o shift)."
         )
-        if not cmp.get("pass_coords"):
+        if not cmp.get("pass"):
             result["dense_index_max_delta"] = cmp.get("max_abs_delta_coords")
-            refinements: list[dict[str, Any]] = []
+            diag: dict[str, Any] = {}
             if mts_path.is_file():
                 mts = np.load(mts_path).astype(np.float64)
                 if len(mts) == t_m:
@@ -461,38 +461,26 @@ def compare_merged_whole(
                         mts, t_off, fps_ref, merged, mvm, off_pf, off_vm, epsilon
                     )
                     if _idx is not None and not ts_cmp.get("align_failed"):
-                        ts_cmp["align_mode"] = "merged_ts_j0"
-                        refinements.append(ts_cmp)
+                        diag["merged_ts_j0"] = ts_cmp
             shift_s, shift_cmp = _search_integer_shift_align(
                 off_pf, off_vm, merged, mvm, epsilon
             )
             if shift_s is not None:
-                refinements.append(shift_cmp)
-            best = min(
-                refinements,
-                key=lambda x: float(x.get("max_abs_delta_coords") or float("inf")),
-                default=None,
-            )
-            if best and float(best.get("max_abs_delta_coords", 1e9)) < float(
-                cmp.get("max_abs_delta_coords") or 1e9
-            ):
-                result.update(best)
-                result["pass_strict_T_equal"] = True
-                if best.get("pass"):
-                    result["note"] = (
-                        "Alineación corregida (merged_ts_j0 o shift): coords dentro de ε."
-                    )
-                else:
-                    result["note"] = (
-                        "Máscaras coinciden fila a fila pero coords difieren: merged C1 "
-                        "no es el mismo tubo numérico que triton_pose_extract (tracker/preprocess/"
-                        "re-infer). Revisar clip_buffer_reinfer en C1 vs gold offline."
-                    )
-            else:
+                diag["integer_shift"] = shift_cmp
+                diag["integer_shift"]["offline_index_shift"] = int(shift_s)
+            result["alignment_diagnostics"] = diag
+            if cmp.get("pass_mask") and not cmp.get("pass_coords"):
                 result["note"] = (
-                    "Índice i y re-ancla temporal no cierran coords: C1 merged ≠ infer IAModel "
-                    "sobre clip_buffer (tubo C1 re-infer ≠ triton_pose_extract; no solo decode)."
+                    "Gold N2 (índice i↔i): T y valid_mask OK; coords C1 merged ≠ offline IAModel "
+                    f"(Δ≈{cmp.get('max_abs_delta_coords'):.4g}, ε={epsilon}). "
+                    "C1 debe exportar merged con el mismo tubo que clip_buffer_reinfer/triton_pose_extract."
                 )
+            elif not cmp.get("pass_mask"):
+                result["note"] = (
+                    "Gold N2 (índice i↔i): valid_mask distinto — revisar export full / keep_all C1."
+                )
+            else:
+                result["note"] = "Gold N2 (índice i↔i): ver pass_mask / pass_coords."
         return result
 
     if mode == "merged_ts" and mts_path.is_file() and t_off != t_m:
@@ -549,6 +537,34 @@ def compare_merged_whole(
     return result
 
 
+def _search_contiguous_offline_start(
+    chunk_dir: Path,
+    off_pf: np.ndarray,
+    off_vm: np.ndarray,
+    *,
+    epsilon: float,
+) -> int:
+    """Ventana contigua en offline que mejor coincide con chunk (máscara + coords)."""
+    chunk_pf = np.load(chunk_dir / "poses_full.npy")
+    chunk_vm = np.load(chunk_dir / "valid_mask.npy")
+    chunk_t = int(chunk_pf.shape[0])
+    off_len = int(off_pf.shape[0])
+    if chunk_t <= 0 or off_len <= 0:
+        return 0
+    best_j0 = 0
+    best_key: tuple[int, float] = (-1, float("inf"))
+    for j0 in range(0, max(1, off_len - chunk_t + 1)):
+        sl = slice(j0, j0 + chunk_t)
+        cmp = _compare_aligned_rows(
+            off_pf[sl], off_vm[sl], chunk_pf, chunk_vm, epsilon
+        )
+        key = (int(cmp["rows_both_valid"]), float(cmp["max_abs_delta_coords"]))
+        if key[0] > best_key[0] or (key[0] == best_key[0] and key[1] < best_key[1]):
+            best_key = key
+            best_j0 = j0
+    return best_j0
+
+
 def _chunk_offline_indices(
     c1_session: Path,
     chunk_dir: Path,
@@ -556,6 +572,9 @@ def _chunk_offline_indices(
     *,
     off_len: int,
     align: str,
+    off_pf: np.ndarray | None = None,
+    off_vm: np.ndarray | None = None,
+    epsilon: float = EPS_DEFAULT,
 ) -> tuple[np.ndarray, dict[str, Any]]:
     """
     Índices en offline poses_full por fila del chunk.
@@ -633,33 +652,30 @@ def _chunk_offline_indices(
                 dt_violations += 1
             indices.append(max(0, min(off_len - 1, j)))
     elif mode == "dense_contiguous":
-        if not mts_path.is_file():
-            raise FileNotFoundError(
-                "align dense_contiguous requiere merged_pose_timestamps.npy"
-            )
-        mts = np.load(mts_path).astype(np.float64)
         chunk_meta_path = chunk_dir / "meta.json"
         chunk_meta = (
             json.loads(chunk_meta_path.read_text(encoding="utf-8"))
             if chunk_meta_path.is_file()
             else {}
         )
+        chunk_t = len(ts)
         j0 = int(chunk_meta.get("clip_reinfer_dense_frame_start", -1))
         if j0 < 0:
-            j0 = int(np.argmin(np.abs(mts - float(ts[0]))))
+            j0 = int(chunk_meta.get("dense_frame_start_index", -1))
         meta_align["align_mode"] = "dense_contiguous"
-        meta_align["merged_anchor_index"] = j0
-        meta_align["merged_ts_len"] = int(len(mts))
-        t_m0 = float(mts[0]) if len(mts) else 0.0
-        for r, t_i in enumerate(ts):
-            j = j0 + r
-            if j < len(mts):
-                k = int(round((float(mts[j]) - t_m0) * fps_ref))
-                if abs(mts[j] - t_i) > dt_tol:
-                    dt_violations += 1
+        meta_align["offline_contiguous_start"] = j0
+        if j0 < 0:
+            if off_pf is None or off_vm is None:
+                j0 = max(0, off_len - chunk_t)
+                meta_align["offline_start_fallback"] = "tail_slice"
             else:
-                k = int(round((float(t_i) - t_m0) * fps_ref))
-                dt_violations += 1
+                j0 = _search_contiguous_offline_start(
+                    chunk_dir, off_pf, off_vm, epsilon=epsilon
+                )
+                meta_align["offline_start_search"] = True
+            meta_align["offline_contiguous_start"] = int(j0)
+        for r in range(chunk_t):
+            k = j0 + r
             indices.append(max(0, min(off_len - 1, k)))
     else:
         raise ValueError(f"align desconocido: {align}")
@@ -695,6 +711,9 @@ def compare_chunk_timestamp_slice(
         meta_sess,
         off_len=int(off_pf.shape[0]),
         align=align,
+        off_pf=off_pf,
+        off_vm=off_vm,
+        epsilon=epsilon,
     )
     off_slice_pf = off_pf[idx]
     off_slice_vm = off_vm[idx]
