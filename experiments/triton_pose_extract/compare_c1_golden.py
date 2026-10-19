@@ -204,18 +204,34 @@ def _offline_indices_for_merged_timeline(
     off_pf: np.ndarray,
     off_vm: np.ndarray,
     epsilon: float,
-) -> tuple[np.ndarray, dict[str, Any]]:
+) -> tuple[np.ndarray | None, dict[str, Any]]:
     """
-    merged suele ser ventana pose (p.ej. 96 @ 12 Hz), offline = clip MP4 denso (148+).
-    Busca j0 en offline: fila i de merged ↔ offline[j0 + round((t_i - t_0) * fps)].
+    merged parcial (RTSP) vs offline denso: busca j0 en offline vía merged_pose_timestamps.
+    Nunca lanza: si no hay ancla útil, devuelve align_failed en meta.
     """
     t_m = int(len(mts))
+    if t_m == 0 or off_len == 0:
+        return None, {
+            "align_mode": "merged_pose_timestamps",
+            "align_failed": True,
+            "note": "merged u offline vacío (T=0)",
+            "rows_compared": 0,
+            "valid_mask_mismatch": 0,
+            "rows_both_valid": 0,
+            "max_abs_delta_coords": 0.0,
+            "epsilon": epsilon,
+            "pass_mask": False,
+            "pass_coords": False,
+            "pass": False,
+        }
+
     rel_s = (mts.astype(np.float64) - float(mts[0])) / max(fps, 1e-6)
-    span_frames = int(np.ceil(rel_s[-1])) + 1 if t_m else 0
+    span_frames = int(np.ceil(float(rel_s[-1]))) + 1 if t_m else 0
     j0_max = max(0, off_len - span_frames - 1)
     best_j0 = 0
     best_cmp: dict[str, Any] | None = None
     best_score = float("inf")
+    best_idx: np.ndarray | None = None
 
     for j0 in range(0, j0_max + 1):
         idx = np.array(
@@ -233,13 +249,31 @@ def _offline_indices_for_merged_timeline(
             best_cmp = cmp
             best_idx = idx
 
-    meta = {
+    meta: dict[str, Any] = {
         "align_mode": "merged_pose_timestamps",
         "offline_j0": int(best_j0),
         "merged_span_seconds": round(float(mts[-1] - mts[0]), 4) if t_m > 1 else 0.0,
     }
-    if best_cmp is None:
-        raise RuntimeError("no se pudo alinear merged a offline")
+    if best_cmp is None or best_idx is None or best_score == float("inf"):
+        meta.update(
+            {
+                "align_failed": True,
+                "note": (
+                    "No se encontró ancla merged_ts → offline con filas both-valid "
+                    f"(merged_T={t_m}, offline_T={off_len}). Posible merged RTSP/regen "
+                    "sobre export denso N2 — ver C1 frontend_playback_bundle_regenerated."
+                ),
+                "rows_compared": 0,
+                "valid_mask_mismatch": 0,
+                "rows_both_valid": 0,
+                "max_abs_delta_coords": 0.0,
+                "epsilon": epsilon,
+                "pass_mask": False,
+                "pass_coords": False,
+                "pass": False,
+            }
+        )
+        return best_idx, meta
     return best_idx, {**meta, **best_cmp}
 
 
@@ -247,6 +281,8 @@ def compare_merged_whole(
     c1_session: Path,
     offline_user: Path,
     epsilon: float,
+    *,
+    merged_align: str = "auto",
 ) -> dict[str, Any]:
     merged_path = c1_session / "merged.npy"
     mvm_path = c1_session / "merged_valid_mask.npy"
@@ -278,7 +314,20 @@ def compare_merged_whole(
     if fps_ref <= 0:
         fps_ref = 12.0
 
-    if mts_path.is_file() and t_off != t_m:
+    mode = merged_align
+    if mode == "auto":
+        mode = "dense_index" if t_off == t_m else "merged_ts"
+
+    # Nivel 2: T igual → fila i ↔ fila i (re-infer denso vs offline)
+    if mode == "dense_index" and t_off == t_m:
+        cmp = _compare_aligned_rows(off_pf, off_vm, merged, mvm, epsilon)
+        result.update(cmp)
+        result["align_mode"] = "dense_index"
+        result["pass_strict_T_equal"] = True
+        result["note"] = "N2: merged_T == offline_T; comparación índice i (§8 gold denso)."
+        return result
+
+    if mode == "merged_ts" and mts_path.is_file() and t_off != t_m:
         mts = np.load(mts_path).astype(np.float64)
         if len(mts) != t_m:
             result["skipped"] = True
@@ -288,16 +337,27 @@ def compare_merged_whole(
             mts, t_off, fps_ref, merged, mvm, off_pf, off_vm, epsilon
         )
         result.update(cmp_meta)
-        aligned_ok = bool(cmp_meta.get("pass_mask") and cmp_meta.get("pass_coords"))
+        aligned_ok = bool(
+            cmp_meta.get("pass_mask")
+            and cmp_meta.get("pass_coords")
+            and not cmp_meta.get("align_failed")
+        )
         result["pass_aligned"] = aligned_ok
         result["pass"] = aligned_ok and (t_off == t_m)
+        result["pass_strict_T_equal"] = t_off == t_m
         if t_off != t_m:
-            result["pass_strict_T_equal"] = False
             result["note"] = (
-                "merged no cubre todo el clip_buffer (RTSP/ventana). "
-                "Coords/máscara evaluadas tras alinear merged_ts → offline; "
-                "gold §8 estricto exige T_merged == T_offline (export desde MP4 denso en C1)."
+                "merged no cubre todo el clip_buffer (RTSP/ventana o regen roto). "
+                "Gold §8 N2 exige T_merged == T_offline (re-infer clip_buffer denso). "
+                "Si merged_T < offline_T, revisar frontend_playback_bundle_regenerated."
             )
+        return result
+
+    if t_off == t_m:
+        cmp = _compare_aligned_rows(off_pf, off_vm, merged, mvm, epsilon)
+        result.update(cmp)
+        result["align_mode"] = "dense_index"
+        result["pass_strict_T_equal"] = True
         return result
 
     if t_off != t_m:
@@ -307,16 +367,17 @@ def compare_merged_whole(
         )
         result.update(cmp)
         result["pass"] = False
+        result["pass_strict_T_equal"] = False
         result["align_mode"] = "head_rows_unaligned"
         result["note"] = (
-            f"T distinto ({t_m} vs {t_off}) sin merged_pose_timestamps; "
-            "comparación fila 0..n no válida — añadir merged_pose_timestamps.npy"
+            f"T distinto ({t_m} vs {t_off}). Comparación fila 0..{n - 1} NO válida para N2; "
+            "usar merged denso T=offline o merged_ts si hay timestamps."
         )
         return result
 
     cmp = _compare_aligned_rows(off_pf, off_vm, merged, mvm, epsilon)
     result.update(cmp)
-    result["align_mode"] = "row_index"
+    result["align_mode"] = "dense_index"
     return result
 
 
@@ -442,13 +503,35 @@ def main() -> int:
     ap.add_argument("--skip-chunk", action="store_true")
     ap.add_argument(
         "--align",
-        choices=("playback", "merged_ts", "relative"),
+        choices=("playback", "merged_ts", "relative", "dense_index"),
         default="playback",
-        help="Chunk↔offline: playback=§10.2 (default), merged_ts, relative",
+        help="Chunk↔offline: playback=§10.2 (default). dense_index solo si T chunk==offline",
+    )
+    ap.add_argument(
+        "--merged-align",
+        choices=("auto", "dense_index", "merged_ts", "head"),
+        default="auto",
+        help="merged↔offline: auto (=dense_index si T igual, si no merged_ts)",
     )
     args = ap.parse_args()
 
-    offline_user = _pick_offline_user(args.offline_clip)
+    try:
+        offline_user = _pick_offline_user(args.offline_clip)
+    except FileNotFoundError as exc:
+        report = {
+            "contract_version": "kanvis_pose_v1",
+            "c1_session": str(args.c1_session.resolve()),
+            "offline_clip": str(args.offline_clip.resolve()),
+            "pass": False,
+            "error": str(exc),
+            "tests": [],
+        }
+        text = json.dumps(report, indent=2, ensure_ascii=False)
+        print(text)
+        if args.json:
+            args.json.write_text(text + "\n", encoding="utf-8")
+        return 1
+
     report: dict[str, Any] = {
         "contract_version": "kanvis_pose_v1",
         "c1_session": str(args.c1_session.resolve()),
@@ -458,19 +541,55 @@ def main() -> int:
     }
 
     if not args.skip_merged:
-        report["tests"].append(
-            compare_merged_whole(args.c1_session, offline_user, args.epsilon)
-        )
-    if not args.skip_chunk:
-        report["tests"].append(
-            compare_chunk_timestamp_slice(
-                args.c1_session,
-                offline_user,
-                args.chunk,
-                args.epsilon,
-                align=args.align,
+        try:
+            report["tests"].append(
+                compare_merged_whole(
+                    args.c1_session,
+                    offline_user,
+                    args.epsilon,
+                    merged_align=args.merged_align,
+                )
             )
-        )
+        except Exception as exc:
+            report["tests"].append(
+                {
+                    "test": "merged_whole_clip",
+                    "pass": False,
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+            )
+
+    if not args.skip_chunk:
+        try:
+            chunk_align = args.align
+            if chunk_align == "dense_index":
+                chunk_pf = np.load(
+                    (args.c1_session / args.chunk / "poses_full.npy")
+                )
+                off_t = np.load(offline_user / "poses_full.npy").shape[0]
+                if chunk_pf.shape[0] != off_t:
+                    chunk_align = "playback"
+                    report.setdefault("warnings", []).append(
+                        "dense_index chunk omitido: T chunk != T offline; usando playback"
+                    )
+            report["tests"].append(
+                compare_chunk_timestamp_slice(
+                    args.c1_session,
+                    offline_user,
+                    args.chunk,
+                    args.epsilon,
+                    align=chunk_align,
+                )
+            )
+        except Exception as exc:
+            report["tests"].append(
+                {
+                    "test": "chunk_timestamp_slice",
+                    "chunk": args.chunk,
+                    "pass": False,
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+            )
 
     all_pass = all(t.get("pass") is True for t in report["tests"] if not t.get("skipped"))
     report["pass"] = all_pass
