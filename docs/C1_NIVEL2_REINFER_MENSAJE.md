@@ -81,7 +81,7 @@ python3 compare_c1_golden.py \
 | IAModel extract (antes) | **162** | decode NVDEC ≠ `ffprobe -count_frames` → **`T_equal` bloqueado** |
 | Chunk MinIO | NaN / sync | Sin `playback_start_at` en bundle → `has_sync_start=false`; usar `--align auto` o `merged_dense` |
 
-**IAModel (fix):** `read_frames_bgr` reconcilia T con **`ffprobe nb_read_frames`** (fallback ffmpeg software / OpenCV). Tras re-extract con `--validate`, `meta.json` debe tener `frame_count_matches_ffprobe: true`. Entonces:
+**IAModel (fix):** (1) decode → **`ffprobe nb_read_frames`**; (2) infer **`keep_all`**: una fila **`poses_full` por frame** (`_process_frame_keep_all`; antes `xyn/conf` nulos omitían filas → `meta.frame_count=172` pero `poses_full=162`). Tras re-extract con `--validate`: `frame_count == poses_full_T == ffprobe`. Entonces:
 
 ```bash
 ./run_extract.sh extract --video "$SESSION/clip_buffer.mp4" --out "$OUT" --cat gold --parallel 1 --validate

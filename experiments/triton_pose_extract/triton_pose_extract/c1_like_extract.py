@@ -103,7 +103,11 @@ def extract_clip_c1_like(
 
     t2 = time.perf_counter()
     raw_batches = _infer_batched(stack, tensors)
-    for prep, lb_meta, raw_out in zip(prepared_list, meta_list, raw_batches, strict=True):
+    decoded_t = len(prepared_list)
+    use_keep_all = cfg.frame_policy == "keep_all"
+    for frame_index, (prep, lb_meta, raw_out) in enumerate(
+        zip(prepared_list, meta_list, raw_batches, strict=True)
+    ):
         dets = decode_end2end(raw_out, lb_meta, stack.decode_conf)
         mock = detections_to_mock(dets, orig_shape=(lb_meta.orig_h, lb_meta.orig_w))
         if cfg.tracker_kind == "none":
@@ -111,7 +115,13 @@ def extract_clip_c1_like(
         else:
             mock = stack.tracker.update(mock, prep)
         mock = ensure_track_ids(mock)
-        _accumulate_frame(users, mock, cfg, frame_policy=cfg.frame_policy)
+        if use_keep_all:
+            _process_frame_keep_all(users, mock, cfg, frame_index)
+        else:
+            _accumulate_frame(users, mock, cfg, frame_policy=cfg.frame_policy)
+
+    if use_keep_all:
+        _assert_keep_all_timeline(users, decoded_t, clip_name)
 
     if cfg.single_user_only and len(users) > 1:
         logger.warning(
@@ -130,6 +140,17 @@ def extract_clip_c1_like(
             filtered += 1
             continue
         user_dir = clip_root / f"user_{tid}"
+        poses_t = len(acc.poses_full)
+        if use_keep_all and poses_t != decoded_t:
+            logger.error(
+                "clip %s user_%s: poses_full T=%d != decoded_T=%d (no exportar)",
+                clip_name,
+                tid,
+                poses_t,
+                decoded_t,
+            )
+            filtered += 1
+            continue
         write_person_artifacts(
             user_dir,
             PersonRows(poses_full=acc.poses_full, poses=acc.poses, keypoint_masks=acc.keypoint_masks),
@@ -139,9 +160,10 @@ def extract_clip_c1_like(
         meta_users.append(
             {
                 "track_id": int(tid),
-                "valid_pct": round(100.0 * valid_frames / max(acc.total, 1), 2),
+                "valid_pct": round(100.0 * valid_frames / max(decoded_t, 1), 2),
                 "valid_frames": valid_frames,
-                "total_frames": acc.total,
+                "total_frames": poses_t,
+                "poses_full_T": poses_t,
                 "passes_filters": True,
             }
         )
@@ -164,10 +186,15 @@ def extract_clip_c1_like(
 
     cat_val = str(cat) if cat is not None else "0"
     ffprobe_t = timing.nb_read_frames
+    exported_pose_t = (
+        int(meta_users[0]["poses_full_T"]) if meta_users else 0
+    )
     meta = {
         "clip_name": clip_name,
         "fps": fps,
-        "frame_count": len(prepared_list),
+        "frame_count": decoded_t,
+        "poses_full_T": exported_pose_t or decoded_t,
+        "frame_policy": cfg.frame_policy,
         "video_frame_count": frame_count,
         "ffprobe_nb_read_frames": ffprobe_t,
         "decode_backend_used": timing.decode_backend_used or pipe_cfg.decode_backend,
@@ -225,6 +252,74 @@ def _none_tracker_pick(mock):
     return slice_mock_detection(mock, best, track_id=0)
 
 
+def _append_nan_row(acc: _UserAccum) -> None:
+    acc.poses_full.append(NAN_POSE.copy())
+    acc.keypoint_masks.append(EMPTY_KP_MASK.copy())
+    acc.total += 1
+
+
+def _process_frame_keep_all(
+    users: dict[int, _UserAccum],
+    mock,
+    cfg,
+    frame_index: int,
+) -> None:
+    """
+    Una fila poses_full por frame decodificado (grid denso C1 / gold N2).
+    Sin detección o keypoints ausentes → NaN; track ausente en frame → NaN.
+    """
+    from pose_core.export import build_masked_pose_from_xyn, frame_valid, keypoint_mask
+
+    n_boxes = int(mock.boxes.xyxy.shape[0]) if mock.boxes.xyxy is not None else 0
+    ids_raw = getattr(mock.boxes, "id", None)
+    xyn = mock.keypoints.xyn
+    conf = mock.keypoints.conf
+
+    id_to_pose: dict[int, np.ndarray] = {}
+    if ids_raw is not None and n_boxes > 0 and xyn is not None and conf is not None:
+        ids = ids_raw.int().cpu().tolist() if hasattr(ids_raw, "cpu") else list(ids_raw)
+        min_kp = float(getattr(cfg, "min_kp_conf", 0.5))
+        for i, tid in enumerate(ids):
+            tid = int(tid)
+            id_to_pose[tid] = build_masked_pose_from_xyn(xyn[i], conf[i], min_kp_conf=min_kp)
+
+    active_tids = set(users.keys()) | set(id_to_pose.keys())
+    for tid in sorted(active_tids):
+        if tid not in users:
+            users[tid] = _UserAccum(poses_full=[], poses=[], keypoint_masks=[])
+            for _ in range(frame_index):
+                _append_nan_row(users[tid])
+        acc = users[tid]
+        while len(acc.poses_full) < frame_index:
+            _append_nan_row(acc)
+        if tid in id_to_pose:
+            pose8 = id_to_pose[tid]
+            km = keypoint_mask(pose8)
+            acc.poses_full.append(pose8)
+            acc.keypoint_masks.append(km)
+            if frame_valid(pose8):
+                acc.poses.append(pose8)
+                acc.body_visible_cnt += 1
+            acc.total += 1
+        else:
+            _append_nan_row(acc)
+
+
+def _assert_keep_all_timeline(
+    users: dict[int, _UserAccum], decoded_t: int, clip_name: str
+) -> None:
+    for tid, acc in users.items():
+        t = len(acc.poses_full)
+        if t != decoded_t:
+            logger.warning(
+                "clip %s user_%s: poses_full T=%d != decoded_T=%d tras infer",
+                clip_name,
+                tid,
+                t,
+                decoded_t,
+            )
+
+
 def _accumulate_frame(users: dict[int, _UserAccum], mock, cfg, *, frame_policy: str) -> None:
     from pose_core.export import build_masked_pose_from_xyn, frame_valid, keypoint_mask
 
@@ -234,24 +329,24 @@ def _accumulate_frame(users: dict[int, _UserAccum], mock, cfg, *, frame_policy: 
         if frame_policy == "iamodel":
             return
         for acc in users.values():
-            acc.poses_full.append(NAN_POSE.copy())
-            acc.keypoint_masks.append(EMPTY_KP_MASK.copy())
-            acc.total += 1
+            _append_nan_row(acc)
         return
 
     ids = ids_raw.int().cpu().tolist() if hasattr(ids_raw, "cpu") else list(ids_raw)
     xyn = mock.keypoints.xyn
     conf = mock.keypoints.conf
     if xyn is None or conf is None:
+        if frame_policy == "iamodel":
+            return
+        for acc in users.values():
+            _append_nan_row(acc)
         return
 
     for tid in list(users.keys()):
         if tid not in ids:
             if frame_policy == "iamodel":
                 continue
-            users[tid].poses_full.append(NAN_POSE.copy())
-            users[tid].keypoint_masks.append(EMPTY_KP_MASK.copy())
-            users[tid].total += 1
+            _append_nan_row(users[tid])
 
     min_kp = float(getattr(cfg, "min_kp_conf", 0.5))
     for i, tid in enumerate(ids):
