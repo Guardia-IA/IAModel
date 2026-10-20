@@ -105,7 +105,7 @@ def read_frames_bgr(
     """
     Decodifica todos los frames posibles. Si reconcile_ffprobe_frames (default),
     elige el backend cuya T coincide con ffprobe nb_read_frames (gold C1 N2).
-    Con decode_c1_pixel_parity, entre backends con T correcta prioriza NVDEC (C1).
+    Con decode_c1_pixel_parity, entre backends con T correcta prioriza OpenCV (C1 reinfer MP4).
     """
     path = Path(path)
     timing = probe_video(path)
@@ -231,7 +231,7 @@ def _pick_decode_attempt(
         exact = [x for x in valid if len(x[1]) == target]
         if exact:
             if prefer_opencv:
-                order = {"ffmpeg_nvdec": 0, "ffmpeg_software": 1, "opencv": 2}
+                order = {"opencv": 0, "ffmpeg_software": 1, "ffmpeg_nvdec": 2}
             else:
                 order = {"ffmpeg_nvdec": 0, "ffmpeg_software": 1, "opencv": 2}
             exact.sort(key=lambda x: order.get(x[0], 9))

@@ -52,7 +52,7 @@ Por defecto en `triton_pose_extract_config.json` → **`extract`**:
 | Campo | Default | Efecto |
 |--------|---------|--------|
 | `engine` | `c1_like` | NVDEC + preprocess paralelo **sin tocar** el repo vendor |
-| `decode_backend` | `ffmpeg_nvdec` | FFmpeg `h264_cuvid` / `hevc_cuvid` → BGR |
+| `decode_backend` | `opencv` (gold N2) | Gold = paridad C1 `clip_buffer_reinfer`; `ffmpeg_nvdec` batch 5090 |
 | `preprocess_workers` | 8 | Letterbox como `triton_preprocess_workers` en C1 |
 | `fallback_opencv_decode` | true | Si NVDEC falla, OpenCV |
 

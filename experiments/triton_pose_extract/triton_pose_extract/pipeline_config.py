@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -26,14 +27,14 @@ class PipelineFilters:
 
 @dataclass
 class C1LikeExtractConfig:
-    """Motor IAModel tipo C1 (NVDEC + preprocess paralelo); no toca el repo vendor."""
+    """Motor IAModel tipo C1 (decode configurable + preprocess paralelo); no toca el repo vendor."""
 
     engine: str = "clip_extractor"
     """clip_extractor | c1_like"""
-    decode_backend: str = "ffmpeg_nvdec"
+    decode_backend: str = "opencv"
     """ffmpeg_nvdec | opencv"""
     decode_c1_pixel_parity: bool = True
-    """Gold N2: preferir ffmpeg_nvdec (como kanvis-monitoring) si T=ffprobe; OpenCV solo fallback."""
+    """Gold N2: preferir OpenCV si T=ffprobe (C1 export_iamodel_poses_from_clip); nvdec batch offline."""
     preprocess_workers: int = 8
     fallback_opencv_decode: bool = True
     ffmpeg_hwaccel: str = "cuda"
@@ -42,9 +43,10 @@ class C1LikeExtractConfig:
     def from_raw(cls, raw: dict | None) -> "C1LikeExtractConfig":
         ex = raw or {}
         engine = str(ex.get("engine") or "clip_extractor").strip().lower()
-        backend = str(ex.get("decode_backend") or "ffmpeg_nvdec").strip().lower()
+        env_backend = os.getenv("TRITON_EXTRACT_DECODE_BACKEND", "").strip().lower()
+        backend = str(ex.get("decode_backend") or env_backend or "opencv").strip().lower()
         if backend not in ("ffmpeg_nvdec", "opencv"):
-            backend = "ffmpeg_nvdec"
+            backend = "opencv"
         return cls(
             engine=engine if engine in ("clip_extractor", "c1_like") else "clip_extractor",
             decode_backend=backend,

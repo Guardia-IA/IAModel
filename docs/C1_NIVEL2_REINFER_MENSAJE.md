@@ -47,7 +47,7 @@ source ../training/venv/bin/activate
   --out "$OUT" --cat gold --parallel 1 --validate
 ```
 
-Config efectiva: **`engine=c1_like`**, decode **`ffmpeg_nvdec`** (+ fallback OpenCV), Triton **`yolo26s-pose`**, **`frame_policy=keep_all`**, preprocess **640×360 → letterbox 640**, **BGR→RGB**, export **0,5 / 5 KP**, gap-fill **none**. Detalle: `triton_pose_extract_config.json` + `pose.yaml` en `kanvis-triton-pose`.
+Config efectiva gold N2: **`engine=c1_like`**, decode **`opencv`** (mismo tubo que C1 **`clip_buffer_reinfer`** / `VideoCapture`; **`ffmpeg_nvdec`** opcional batch entrenamiento 5090), Triton **`yolo26s-pose`**, **`frame_policy=keep_all`**, preprocess **640×360 → letterbox 640**, **BGR→RGB**, export **0,5 / 5 KP**, gap-fill **none**. Override: env **`TRITON_EXTRACT_DECODE_BACKEND`**. Detalle: `triton_pose_extract_config.json` + `pose.yaml` en `kanvis-triton-pose`.
 
 **Sujeto (1 persona):** mismas reglas que ClipExtractor (track dominante / `export_primary_user`); no hace falta fijar `track_id` de sesión RTSP en el re-infer MP4.
 
@@ -81,7 +81,7 @@ python3 compare_c1_golden.py \
 | IAModel extract (antes) | **162** | decode NVDEC ≠ `ffprobe -count_frames` → **`T_equal` bloqueado** |
 | Chunk MinIO | NaN / sync | Sin `playback_start_at` en bundle → `has_sync_start=false`; usar `--align auto` o `merged_dense` |
 
-**IAModel (fix):** (1) decode **`ffmpeg_nvdec`** (como monitoring) + **`ffprobe nb_read_frames`** (OpenCV solo si NVDEC no llega a T); (2) infer **`keep_all`** (una fila `poses_full` por frame). Tras re-extract con `--validate`: `frame_count == poses_full_T == ffprobe`, `decode_backend_used` ≈ `ffmpeg_nvdec`. Entonces:
+**IAModel (fix):** (1) decode **`opencv`** (paridad C1 reinfer MP4) + **`ffprobe nb_read_frames`**; (2) infer **`keep_all`**. Tras re-extract: `frame_count == poses_full_T == ffprobe`, `decode_backend_used` = **`opencv`**. Entonces:
 
 ```bash
 ./run_extract.sh extract --video "$SESSION/clip_buffer.mp4" --out "$OUT" --cat gold --parallel 1 --validate

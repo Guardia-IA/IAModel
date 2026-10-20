@@ -36,8 +36,8 @@
   "extract": {
     "engine": "c1_like",
     "_engine_comment": "c1_like = NVDEC FFmpeg + preprocess paralelo (solo IAModel). clip_extractor = OpenCV en pose_core",
-    "decode_backend": "ffmpeg_nvdec",
-    "_decode_backend_comment": "Gold N2 = mismo criterio que kanvis-monitoring (NVDEC). T vía ffprobe; OpenCV solo fallback",
+    "decode_backend": "opencv",
+    "_decode_backend_comment": "Gold N2 = paridad C1 clip_buffer_reinfer (OpenCV VideoCapture). ffmpeg_nvdec opcional batch 5090",
     "decode_c1_pixel_parity": true,
     "preprocess_workers": 8,
     "fallback_opencv_decode": true,
