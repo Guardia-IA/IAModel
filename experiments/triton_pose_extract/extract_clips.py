@@ -85,6 +85,14 @@ def _cmd_extract(args: argparse.Namespace) -> int:
     pipe = load_pipeline_config(raw, output_base=None)
     if getattr(args, "session_close", False):
         pipe.filters.session_close_export = True
+    subj = getattr(args, "subject_bbox_json", None)
+    if subj:
+        subj_path = Path(subj).expanduser()
+        if not subj_path.is_file():
+            print(f"ERROR: --subject-bbox-json no existe: {subj_path}", file=sys.stderr)
+            return 2
+        pipe.filters.subject_bbox_json = str(subj_path.resolve())
+        pipe.filters.session_close_export = True
     if getattr(args, "export_track_id", None) is not None:
         pipe.filters.export_track_id = int(args.export_track_id)
         pipe.filters.session_close_export = True
@@ -125,7 +133,8 @@ def _cmd_extract(args: argparse.Namespace) -> int:
         f"single_user_only={settings.single_user_only}, "
         f"primary_user={pipe.filters.export_primary_user_on_multi_track}, "
         f"session_close={pipe.filters.session_close_export}, "
-        f"export_track_id={pipe.filters.export_track_id}",
+        f"export_track_id={pipe.filters.export_track_id}, "
+        f"subject_bbox_json={pipe.filters.subject_bbox_json}",
         flush=True,
     )
 
@@ -144,6 +153,7 @@ def _cmd_extract(args: argparse.Namespace) -> int:
             pipe.filters.export_primary_user_on_multi_track
             and not getattr(args, "no_single_user_only", False)
             and pipe.filters.export_track_id is None
+            and not pipe.filters.subject_bbox_json
         ):
             pr_ok, pr_err = prune_to_primary_user(out)
             if pr_err and not pr_ok:
@@ -347,6 +357,13 @@ def main() -> int:
         default=None,
         metavar="ID",
         help="Exportar solo user_{ID} (ByteTrack); implica --session-close si no pasas filtros estrictos",
+    )
+    ext.add_argument(
+        "--subject-bbox-json",
+        type=str,
+        default=None,
+        metavar="PATH",
+        help="subject_track.json (c1_session_subject_v1); IoU por frame vía pose_core",
     )
     ext.add_argument(
         "--single-user-only",

@@ -61,14 +61,25 @@ Metadatos:
 
 ---
 
-## Entrega 2 (roadmap): `subject_track.json`
+## Entrega 2: `--subject-bbox-json`
 
-Entendido el sidecar **`c1_session_subject_v1`** (`session_id`, `person_id`, `live_track_id` solo etiqueta, `playback_start_epoch`, `samples[]` con `t_s`, `epoch`, `bbox_norm`).
+Flag en **`extract_clips.py extract`**:
 
-- C1: ruta en socket `subject_bbox_json`; listener **no** la mete en argv hasta que exista CLI estable.
-- IAModel: **`--subject-bbox-json`** (o lectura automática de `subject_track.json` junto al clip) → elegir detección por **IoU** con la polyline de cajas por frame y acumular **ese** sujeto en el grid denso (sustituye heurística “primary user” cuando el sidecar esté presente).
+```bash
+python3 extract_clips.py extract \
+  ... \
+  --session-close \
+  --subject-bbox-json /path/subject_track.json
+```
 
-**Mientras tanto:** `--session-close` + primary user es el puente; no garantiza el mismo cuerpo que `person_id` si ambos tracks tienen poca visibilidad similar — el reinfer C1 con polyline sigue siendo el fallback correcto.
+- Si la ruta **no existe**, el CLI termina con error (evita caída silenciosa del cierre).
+- Misma semántica que **`ClipExtractor(subject_track_json=...)`** en kanvis-triton-pose: `load_subject_track` (`bbox_by_frame` o `frames[]`), **`pick_detection_for_session`** con IoU mínimo **0,3** ( `session_close_min_iou` en `ClipExtractConfig` ).
+- Export: **`user_0`** ( `session_close_user_id` ), grid denso **T = frames decodificados**, sin poda primary.
+- `meta.json`: `iamodel_subject_bbox_json`, `frame_policy: session_subject_iou`.
+
+Sin `--subject-bbox-json`, `--session-close` sigue usando **primary user** + relajación BODY_VISIBLE (entrega 1).
+
+Listener: activar `KANVIS_IAMODEL_EXTRACT_SUBJECT_JSON=1` cuando despleguéis rama con este flag.
 
 ---
 

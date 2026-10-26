@@ -89,6 +89,13 @@ def extract_one_job(
                 filters=pipe_filters,
             )
         else:
+            stack = _get_stack()
+            if pipe_filters and pipe_filters.subject_bbox_json:
+                stack.extract_cfg.session_close = True
+                stack.extract_cfg.subject_track_json = pipe_filters.subject_bbox_json
+            else:
+                stack.extract_cfg.session_close = False
+                stack.extract_cfg.subject_track_json = None
             result = _get_extractor().extract(
                 job.video_path,
                 out_dir=out_base / cat_folder,

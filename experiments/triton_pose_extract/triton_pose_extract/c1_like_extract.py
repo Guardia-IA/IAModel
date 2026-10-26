@@ -52,7 +52,7 @@ def extract_clip_c1_like(
         keypoint_mask,
         write_person_artifacts,
     )
-    from pose_core.postprocess import decode_end2end, split_triton_batch_output
+    from pose_core.postprocess import decode_end2end
     from pose_core.preprocess import letterbox, prepare_infer_image, to_tensor
     from pose_core.yolo_result import detections_to_mock, ensure_track_ids
 
@@ -106,6 +106,32 @@ def extract_clip_c1_like(
     t2 = time.perf_counter()
     raw_batches = _infer_batched(stack, tensors)
     decoded_t = len(prepared_list)
+
+    subject_json = getattr(filters, "subject_bbox_json", None) if filters else None
+    if subject_json:
+        result, timings = _export_session_subject_iou(
+            stack=stack,
+            clip_root=clip_root,
+            clip_name=clip_name,
+            video_path=video_path,
+            prepared_list=prepared_list,
+            meta_list=meta_list,
+            raw_batches=raw_batches,
+            subject_json=subject_json,
+            pipe_cfg=pipe_cfg,
+            fps=fps,
+            frame_count=frame_count,
+            timing=timing,
+            decoded_t=decoded_t,
+            cat=cat,
+            cfg=cfg,
+            t0=t0,
+            t_decode=t_decode,
+            t_prep=t_prep,
+            t2=t2,
+        )
+        return result, timings
+
     use_keep_all = cfg.frame_policy == "keep_all"
     for frame_index, (prep, lb_meta, raw_out) in enumerate(
         zip(prepared_list, meta_list, raw_batches, strict=True)
@@ -249,6 +275,194 @@ def extract_clip_c1_like(
         "total_sec": round(time.perf_counter() - t0, 3),
     }
     result = ClipPoseResult(clip_name=clip_name, out_dir=clip_root, meta=meta, user_dirs=user_dirs)
+    return result, timings
+
+
+def _export_session_subject_iou(
+    *,
+    stack: PoseExtractStack,
+    clip_root: Path,
+    clip_name: str,
+    video_path: Path,
+    prepared_list: list,
+    meta_list: list,
+    raw_batches: list[np.ndarray],
+    subject_json: str,
+    pipe_cfg: C1LikeExtractConfig,
+    fps: float,
+    frame_count: int,
+    timing: Any,
+    decoded_t: int,
+    cat: str | int | None,
+    cfg: Any,
+    t0: float,
+    t_decode: float,
+    t_prep: float,
+    t2: float,
+) -> tuple[Any, dict[str, float]]:
+    """Misma lógica que ClipExtractor.session_close + subject_track (pose_core)."""
+    import time
+
+    from pose_core.clip_extractor import ClipPoseResult
+    from pose_core.export import build_masked_pose_from_xyn, write_session_close_artifacts
+    from pose_core.postprocess import decode_end2end
+    from pose_core.session_subject import (
+        load_subject_track,
+        pick_detection_for_session,
+        picked_bbox_norm,
+        subject_sidecar_loaded,
+    )
+    from pose_core.yolo_result import detections_to_mock, ensure_track_ids
+
+    min_iou = float(getattr(cfg, "session_close_min_iou", 0.3))
+    uid = int(getattr(cfg, "session_close_user_id", 0))
+    min_kp = float(getattr(cfg, "min_kp_conf", 0.5))
+
+    has_sidecar = subject_sidecar_loaded(subject_json)
+    subject_bboxes = load_subject_track(subject_json, num_frames=decoded_t, fps=fps)
+    session_poses: list[np.ndarray] = []
+    session_kms: list[np.ndarray] = []
+    prev_subject_bbox: np.ndarray | None = None
+
+    for prep, lb_meta, raw_out in zip(
+        prepared_list, meta_list, raw_batches, strict=True
+    ):
+        dets = decode_end2end(raw_out, lb_meta, stack.decode_conf)
+        mock = detections_to_mock(dets, orig_shape=(lb_meta.orig_h, lb_meta.orig_w))
+        if cfg.tracker_kind == "none":
+            mock = _none_tracker_pick(mock)
+        else:
+            mock = stack.tracker.update(mock, prep)
+        mock = ensure_track_ids(mock)
+
+        frame_idx = len(session_poses)
+        target = subject_bboxes[frame_idx] if frame_idx < len(subject_bboxes) else None
+        pick: int | None
+        if has_sidecar:
+            if target is None:
+                pick = None
+                prev_subject_bbox = None
+            else:
+                pick = pick_detection_for_session(
+                    mock,
+                    infer_w=lb_meta.orig_w,
+                    infer_h=lb_meta.orig_h,
+                    target_bbox_norm=target,
+                    prev_bbox_norm=None,
+                    min_iou=min_iou,
+                )
+                prev_subject_bbox = (
+                    picked_bbox_norm(mock, pick, lb_meta.orig_w, lb_meta.orig_h)
+                    if pick is not None
+                    else None
+                )
+        else:
+            pick = pick_detection_for_session(
+                mock,
+                infer_w=lb_meta.orig_w,
+                infer_h=lb_meta.orig_h,
+                target_bbox_norm=None,
+                prev_bbox_norm=prev_subject_bbox,
+                min_iou=min_iou,
+            )
+            if pick is not None:
+                prev_subject_bbox = picked_bbox_norm(
+                    mock, pick, lb_meta.orig_w, lb_meta.orig_h
+                )
+
+        if pick is None:
+            session_poses.append(NAN_POSE.copy())
+            session_kms.append(EMPTY_KP_MASK.copy())
+        else:
+            xyn = mock.keypoints.xyn
+            conf = mock.keypoints.conf
+            assert xyn is not None and conf is not None
+            pose8 = build_masked_pose_from_xyn(xyn[pick], conf[pick], min_kp_conf=min_kp)
+            from pose_core.export import keypoint_mask
+
+            session_kms.append(keypoint_mask(pose8))
+            session_poses.append(pose8)
+
+    t = len(session_poses)
+    poses_full_arr = np.stack(session_poses, axis=0) if t else np.zeros((0, 8, 2), np.float32)
+    km_arr = np.stack(session_kms, axis=0) if t else np.zeros((0, 8), bool)
+    user_dir = clip_root / f"user_{uid}"
+    valid = write_session_close_artifacts(user_dir, poses_full_arr, km_arr)
+    valid_frames = int(valid.sum())
+
+    if cfg.save_clip_mp4:
+        dest_mp4 = clip_root / "clip.mp4"
+        if video_path.resolve() != dest_mp4.resolve():
+            shutil.copy2(video_path, dest_mp4)
+
+    cat_val = str(cat) if cat is not None else "0"
+    ffprobe_t = timing.nb_read_frames
+    meta_users = [
+        {
+            "track_id": uid,
+            "valid_pct": round(100.0 * valid_frames / max(t, 1), 2),
+            "valid_frames": valid_frames,
+            "total_frames": t,
+            "poses_full_T": t,
+            "passes_filters": True,
+            "session_close_export": True,
+            "subject_bbox_json": str(Path(subject_json).resolve()),
+        }
+    ]
+    meta = {
+        "clip_name": clip_name,
+        "fps": fps,
+        "frame_count": t,
+        "poses_full_T": t,
+        "frame_policy": "session_subject_iou",
+        "video_frame_count": frame_count,
+        "ffprobe_nb_read_frames": ffprobe_t,
+        "decode_backend_used": timing.decode_backend_used or pipe_cfg.decode_backend,
+        "frame_count_matches_ffprobe": (
+            ffprobe_t is not None and t == int(ffprobe_t)
+        ),
+        "cat": cat_val,
+        "clip_duration": round(t / fps, 3) if fps > 0 else 0,
+        "yolo_backend": "triton_tensorrt_plan",
+        "pose_bundle_id": stack.bundle.get("pose_bundle_id", ""),
+        "users": meta_users,
+        "clip_video": "clip.mp4",
+        "iamodel_extract_engine": "c1_like",
+        "iamodel_decode_backend": pipe_cfg.decode_backend,
+        "iamodel_preprocess_workers": pipe_cfg.preprocess_workers,
+        "iamodel_session_close_export": True,
+        "iamodel_subject_bbox_json": str(Path(subject_json).resolve()),
+        "iamodel_session_close_min_iou": min_iou,
+    }
+    (clip_root / "meta.json").write_text(
+        json.dumps(meta, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    (clip_root / "pose_bundle.json").write_text(
+        json.dumps(stack.bundle, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    t_infer = time.perf_counter() - t2
+    timings = {
+        "decode_sec": round(t_decode, 3),
+        "preprocess_sec": round(t_prep, 3),
+        "infer_track_export_sec": round(t_infer, 3),
+        "total_sec": round(time.perf_counter() - t0, 3),
+    }
+    logger.info(
+        "session_subject clip %s user_%d frames=%d valid=%d json=%s",
+        clip_name,
+        uid,
+        t,
+        valid_frames,
+        subject_json,
+    )
+    result = ClipPoseResult(
+        clip_name=clip_name,
+        out_dir=clip_root,
+        meta=meta,
+        user_dirs=[user_dir],
+    )
     return result, timings
 
 
