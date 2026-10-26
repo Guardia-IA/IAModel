@@ -107,3 +107,28 @@ IAModel **no** cambia Triton/preprocess mientras el diff sea solo C1; sí podemo
 3. IAModel: archivamos **`77f5…`** como **referencia casi-PASS** en doc N2; actualizamos mensaje de cierre cuando `pass: true`.
 
 Referencia decode: [`IAMODEL_GOLD_N2_DECODE_PARITY.md`](./IAMODEL_GOLD_N2_DECODE_PARITY.md).
+
+---
+
+## Acuerdo piloto — opción **A** (post gate1 reinfer, oct-2026)
+
+**Hecho:** Tras `--reinfer` con tracker reset + batch 8, **77f5…** sin cambio (`mask_mm=2` en 88/153, `max_Δ≈0.016`, `both_valid=113`) → divergencia **persistente** pool C1 vs **`c1_like_extract`**, no artefacto MinIO pre-deploy.
+
+**IAModel — prioridad piloto:** **Sí, opción A** para cerrar N2 merged / intercambio train↔MinIO **mientras** unificamos tubo (opción B).
+
+| | Opción **A** (piloto) | Opción **B** (objetivo) |
+|---|------------------------|-------------------------|
+| Qué | Al cierre N2, C1 ejecuta **`run_extract.sh`** (o API equivalente) sobre **`clip_buffer.mp4`** y **persiste en MinIO** ese `merged*` / chunks densos (mismo npy que gold offline). | Un solo código de inferencia (vendor / pool = `c1_like`). |
+| Gold | `compare_c1_golden`: MinIO vs offline del **mismo** comando → **PASS** (misma fuente lógica; ideal: checksum o copia del artefacto subido). | PASS con reinfer C1 nativo sin subprocess. |
+| RTSP live | Sin cambio; solo export **denso al cierre** desde extract. | Paridad total live + fichero. |
+
+**Requisitos mínimos C1 (A):**
+
+1. Subproceso con **`TRITON_EXTRACT_DECODE_BACKEND=opencv`**, `engine=c1_like`, bundle **`yolo26s-pose_v1`**, **`keep_all`**.  
+2. Meta sesión/chunk: p. ej. **`pose_export_source=triton_pose_extract_at_close`** (+ hash o ruta del run) además de `clip_buffer_reinfer` si aplica.  
+3. Chunks densos = **recorte** sobre la timeline del extract (índices documentados), no cola RTSP histórica.  
+4. **`playback_start_at` / chunk_elapsed** cuando publiquéis sync (chunk gold aparte de merged).
+
+**IAModel:** mantenemos **ε=1e-4** en `compare_c1_golden`; con A el cierre N2 merged es **demostrable** en piloto. Seguimos **B** en roadmap (`TRITON_EXTRACT_PERF.md` / `kanvis-triton-pose`).
+
+**Mensaje C1 (una línea):** Aceptamos **priorizar A en piloto**; reinfer pool queda en paralelo para converger a B; **77f5** sigue referencia del gap pool vs extract hasta primer upload 100 % extract.

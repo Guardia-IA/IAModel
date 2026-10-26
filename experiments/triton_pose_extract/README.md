@@ -128,6 +128,16 @@ Re-analizar un informe con pendientes manuales (p.ej. tras contar npy):
 **¿Por qué tarda al inicio?** Cada worker hace `triton_connected` y luego `pose_core` carga **ByteTrack + `yolo26s-pose.pt` en disco** (no sustituye la inferencia TRT en Triton). Eso explica ~1 min de silencio con 4 workers.
 
 **`[SKIP] sin carpetas user_*` / `single_user_only y 2 tracks`:** el clip se procesó pero **no se exportó npy** (varias personas en cámara o filtros de calidad). Es normal en `clip_buffer` de sesiones online; no es fallo de red Triton. Para prueba rápida usa un `.mp4` con una persona: `./run_extract.sh smoke-one --video …`
+
+**Cierre sesión C1 (clip = plano entero, 1 persona por sesión):** no uses `--no-single-user-only` (desactiva `export_primary_user`). Usa:
+
+```bash
+./run_extract.sh extract --video clip.mp4 --out … --cat gold --validate --session-close
+# opcional, track ByteTrack de la sesión:
+./run_extract.sh extract … --export-track-id 3 --validate
+```
+
+Log `N track(s) filtros (filtered=N)` = **BODY_VISIBLE_MIN_FRAMES/RATIO** de `pose_core`, no `single_user_only` (ese mensaje es `single_user_only y N tracks → sin export`).
 ```
 
 Informes: `{output_base}/logs/csv_extract_report.json`, preflight JSON opcional.

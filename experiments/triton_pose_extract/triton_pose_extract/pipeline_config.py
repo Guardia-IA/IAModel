@@ -17,6 +17,10 @@ class FilterToggle:
 class PipelineFilters:
     single_user_only: bool = True
     export_primary_user_on_multi_track: bool = True
+    """Cierre sesión C1: exportar aunque BODY_VISIBLE_* falle (clip pasillo multi-persona)."""
+    session_close_export: bool = False
+    """Si ByteTrack tiene el ID, exportar solo user_{export_track_id} (ignora otros tracks)."""
+    export_track_id: Optional[int] = None
     min_clip_duration_sec: FilterToggle = field(default_factory=lambda: FilterToggle(True, 0.5))
     max_clip_duration_sec: FilterToggle = field(default_factory=lambda: FilterToggle(True, 120.0))
     min_user_seconds: FilterToggle = field(default_factory=lambda: FilterToggle(False, 0.0))
@@ -141,6 +145,12 @@ def load_pipeline_config(raw: Dict[str, Any], *, output_base: Path | None = None
         min_kp_conf=float(filt.get("min_kp_conf", 0.5)),
         export_primary_user_on_multi_track=bool(
             filt.get("export_primary_user_on_multi_track", True)
+        ),
+        session_close_export=bool(filt.get("session_close_export", False)),
+        export_track_id=(
+            int(filt["export_track_id"])
+            if filt.get("export_track_id") is not None
+            else None
         ),
     )
 

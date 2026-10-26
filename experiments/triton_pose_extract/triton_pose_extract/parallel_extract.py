@@ -14,7 +14,11 @@ from triton_pose_extract.capacity import capacity_report, recommend_parallel_cli
 from triton_pose_extract.c1_like_extract import extract_clip_c1_like
 from triton_pose_extract.discovery import VideoJob
 from triton_pose_extract.factory import build_pose_stack
-from triton_pose_extract.pipeline_config import C1LikeExtractConfig, PipelineConfig
+from triton_pose_extract.pipeline_config import (
+    C1LikeExtractConfig,
+    PipelineConfig,
+    PipelineFilters,
+)
 from triton_pose_extract.settings import ExtractSettings
 
 logger = logging.getLogger(__name__)
@@ -67,6 +71,7 @@ def extract_one_job(
     out_base: Path,
     *,
     pipe_extract: C1LikeExtractConfig | None = None,
+    pipe_filters: PipelineFilters | None = None,
 ) -> ExtractResult:
     t0 = time.perf_counter()
     try:
@@ -81,6 +86,7 @@ def extract_one_job(
                 cat=cat_folder,
                 clip_folder=job.clip_folder,
                 pipe_cfg=pipe_extract,
+                filters=pipe_filters,
             )
         else:
             result = _get_extractor().extract(
@@ -139,7 +145,14 @@ def run_parallel_extract(
         thread_name_prefix="triton_extract",
     ) as pool:
         futures = {
-            pool.submit(extract_one_job, settings, job, out_base, pipe_extract=pipe_extract): job
+            pool.submit(
+                extract_one_job,
+                settings,
+                job,
+                out_base,
+                pipe_extract=pipe_extract,
+                pipe_filters=pipe.filters if pipe else None,
+            ): job
             for job in jobs
         }
         for fut in as_completed(futures):

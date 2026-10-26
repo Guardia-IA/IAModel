@@ -42,6 +42,7 @@ def extract_clip_c1_like(
     cat: str | int | None = None,
     clip_folder: str | None = None,
     pipe_cfg: C1LikeExtractConfig,
+    filters: Any | None = None,
 ) -> tuple[Any, dict[str, float]]:
     from pose_core.clip_extractor import ClipPoseResult
     from pose_core.export import (
@@ -124,20 +125,36 @@ def extract_clip_c1_like(
     if use_keep_all:
         _assert_keep_all_timeline(users, decoded_t, clip_name)
 
-    if cfg.single_user_only and len(users) > 1:
+    session_close = bool(getattr(filters, "session_close_export", False))
+    export_track_id = getattr(filters, "export_track_id", None)
+    if export_track_id is not None:
+        export_track_id = int(export_track_id)
+    relax_quality = session_close or export_track_id is not None
+
+    if cfg.single_user_only and len(users) > 1 and not relax_quality:
         logger.warning(
             "clip %s: single_user_only y %d tracks → sin export (usa export_primary_user "
-            "o --no-single-user-only)",
+            "o --session-close)",
             clip_name,
             len(users),
         )
         users = {}
 
+    if export_track_id is not None and export_track_id not in users:
+        logger.warning(
+            "clip %s: export_track_id=%d no visto en ByteTrack (tracks=%s)",
+            clip_name,
+            export_track_id,
+            sorted(users.keys()),
+        )
+
     user_dirs: list[Path] = []
     meta_users: list[dict] = []
     filtered = 0
     for tid, acc in sorted(users.items()):
-        if not _passes_filters(acc, frame_count):
+        if export_track_id is not None and int(tid) != export_track_id:
+            continue
+        if not relax_quality and not _passes_filters(acc, frame_count):
             filtered += 1
             continue
         user_dir = clip_root / f"user_{tid}"
@@ -158,6 +175,7 @@ def extract_clip_c1_like(
         )
         user_dirs.append(user_dir)
         valid_frames = sum(1 for p in acc.poses_full if frame_valid(p, min_visible=5))
+        passed_quality = _passes_filters(acc, frame_count)
         meta_users.append(
             {
                 "track_id": int(tid),
@@ -165,7 +183,8 @@ def extract_clip_c1_like(
                 "valid_frames": valid_frames,
                 "total_frames": poses_t,
                 "poses_full_T": poses_t,
-                "passes_filters": True,
+                "passes_filters": passed_quality,
+                "export_relaxed": relax_quality and not passed_quality,
             }
         )
 
@@ -211,6 +230,8 @@ def extract_clip_c1_like(
         "iamodel_extract_engine": "c1_like",
         "iamodel_decode_backend": pipe_cfg.decode_backend,
         "iamodel_preprocess_workers": pipe_cfg.preprocess_workers,
+        "iamodel_session_close_export": session_close,
+        "iamodel_export_track_id": export_track_id,
     }
     (clip_root / "meta.json").write_text(
         json.dumps(meta, indent=2, ensure_ascii=False) + "\n",

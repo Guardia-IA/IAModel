@@ -83,10 +83,17 @@ def _cmd_extract(args: argparse.Namespace) -> int:
         require_pose_repo=True,
     )
     pipe = load_pipeline_config(raw, output_base=None)
+    if getattr(args, "session_close", False):
+        pipe.filters.session_close_export = True
+    if getattr(args, "export_track_id", None) is not None:
+        pipe.filters.export_track_id = int(args.export_track_id)
+        pipe.filters.session_close_export = True
     if getattr(args, "no_single_user_only", False):
         settings.single_user_only = False
     elif getattr(args, "single_user_only", False):
         settings.single_user_only = True
+    elif pipe.filters.session_close_export or pipe.filters.export_track_id is not None:
+        settings.single_user_only = False
     else:
         # Igual que extract-csv: con primary_user exportamos multi-track y podamos después.
         strict = pipe.filters.single_user_only and not pipe.filters.export_primary_user_on_multi_track
@@ -116,7 +123,9 @@ def _cmd_extract(args: argparse.Namespace) -> int:
         f"parallel={args.parallel or cap['parallel_clips']}, "
         f"batch={settings.triton_batch_size}, url={settings.triton_url}, "
         f"single_user_only={settings.single_user_only}, "
-        f"primary_user={pipe.filters.export_primary_user_on_multi_track}",
+        f"primary_user={pipe.filters.export_primary_user_on_multi_track}, "
+        f"session_close={pipe.filters.session_close_export}, "
+        f"export_track_id={pipe.filters.export_track_id}",
         flush=True,
     )
 
@@ -131,8 +140,10 @@ def _cmd_extract(args: argparse.Namespace) -> int:
         if not row.get("ok") or not row.get("out_dir"):
             continue
         out = Path(row["out_dir"])
-        if pipe.filters.export_primary_user_on_multi_track and not getattr(
-            args, "no_single_user_only", False
+        if (
+            pipe.filters.export_primary_user_on_multi_track
+            and not getattr(args, "no_single_user_only", False)
+            and pipe.filters.export_track_id is None
         ):
             pr_ok, pr_err = prune_to_primary_user(out)
             if pr_err and not pr_ok:
@@ -323,7 +334,19 @@ def main() -> int:
     ext.add_argument(
         "--no-single-user-only",
         action="store_true",
-        help="Permitir export con varios tracks",
+        help="Permitir export con varios tracks (desactiva también export_primary_user)",
+    )
+    ext.add_argument(
+        "--session-close",
+        action="store_true",
+        help="Cierre sesión C1: multi-track OK, relaja BODY_VISIBLE_* (no usar --no-single-user-only)",
+    )
+    ext.add_argument(
+        "--export-track-id",
+        type=int,
+        default=None,
+        metavar="ID",
+        help="Exportar solo user_{ID} (ByteTrack); implica --session-close si no pasas filtros estrictos",
     )
     ext.add_argument(
         "--single-user-only",
