@@ -1,105 +1,120 @@
-# Respuesta IAModel — extract al cierre sesión C1 (clip multi-persona, 1 person_id)
+# Respuesta IAModel — cierre sesión C1 (`--session-close`, grid vídeo, `subject_track.json`)
 
 Copiar/adaptar para Kanvis C1.
 
 ---
 
-**Asunto:** Cierre sesión C1 — `--session-close` / `--export-track-id` (no batch single-user)
+**Asunto:** Cierre sesión C1 — `--session-close` y alineación frame-a-frame (entrega 1)
 
 Hola,
 
-Contexto entendido: en piloto, **N personas en pasillo → N sesiones**; el MP4 de cada sesión es el **plano entero** (~96 s, ej. `ff3c1f32200a4ed6b8f9f84808ccebe9`, 1156 frames). C1 llama hoy:
-
-`extract_clips.py extract --video clip.mp4 --cat gold --validate`
-
-sin track/person → log **`2 track(s) filtros (filtered=2 frames=1156)`**, sin `user_*`, solo `clip.mp4`, `meta.json`, `pose_bundle.json` → `triton_pose_extract_at_close_exhausted` y fallback reinfer.
+Recibido el contrato de cierre: **N sesiones / N person_id**, MP4 = **plano entero**, **no** enviáis `--export-track-id` (ID ByteTrack offline ≠ live). El listener invoca **`extract_clips.py`** directamente (el flag está en el subcomando `extract`, no solo en `run_extract.sh`).
 
 ---
 
-### 1) ¿CLI/config para un solo track?
+## Entrega 1 (esta): `--session-close`
 
-**Antes (batch entrenamiento):**
-
-| Mecanismo | Comportamiento |
-|-----------|----------------|
-| `filters.single_user_only` + `export_primary_user_on_multi_track: true` (default JSON) | Exporta todos los tracks que pasen calidad, **poda** a `user_{track}` con más frames válidos (`primary_user.py`). |
-| `--no-single-user-only` | **No recomendado en cierre:** además de permitir multi-track, **desactiva** `export_primary_user_on_multi_track` y deja varios `user_*`. |
-| `--single-user-only` | Fuerza descarte si ByteTrack ve 2+ IDs (log distinto). |
-
-**Nuevo — modo cierre sesión (inferencia, no batch):**
+### Invocación acordada
 
 ```bash
-export TRITON_EXTRACT_DECODE_BACKEND=opencv   # paridad C1 reinfer
-./run_extract.sh extract \
+export TRITON_EXTRACT_DECODE_BACKEND=opencv
+python3 extract_clips.py extract \
   --video clip.mp4 \
-  --out /scratch/... \
-  --cat gold \
-  --validate \
-  --session-close
-```
-
-- `--session-close`: `single_user_only=false` en el motor, **mantiene** `export_primary_user_on_multi_track` → un solo `user_*` (dominante) aunque haya 2 cuerpos en pasillo.
-- `--export-track-id ID`: exporta **solo** `user_{ID}` (ID **ByteTrack interno** del extractor); relaja filtros `BODY_VISIBLE_*` para ese export (igual que session-close).
-
-Opcional en JSON (`filters`): `"session_close_export": true`, `"export_track_id": 3` (misma semántica).
-
-**No usar** `--no-single-user-only` en el camino de cierre.
-
----
-
-### 2) ¿Track_id C1 y/o bboxes por frame?
-
-- **`--export-track-id`**: sí, si C1 envía el **mismo entero** que asigna ByteTrack en esa pasada offline (mismo vídeo, mismo tracker). Solo se escribe `user_{ID}/poses_full.npy` (+ poses/masks).
-- **Lista de bboxes por frame desde C1**: **no implementado** en esta versión. Roadmap razonable: fichero sidecar (JSON/npy) + selección de detección por IoU por frame antes de acumular `poses_full`.
-- Mientras tanto: C1 puede pasar `--export-track-id` tras un smoke/diagnose, o confiar en `--session-close` + poda primary (track con más frames válidos en el clip).
-
----
-
-### 3) ¿Matching por solape bbox si IDs no coinciden?
-
-**No** en el extractor actual. Si el ID de sesión C1 ≠ ID ByteTrack offline, hay que:
-
-- re-mapear en C1 antes de llamar a extract, o
-- pedir matching IoU (futuro sidecar), o
-- usar `--session-close` sin `--export-track-id` y alinear por **primary user** (heurística frames válidos).
-
----
-
-### 4) ¿Qué significa `filtered=2`?
-
-**No es `single_user_only`.** Ese caso loguea:
-
-`single_user_only y N tracks → sin export`
-
-El mensaje **`N track(s) filtros (filtered=N frames=T)`** sale cuando ByteTrack **sí** vio tracks (`users` no vacío) pero **ninguno** pasó `_passes_filters` en `c1_like_extract.py`:
-
-- `BODY_VISIBLE_MIN_FRAMES`
-- `BODY_VISIBLE_MIN_RATIO`
-- cobertura mínima `acc.total >= 0.2 * total_frames`
-
-(`min_kp_conf` afecta validez de keypoints en acumulación, no ese log directamente.)
-
-Con **`--session-close`** (o `--export-track-id`) se **omite** ese gate de export para el camino de cierre; en `meta.json` veréis `iamodel_session_close_export`, `iamodel_export_track_id` y por usuario `export_relaxed: true` si se exportó pese a no pasar BODY_VISIBLE.
-
-**meta.json de la sesión `ff3c1f32200a…`:** no está en el repo IAModel; si sigue en scratch C1, adjuntad `gold/clip_buffer/meta.json` (campos útiles: `users`, `track_count` si existe, `frame_count`, `iamodel_*`).
-
----
-
-### Comando recomendado C1 al cierre
-
-```bash
-./run_extract.sh extract \
-  --video "${SESSION}/clip.mp4" \
-  --out "${SCRATCH}/iamodel_extract" \
+  --out <work> \
   --cat gold \
   --parallel 1 \
   --validate \
   --session-close
-# Si tenéis track ByteTrack estable para esa sesión:
-#   --export-track-id "${SESSION_TRACK_ID}"
 ```
 
-Dataset batch / entrenamiento: **sin cambios** (`single_user_only` + primary user). `--session-close` es solo invocación al cierre en tienda.
+(`run_extract.sh` es wrapper; mismo argv.)
+
+### Comportamiento
+
+| Flag / default | Cierre sesión | Batch entrenamiento (sin flag) |
+|----------------|---------------|--------------------------------|
+| `--session-close` | **Sí** | **No** |
+| `single_user_only` en motor | **false** (solo con flag) | false si `export_primary_user_on_multi_track` (default JSON) |
+| Gate `BODY_VISIBLE_*` + 20 % clip | **Relajado** al exportar | **Activo** → log `N track(s) filtros` si ningún track pasa |
+| `export_primary_user_on_multi_track` | **Sí** → **un** `user_*` (más frames válidos) | Igual |
+| `--no-single-user-only` | **No usar** (apaga primary) | — |
+| `--export-track-id` | **No usáis** en piloto | — |
+
+### Grid temporal (contrato esqueleto ↔ vídeo)
+
+En motor `c1_like`, **`frame_policy=keep_all`** (default en `extract_stack`):
+
+- **`poses_full.npy`**: shape `(T, 8, 2)` con **`T == frame_count`** del MP4 decodificado (ffprobe / filas decodificadas).
+- **Fila `i`** = frame **`i`** del vídeo.
+- Sin detección del track en ese frame → fila **NaN**; **`valid_mask.npy`** coherente (false donde no hay pose usable).
+- **No** exportamos arrays “desde el primer frame del track” más cortos que el vídeo: si `T != decoded_T`, ese `user_*` no se escribe (error en log).
+
+Esto es el mismo grid que gold N2 / `compare_c1_golden` (índice i↔i). `--session-close` **no cambia** inferencia ni `keep_all`; solo **permite escribir** `user_*` cuando los filtros de entrenamiento habrían dejado 0 carpetas.
+
+Tras export, **`prune_to_primary_user`**: un solo `user_{track_id}`; `meta.json` incluye `iamodel_primary_user_track_id` si hubo poda.
+
+Metadatos:
+
+- `iamodel_session_close_export: true`
+- `users[].export_relaxed: true` si se exportó relajando BODY_VISIBLE
+- `iamodel_export_track_id: null` (sin `--export-track-id`)
+
+---
+
+## Entrega 2 (roadmap): `subject_track.json`
+
+Entendido el sidecar **`c1_session_subject_v1`** (`session_id`, `person_id`, `live_track_id` solo etiqueta, `playback_start_epoch`, `samples[]` con `t_s`, `epoch`, `bbox_norm`).
+
+- C1: ruta en socket `subject_bbox_json`; listener **no** la mete en argv hasta que exista CLI estable.
+- IAModel: **`--subject-bbox-json`** (o lectura automática de `subject_track.json` junto al clip) → elegir detección por **IoU** con la polyline de cajas por frame y acumular **ese** sujeto en el grid denso (sustituye heurística “primary user” cuando el sidecar esté presente).
+
+**Mientras tanto:** `--session-close` + primary user es el puente; no garantiza el mismo cuerpo que `person_id` si ambos tracks tienen poca visibilidad similar — el reinfer C1 con polyline sigue siendo el fallback correcto.
+
+---
+
+## Comprobaciones (sesión ref. `ff3c1f32200a4ed6b8f9f84808ccebe9`)
+
+En wudebian (Triton up, código con `--session-close` desplegado):
+
+```bash
+cd ~/IAModel/experiments/triton_pose_extract
+SESSION=/home/angel/TestKanvis/ff3c1f32200a4ed6b8f9f84808ccebe9   # ajustar ruta clip
+OUT=/tmp/session_close_ff3c1f
+CLIP="$SESSION/clip.mp4"   # o clip_buffer.mp4 según scratch
+
+# A) sin session-close → debe seguir sin user_* (repro filtered=2)
+python3 extract_clips.py extract --video "$CLIP" --out "$OUT/batch_like" \
+  --cat gold --parallel 1 --validate -v 2>&1 | tee /tmp/extract_no_sc.log
+
+# B) con session-close → 1 user_*, T alineado
+python3 extract_clips.py extract --video "$CLIP" --out "$OUT/close" \
+  --cat gold --parallel 1 --validate --session-close -v 2>&1 | tee /tmp/extract_sc.log
+
+CLIP_ROOT="$OUT/close/gold/$(basename "${CLIP%.mp4}")"
+python3 scripts/verify_session_close_output.py "$CLIP_ROOT"
+cat "$CLIP_ROOT/meta.json"
+python3 -c "
+import numpy as np, json
+from pathlib import Path
+r=Path('$CLIP_ROOT')
+m=json.loads((r/'meta.json').read_text())
+u=next(r.glob('user_*'))
+pf=np.load(u/'poses_full.npy'); vm=np.load(u/'valid_mask.npy')
+print('shape', pf.shape, 'valid_mask.sum()', int(vm.sum()), 'frame_count', m['frame_count'])
+"
+```
+
+**Resultados numéricos** (`meta.json`, shape, `valid_mask.sum()`) los pegamos en el hilo en cuanto ejecutemos B sobre el scratch si aún existe (no reproducible desde el repo IAModel sin acceso al clip).
+
+Criterios PASS (script + `--validate`):
+
+1. Exactamente **un** `user_*/poses_full.npy` y `valid_mask.npy`.
+2. `poses_full.shape[0] == meta.frame_count == valid_mask.shape[0]`.
+3. `valid_mask.sum() > 0`.
+4. `iamodel_session_close_export == true`; `export_relaxed: true` en el usuario si aplicó relajación.
+5. Sin `--session-close`, mismo clip → **0** `user_*` (comportamiento batch intacto).
+
+---
 
 Saludos,  
 IAModel / triton_pose_extract
