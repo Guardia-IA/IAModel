@@ -132,8 +132,6 @@ def main() -> int:
     ap.add_argument("--config", type=str, default="")
     args = ap.parse_args()
 
-    from pose_core.session_subject import load_subject_sidecar
-
     clip = args.clip.expanduser().resolve()
     subj = args.subject_json.expanduser().resolve()
 
@@ -141,6 +139,11 @@ def main() -> int:
         Path(args.config) if args.config else PKG / "triton_pose_extract_config.json",
         require_pose_repo=True,
     )
+    from triton_pose_extract.paths import ensure_pose_core_importable
+
+    ensure_pose_core_importable(settings.triton_pose_repo)
+    from pose_core.session_subject import load_subject_sidecar
+
     stack = build_extract_stack(settings)
     frames, timing = read_frames_bgr(clip, backend="opencv", decode_c1_pixel_parity=True)
     sidecar = load_subject_sidecar(subj, num_frames=len(frames), fps=timing.fps or 12.0)
