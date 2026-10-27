@@ -23,6 +23,7 @@ class PipelineFilters:
     export_track_id: Optional[int] = None
     """Ruta a subject_track.json (c1_session_subject_v1); selección por IoU, no ByteTrack id."""
     subject_bbox_json: Optional[str] = None
+    debug_subject_frames: tuple[int, ...] = ()
     min_clip_duration_sec: FilterToggle = field(default_factory=lambda: FilterToggle(True, 0.5))
     max_clip_duration_sec: FilterToggle = field(default_factory=lambda: FilterToggle(True, 120.0))
     min_user_seconds: FilterToggle = field(default_factory=lambda: FilterToggle(False, 0.0))

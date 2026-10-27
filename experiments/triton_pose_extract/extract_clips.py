@@ -93,6 +93,9 @@ def _cmd_extract(args: argparse.Namespace) -> int:
             return 2
         pipe.filters.subject_bbox_json = str(subj_path.resolve())
         pipe.filters.session_close_export = True
+    debug_frames = getattr(args, "debug_subject_frame", None) or []
+    if debug_frames:
+        pipe.filters.debug_subject_frames = tuple(int(x) for x in debug_frames)
     if getattr(args, "export_track_id", None) is not None:
         pipe.filters.export_track_id = int(args.export_track_id)
         pipe.filters.session_close_export = True
@@ -364,6 +367,14 @@ def main() -> int:
         default=None,
         metavar="PATH",
         help="subject_track.json (c1_session_subject_v1); IoU por frame vía pose_core",
+    )
+    ext.add_argument(
+        "--debug-subject-frame",
+        type=int,
+        action="append",
+        default=[],
+        metavar="I",
+        help="Log IoU/anchors en frame i (repetible; requiere -v)",
     )
     ext.add_argument(
         "--single-user-only",

@@ -312,14 +312,17 @@ def _export_session_subject_iou(
     from pose_core.clip_extractor import ClipPoseResult
     from pose_core.export import build_masked_pose_from_xyn, keypoint_mask, write_session_close_artifacts
     from pose_core.postprocess import decode_end2end
+    from pose_core.session_close_match import (
+        pick_session_detection_pre_tracker,
+        resolve_session_anchor_prep_norm,
+    )
     from pose_core.session_subject import (
         load_subject_sidecar,
-        pick_detection_for_session,
         picked_bbox_norm,
-        remap_bbox_norm_native_to_prep,
         subject_sidecar_loaded,
+        xyxy_pixels_to_norm,
     )
-    from pose_core.yolo_result import detections_to_mock, ensure_track_ids
+    from pose_core.yolo_result import detections_to_mock
 
     min_iou = float(getattr(cfg, "session_close_min_iou", 0.3))
     uid = int(getattr(cfg, "session_close_user_id", 0))
@@ -329,6 +332,10 @@ def _export_session_subject_iou(
     has_sidecar = subject_sidecar_loaded(subject_json)
     sidecar_info = load_subject_sidecar(subject_json, num_frames=decoded_t, fps=fps)
     subject_bboxes = sidecar_info.bboxes
+    imgsz = int(getattr(stack.preprocess, "imgsz", 640) or 640)
+    debug_frames: set[int] = set()
+    if filters is not None:
+        debug_frames = set(getattr(filters, "debug_subject_frames", None) or [])
     if has_sidecar:
         logger.info(
             "session_close sidecar session_id=%s bbox_space=%s anchors=%s/%s path=%s",
@@ -340,87 +347,93 @@ def _export_session_subject_iou(
         )
     session_poses: list[np.ndarray] = []
     session_kms: list[np.ndarray] = []
-    prev_subject_bbox: np.ndarray | None = None
     sc_stats = {
         "frames_anchor_nonnull": 0,
         "frames_with_detections": 0,
         "frames_pick_iou_ok": 0,
         "frames_pose_any_kp": 0,
+        "max_iou_anchor_sample": 0.0,
+        "anchor_remap_c1_live_frames": 0,
+        "anchor_remap_geometric_frames": 0,
     }
-    coord_frame = sidecar_info.bbox_coord_frame
+    max_iou_seen = 0.0
+    prev_subject_bbox: np.ndarray | None = None
 
     for prep, lb_meta, raw_out in zip(
         prepared_list, meta_list, raw_batches, strict=True
     ):
         dets = decode_end2end(raw_out, lb_meta, stack.decode_conf)
-        mock = detections_to_mock(dets, orig_shape=(lb_meta.orig_h, lb_meta.orig_w))
-        if cfg.tracker_kind == "none":
-            mock = _none_tracker_pick(mock)
-        else:
-            mock = stack.tracker.update(mock, prep)
-        mock = ensure_track_ids(mock)
+        mock_pre = detections_to_mock(dets, orig_shape=(lb_meta.orig_h, lb_meta.orig_w))
 
         frame_idx = len(session_poses)
-        target = subject_bboxes[frame_idx] if frame_idx < len(subject_bboxes) else None
-        if target is not None:
+        raw_anchor = (
+            subject_bboxes[frame_idx] if frame_idx < len(subject_bboxes) else None
+        )
+        nat_w, nat_h = (
+            native_frame_wh[frame_idx]
+            if frame_idx < len(native_frame_wh)
+            else (lb_meta.orig_w, lb_meta.orig_h)
+        )
+        prep_w, prep_h = lb_meta.orig_w, lb_meta.orig_h
+
+        anchor_prep = None
+        if raw_anchor is not None:
             sc_stats["frames_anchor_nonnull"] += 1
-        if (
-            target is not None
-            and coord_frame not in ("prep", "infer", "prepare_infer")
-            and frame_idx < len(native_frame_wh)
-        ):
-            nat_w, nat_h = native_frame_wh[frame_idx]
-            target = remap_bbox_norm_native_to_prep(
-                target,
-                native_w=nat_w,
-                native_h=nat_h,
-                prep_w=lb_meta.orig_w,
-                prep_h=lb_meta.orig_h,
+            anchor_prep, remap_tag, frame_iou = resolve_session_anchor_prep_norm(
+                raw_anchor,
+                sidecar=sidecar_info,
+                native_wh=(nat_w, nat_h),
+                prep_wh=(prep_w, prep_h),
+                lb_meta=lb_meta,
+                mock_pre=mock_pre,
+                imgsz=imgsz,
+                min_iou=min_iou,
             )
-        n_det = int(mock.boxes.xyxy.shape[0])
+            max_iou_seen = max(max_iou_seen, frame_iou)
+            if remap_tag == "c1_live":
+                sc_stats["anchor_remap_c1_live_frames"] += 1
+            else:
+                sc_stats["anchor_remap_geometric_frames"] += 1
+            if frame_idx in debug_frames and anchor_prep is not None:
+                dets_n = xyxy_pixels_to_norm(mock_pre.boxes.xyxy, prep_w, prep_h)[:3]
+                logger.warning(
+                    "subject_debug frame=%s native_wh=%s prep_wh=%s "
+                    "anchor_native=%s anchor_prep=%s max_iou=%.4f remap=%s dets_norm=%s",
+                    frame_idx,
+                    (nat_w, nat_h),
+                    (prep_w, prep_h),
+                    raw_anchor.tolist(),
+                    anchor_prep.tolist(),
+                    frame_iou,
+                    remap_tag,
+                    [d.tolist() for d in dets_n],
+                )
+
+        n_det = int(mock_pre.boxes.xyxy.shape[0])
         if n_det > 0:
             sc_stats["frames_with_detections"] += 1
 
-        pick: int | None
-        if has_sidecar:
-            if target is None:
-                pick = None
-                prev_subject_bbox = None
-            else:
-                pick = pick_detection_for_session(
-                    mock,
-                    infer_w=lb_meta.orig_w,
-                    infer_h=lb_meta.orig_h,
-                    target_bbox_norm=target,
-                    prev_bbox_norm=None,
-                    min_iou=min_iou,
-                )
-                prev_subject_bbox = (
-                    picked_bbox_norm(mock, pick, lb_meta.orig_w, lb_meta.orig_h)
-                    if pick is not None
-                    else None
-                )
-        else:
-            pick = pick_detection_for_session(
-                mock,
-                infer_w=lb_meta.orig_w,
-                infer_h=lb_meta.orig_h,
-                target_bbox_norm=None,
-                prev_bbox_norm=prev_subject_bbox,
-                min_iou=min_iou,
-            )
-            if pick is not None:
-                prev_subject_bbox = picked_bbox_norm(
-                    mock, pick, lb_meta.orig_w, lb_meta.orig_h
-                )
+        pick = pick_session_detection_pre_tracker(
+            mock_pre,
+            anchor_prep,
+            prep_w=prep_w,
+            prep_h=prep_h,
+            min_iou=min_iou,
+            prev_bbox_norm=prev_subject_bbox,
+            use_sidecar_anchor=has_sidecar,
+        )
+        if has_sidecar and raw_anchor is None:
+            prev_subject_bbox = None
+        elif pick is not None:
+            prev_subject_bbox = picked_bbox_norm(mock_pre, pick, prep_w, prep_h)
 
         if pick is None:
             session_poses.append(NAN_POSE.copy())
             session_kms.append(EMPTY_KP_MASK.copy())
         else:
             sc_stats["frames_pick_iou_ok"] += 1
-            xyn = mock.keypoints.xyn
-            conf = mock.keypoints.conf
+            xyn = mock_pre.keypoints.xyn
+            conf = mock_pre.keypoints.conf
             assert xyn is not None and conf is not None
             pose8 = build_masked_pose_from_xyn(xyn[pick], conf[pick], min_kp_conf=min_kp)
             if not np.isnan(pose8).all():
@@ -434,6 +447,7 @@ def _export_session_subject_iou(
     user_dir = clip_root / f"user_{uid}"
     valid = write_session_close_artifacts(user_dir, poses_full_arr, km_arr)
     valid_frames = int(valid.sum())
+    sc_stats["max_iou_anchor_sample"] = round(max_iou_seen, 4)
 
     if has_sidecar and sc_stats["frames_pick_iou_ok"] == 0:
         logger.warning(
@@ -449,17 +463,25 @@ def _export_session_subject_iou(
     user_export_meta = {
         "frame_policy": "session_subject_iou",
         "iamodel_subject_bbox_json": str(sidecar_path.resolve()),
+        "iamodel_subject_bbox_sidecar_resolved": str(sidecar_path.resolve()),
         "iamodel_session_close_export": True,
         "session_id": sidecar_info.session_id,
         "bbox_space": sidecar_info.bbox_space,
         "bbox_coord_frame": sidecar_info.bbox_coord_frame,
+        "coord_width": sidecar_info.coord_width,
+        "coord_height": sidecar_info.coord_height,
+        "bbox_norm_divisor": sidecar_info.bbox_norm_divisor,
         "session_close_min_iou": min_iou,
+        "match_pre_tracker": True,
+        "max_iou_anchor_sample": sc_stats["max_iou_anchor_sample"],
         "sidecar_loaded": bool(has_sidecar),
         "bbox_by_frame_len": sidecar_info.bbox_by_frame_len,
         "frames_anchor_nonnull": sc_stats["frames_anchor_nonnull"],
         "frames_with_detections": sc_stats["frames_with_detections"],
         "frames_pick_iou_ok": sc_stats["frames_pick_iou_ok"],
         "frames_pose_any_kp": sc_stats["frames_pose_any_kp"],
+        "anchor_remap_c1_live_frames": sc_stats["anchor_remap_c1_live_frames"],
+        "anchor_remap_geometric_frames": sc_stats["anchor_remap_geometric_frames"],
         "valid_mask_sum": valid_frames,
         "poses_full_shape": [int(t), 8, 2],
     }
@@ -515,6 +537,7 @@ def _export_session_subject_iou(
         "bbox_space": sidecar_info.bbox_space,
         "bbox_coord_frame": sidecar_info.bbox_coord_frame,
         "sidecar_anchor_nonnull": sidecar_info.anchor_nonnull,
+        "session_close_match": sc_stats,
     }
     (clip_root / "meta.json").write_text(
         json.dumps(meta, indent=2, ensure_ascii=False) + "\n",
