@@ -79,7 +79,11 @@ def extract_clip_c1_like(
     frame_count = timing.frame_count or len(frames)
     cfg = stack.extract_cfg
 
+    native_frame_wh: list[tuple[int, int]] = []
+
     def _prep_one(frame: np.ndarray):
+        fh, fw = frame.shape[:2]
+        native_frame_wh.append((int(fw), int(fh)))
         prep = prepare_infer_image(frame, stack.preprocess)
         boxed, lb_meta = letterbox(prep, stack.preprocess)
         return prep, lb_meta, to_tensor(boxed, stack.preprocess)
@@ -123,6 +127,7 @@ def extract_clip_c1_like(
             frame_count=frame_count,
             timing=timing,
             decoded_t=decoded_t,
+            native_frame_wh=native_frame_wh,
             cat=cat,
             cfg=cfg,
             t0=t0,
@@ -293,6 +298,7 @@ def _export_session_subject_iou(
     frame_count: int,
     timing: Any,
     decoded_t: int,
+    native_frame_wh: list[tuple[int, int]],
     cat: str | int | None,
     cfg: Any,
     t0: float,
@@ -304,12 +310,13 @@ def _export_session_subject_iou(
     import time
 
     from pose_core.clip_extractor import ClipPoseResult
-    from pose_core.export import build_masked_pose_from_xyn, write_session_close_artifacts
+    from pose_core.export import build_masked_pose_from_xyn, keypoint_mask, write_session_close_artifacts
     from pose_core.postprocess import decode_end2end
     from pose_core.session_subject import (
-        load_subject_track,
+        load_subject_sidecar,
         pick_detection_for_session,
         picked_bbox_norm,
+        remap_bbox_norm_native_to_prep,
         subject_sidecar_loaded,
     )
     from pose_core.yolo_result import detections_to_mock, ensure_track_ids
@@ -318,11 +325,29 @@ def _export_session_subject_iou(
     uid = int(getattr(cfg, "session_close_user_id", 0))
     min_kp = float(getattr(cfg, "min_kp_conf", 0.5))
 
+    sidecar_path = Path(subject_json)
     has_sidecar = subject_sidecar_loaded(subject_json)
-    subject_bboxes = load_subject_track(subject_json, num_frames=decoded_t, fps=fps)
+    sidecar_info = load_subject_sidecar(subject_json, num_frames=decoded_t, fps=fps)
+    subject_bboxes = sidecar_info.bboxes
+    if has_sidecar:
+        logger.info(
+            "session_close sidecar session_id=%s bbox_space=%s anchors=%s/%s path=%s",
+            sidecar_info.session_id,
+            sidecar_info.bbox_space,
+            sidecar_info.anchor_nonnull,
+            len(subject_bboxes),
+            sidecar_path.name,
+        )
     session_poses: list[np.ndarray] = []
     session_kms: list[np.ndarray] = []
     prev_subject_bbox: np.ndarray | None = None
+    sc_stats = {
+        "frames_anchor_nonnull": 0,
+        "frames_with_detections": 0,
+        "frames_pick_iou_ok": 0,
+        "frames_pose_any_kp": 0,
+    }
+    coord_frame = sidecar_info.bbox_coord_frame
 
     for prep, lb_meta, raw_out in zip(
         prepared_list, meta_list, raw_batches, strict=True
@@ -337,6 +362,25 @@ def _export_session_subject_iou(
 
         frame_idx = len(session_poses)
         target = subject_bboxes[frame_idx] if frame_idx < len(subject_bboxes) else None
+        if target is not None:
+            sc_stats["frames_anchor_nonnull"] += 1
+        if (
+            target is not None
+            and coord_frame not in ("prep", "infer", "prepare_infer")
+            and frame_idx < len(native_frame_wh)
+        ):
+            nat_w, nat_h = native_frame_wh[frame_idx]
+            target = remap_bbox_norm_native_to_prep(
+                target,
+                native_w=nat_w,
+                native_h=nat_h,
+                prep_w=lb_meta.orig_w,
+                prep_h=lb_meta.orig_h,
+            )
+        n_det = int(mock.boxes.xyxy.shape[0])
+        if n_det > 0:
+            sc_stats["frames_with_detections"] += 1
+
         pick: int | None
         if has_sidecar:
             if target is None:
@@ -374,12 +418,13 @@ def _export_session_subject_iou(
             session_poses.append(NAN_POSE.copy())
             session_kms.append(EMPTY_KP_MASK.copy())
         else:
+            sc_stats["frames_pick_iou_ok"] += 1
             xyn = mock.keypoints.xyn
             conf = mock.keypoints.conf
             assert xyn is not None and conf is not None
             pose8 = build_masked_pose_from_xyn(xyn[pick], conf[pick], min_kp_conf=min_kp)
-            from pose_core.export import keypoint_mask
-
+            if not np.isnan(pose8).all():
+                sc_stats["frames_pose_any_kp"] += 1
             session_kms.append(keypoint_mask(pose8))
             session_poses.append(pose8)
 
@@ -389,6 +434,39 @@ def _export_session_subject_iou(
     user_dir = clip_root / f"user_{uid}"
     valid = write_session_close_artifacts(user_dir, poses_full_arr, km_arr)
     valid_frames = int(valid.sum())
+
+    if has_sidecar and sc_stats["frames_pick_iou_ok"] == 0:
+        logger.warning(
+            "session_close clip %s: 0 picks IoU>=%.2f (dets=%s anchors=%s) — "
+            "revisa remap native→prep o bbox_space=%s",
+            clip_name,
+            min_iou,
+            sc_stats["frames_with_detections"],
+            sc_stats["frames_anchor_nonnull"],
+            sidecar_info.bbox_space,
+        )
+
+    user_export_meta = {
+        "frame_policy": "session_subject_iou",
+        "iamodel_subject_bbox_json": str(sidecar_path.resolve()),
+        "iamodel_session_close_export": True,
+        "session_id": sidecar_info.session_id,
+        "bbox_space": sidecar_info.bbox_space,
+        "bbox_coord_frame": sidecar_info.bbox_coord_frame,
+        "session_close_min_iou": min_iou,
+        "sidecar_loaded": bool(has_sidecar),
+        "bbox_by_frame_len": sidecar_info.bbox_by_frame_len,
+        "frames_anchor_nonnull": sc_stats["frames_anchor_nonnull"],
+        "frames_with_detections": sc_stats["frames_with_detections"],
+        "frames_pick_iou_ok": sc_stats["frames_pick_iou_ok"],
+        "frames_pose_any_kp": sc_stats["frames_pose_any_kp"],
+        "valid_mask_sum": valid_frames,
+        "poses_full_shape": [int(t), 8, 2],
+    }
+    (user_dir / "meta.json").write_text(
+        json.dumps(user_export_meta, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
 
     if cfg.save_clip_mp4:
         dest_mp4 = clip_root / "clip.mp4"
@@ -431,8 +509,12 @@ def _export_session_subject_iou(
         "iamodel_decode_backend": pipe_cfg.decode_backend,
         "iamodel_preprocess_workers": pipe_cfg.preprocess_workers,
         "iamodel_session_close_export": True,
-        "iamodel_subject_bbox_json": str(Path(subject_json).resolve()),
+        "iamodel_subject_bbox_json": str(sidecar_path.resolve()),
         "iamodel_session_close_min_iou": min_iou,
+        "iamodel_session_close_stats": sc_stats,
+        "bbox_space": sidecar_info.bbox_space,
+        "bbox_coord_frame": sidecar_info.bbox_coord_frame,
+        "sidecar_anchor_nonnull": sidecar_info.anchor_nonnull,
     }
     (clip_root / "meta.json").write_text(
         json.dumps(meta, indent=2, ensure_ascii=False) + "\n",
