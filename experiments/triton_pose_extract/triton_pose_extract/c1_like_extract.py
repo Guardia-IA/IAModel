@@ -134,6 +134,7 @@ def extract_clip_c1_like(
             t_decode=t_decode,
             t_prep=t_prep,
             t2=t2,
+            filters=filters,
         )
         return result, timings
 
@@ -305,6 +306,7 @@ def _export_session_subject_iou(
     t_decode: float,
     t_prep: float,
     t2: float,
+    filters: Any | None = None,
 ) -> tuple[Any, dict[str, float]]:
     """Misma lógica que ClipExtractor.session_close + subject_track (pose_core)."""
     import time
