@@ -150,3 +150,26 @@ Incluir `pose_bundle_id` en `meta.json` de clips nuevos (p. ej. `yolo26s-pose_v1
 | ¿Smoke? | `check_triton_pose_batch.py --url … --model yolo26s-pose` |
 
 Copia en C1: `vendor/kanvis-triton-pose` vía [`scripts/export_bundle_for_c1.sh`](../scripts/export_bundle_for_c1.sh).
+
+---
+
+## Cierre de sesión C1 (`--session-close`)
+
+Listener: `extract_clips.py extract … --session-close [--subject-bbox-json subject_track.json]` (motor **`c1_like`** en IAModel).
+
+| Modo | Comportamiento |
+|------|----------------|
+| Sin JSON | Primary user + relajación BODY_VISIBLE → un `user_*`, grid **T = frames MP4**. |
+| Con **`--subject-bbox-json`** | Contrato **`session_close_track_vote_v1`** en **`pose_core.session_close_track_vote`**: decode **T** → **ByteTrack offline** → votos IoU en anclas sidecar → export track ganador en **0…T−1** (`session_close_min_iou=0.3`). |
+
+IAModel **no duplica** la lógica: mismo bucle que `ClipExtractor` — acumular `pretrack_mocks` + `tracked_mocks`, luego:
+
+```python
+from pose_core.session_close_track_vote import run_session_close_track_vote_export
+```
+
+Alternativa válida: `ClipExtractor(..., session_close=True, subject_track_json=…)` si el pipeline usa el extractor vendor directamente.
+
+Sidecar: `c1_session_subject_v1`; **`coord_*` en espacio infer** (p. ej. 640×360). Meta `user_0`: `session_close_contract`, `session_close_track_id`, `iou_vote_frames`, `valid_mask_sum`, `frames_track_present`.
+
+Dependencia: repo **`kanvis-triton-pose`** en `KANVIS_TRITON_POSE_ROOT` con módulo `session_close_track_vote.py`. Ver también [`MENSAJE_IAMODEL_C1_SESSION_CLOSE_EXTRACT.md`](MENSAJE_IAMODEL_C1_SESSION_CLOSE_EXTRACT.md).

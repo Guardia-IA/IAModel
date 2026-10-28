@@ -127,5 +127,47 @@ Criterios PASS (script + `--validate`):
 
 ---
 
+## Sidecar C1 desplegado (oct 2025) — `c1_session_subject_v1`
+
+Fuente C1: `kanvis-monitoring` → `docs/SESSION_CLOSE_MULTI_PERSON_SUBJECT.md`.
+
+| Campo / comportamiento | Antes (piloto p. ej. `240e753f`) | Ahora (post-deploy) |
+|------------------------|----------------------------------|---------------------|
+| Normalización bbox | A menudo `coord_*` 1280×720 + `bbox_norm_divisor: c1_live` | **Mismo WxH que inferencia YOLO** (p. ej. **640×360**); `coord_width` / `coord_height` = ese espacio |
+| Samples | Sparse, sin pre-roll | ~cada **0,5 s**; **no** sustituir última muestra en ingest continuo |
+| Pre-roll | — | Historial bbox por track **antes** de abrir sesión → `subject_bbox_samples` + `first_presence` (log `continuous_session_subject_preopen_samples`) |
+| Grid JSON | `bbox_by_frame` denso | Igual (`frames` + `bbox_by_frame`) |
+
+**Matcher IAModel:** sigue `pose_core.session_close_match` (import vendor). Con `coord_* == prep_wh` del decode, el remap `c1_live` es **identidad** en escala; IoU en anclas debería acercarse a **`min_iou=0.3`** tras sidecar nuevo. Pre-roll alarga ventana con ancla; **no** sustituye export **0…T−1** del track offline (pendiente **votos IoU + track completo** en triton-pose).
+
+**Run C (`session_close_track_vote_v1`):** IAModel `c1_like` → `run_session_close_track_vote_export` (misma secuencia que `ClipExtractor`: decode → pretrack → `tracker.update` → votos → export **0…T−1**). Meta: `session_close_track_id`, `iou_vote_frames`, `iou_vote_track_scores`, `frames_track_present`.
+
+### Contrato implementación (triton-pose → IAModel)
+
+1. Por clip: infer + **ByteTrack** en todos los frames (`keep_all` por track).
+2. Solo en índices con `bbox_by_frame[i] ≠ null`: ancla prep (`resolve_session_anchor_prep_norm`); por cada det **tracked** con IoU ≥ `session_close_min_iou`, **`votes[track_id] += iou`**.
+3. `winner = argmax(votes)`; export **`users[winner].poses_full`** recortado/rellenado a **T**; `user_{session_close_user_id}`.
+4. Meta: `match_pre_tracker: false`, `session_close_track_vote: true`, stats anteriores + `session_close_track_id`, `iou_vote_frames`.
+5. Sin sidecar: sin cambio (entrega 1 / `prev_bbox` pre-tracker).
+
+**Sesiones ref.:**
+
+| session_id | Notas |
+|------------|--------|
+| `240e753f` | Sidecar legacy 1280×720; IoU &lt; 0,3; ffprobe OK |
+| `cc0f5354…` | Re-run post sidecar denso (28 oct) |
+| **`bc808fe9`** | Sidecar **640×360** post-fix; 154 f @ 12 fps; **83/154** anclas (f **36–118**, ~3–9,8 s); 5 samples; `preopen_seconds=0`, `session_subject_absent`; huecos **0…3 s** y **10…13 s** sin ancla — **esperado** hasta **votos IoU + track offline 0…T−1** en triton-pose |
+
+Diagnóstico:
+
+```bash
+cd ~/IAModel/experiments/triton_pose_extract
+export KANVIS_TRITON_POSE_ROOT=... TRITON_EXTRACT_DECODE_BACKEND=opencv
+python3 scripts/diagnose_session_subject_frame.py \
+  --clip .../clip_buffer.mp4 --subject-json .../subject_track.json --scan-anchors
+```
+
+---
+
 Saludos,  
 IAModel / triton_pose_extract

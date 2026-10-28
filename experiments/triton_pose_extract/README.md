@@ -129,7 +129,7 @@ Re-analizar un informe con pendientes manuales (p.ej. tras contar npy):
 
 **`[SKIP] sin carpetas user_*` / `single_user_only y 2 tracks`:** el clip se procesó pero **no se exportó npy** (varias personas en cámara o filtros de calidad). Es normal en `clip_buffer` de sesiones online; no es fallo de red Triton. Para prueba rápida usa un `.mp4` con una persona: `./run_extract.sh smoke-one --video …`
 
-**Cierre sesión C1 + sidecar:** requiere `pose_core.session_close_match` en kanvis-triton-pose (**≥ bf03a0f**, `resolve_session_anchor_prep_norm`, pre-ByteTrack IoU). IAModel importa ese módulo; no duplica matcher.
+**Cierre sesión C1 + sidecar:** kanvis-triton-pose con `pose_core.session_close_track_vote` (`run_session_close_track_vote_export`, contrato **`session_close_track_vote_v1`**: ByteTrack offline → votos IoU en anclas → export track ganador **0…T−1**). IAModel `c1_like` llama la misma API que `ClipExtractor`; `session_close_min_iou=0.3`. Ver `IAModel/docs/AGENT_TRITON_NPY_BRIEF.md` (§ `--session-close`).
 
 **Cierre sesión C1 (clip = plano entero, 1 persona por sesión):** no uses `--no-single-user-only` (desactiva `export_primary_user`). Usa:
 
