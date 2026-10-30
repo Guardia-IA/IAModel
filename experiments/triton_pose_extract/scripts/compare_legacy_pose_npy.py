@@ -261,7 +261,7 @@ def main() -> int:
         if not args.video or not args.video.is_file():
             print("ERROR: indica --video existente (o --skip-extract)", file=sys.stderr)
             return 2
-        from triton_pose_extract.triton_health import check_model_ready
+        from triton_pose_extract.health import check_model_ready
         from triton_pose_extract.settings import ExtractSettings
 
         cfg_path = args.config or PKG / "triton_pose_extract_config.json"
