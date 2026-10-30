@@ -1,29 +1,31 @@
 #!/usr/bin/env python3
 """
-Compara poses_full.npy de un extract antiguo (p. ej. pose_extractor_clean.py)
-con una extracción nueva del mismo MP4 vía triton_pose_extract (batch, sin --session-close).
+Compara poses_full.npy de un extract antiguo (pose_extractor_clean o triton previo)
+con una extracción **idéntica al batch actual** (mismo comando que run_extract.sh extract / extract-csv).
 
-Uso:
-  export TRITON_EXTRACT_DECODE_BACKEND=opencv   # recomendado si el npy viejo es de clip.mp4 data_result
-  python3 scripts/compare_legacy_pose_npy.py \\
-    --video /path/clip.mp4 \\
-    --reference /path/data_result/.../user_2/poses_full.npy \\
-    [--epsilon 1e-3] [--json report.json]
+KANVIS_TRITON_POSE_ROOT **no** es el contenedor Triton: es la ruta en el **host** al clone
+``kanvis-triton-pose`` (Python importa ``pose_core``). Triton solo atiende gRPC (:47811).
 
-  # Solo comparar dos npy ya generados (sin Triton):
-  python3 scripts/compare_legacy_pose_npy.py \\
-    --reference ref/poses_full.npy --fresh /tmp/out/.../user_0/poses_full.npy --skip-extract
+Flujo típico wudebian (mismo venv y env que extract-csv):
 
-Criterio PASS (por defecto): mismas filas T (±0), valid_mask idéntico, max|Δ| coords < epsilon
-en filas donde ambos valid_mask son true.
+  cd ~/IAModel/experiments/triton_pose_extract
+  source ../training/venv/bin/activate   # o .venv del piloto
+  export KANVIS_TRITON_POSE_ROOT=~/kanvis/piloto_v1/kanvis-triton-pose
+  export KANVIS_TRITON_URL=127.0.0.1:47811
+  export TRITON_EXTRACT_DECODE_BACKEND=opencv   # si el npy es de data_result/clip.mp4
 
-Nota: YOLO local (clean) vs Triton TRT pueden diferir ligeramente aunque el pipeline sea equivalente;
-epsilon 1e-3 suele bastar para coords normalizadas; sube a 1e-2 si solo buscas paridad operativa.
+  ./run_extract.sh compare-legacy \\
+    --video /media/.../data_result/3/mi_clip/clip.mp4 \\
+    --reference /media/.../data_result/3/mi_clip/user_2/poses_full.npy
+
+Criterio PASS: mismo T, valid_mask igual, max|Δ| coords < epsilon en filas válidas.
 """
 from __future__ import annotations
 
 import argparse
 import json
+import os
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -152,49 +154,55 @@ def _run_fresh_extract(
     config: Path | None,
     triton_url: str | None,
     cat: str,
+    validate: bool,
+    verbose: bool,
 ) -> Path:
-    from extract_clips import _load_raw_config
-    from triton_pose_extract.c1_like_extract import extract_clip_c1_like
-    from triton_pose_extract.extract_stack import build_extract_stack
-    from triton_pose_extract.paths import ensure_pose_core_importable
-    from triton_pose_extract.pipeline_config import load_pipeline_config
-    from triton_pose_extract.settings import ExtractSettings
+    """Llama ``extract_clips.py extract`` (misma ruta que ``./run_extract.sh extract``)."""
+    out_base = work / "compare_out"
+    out_base.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        sys.executable,
+        str(PKG / "extract_clips.py"),
+        "extract",
+        "--video",
+        str(video),
+        "--out",
+        str(out_base),
+        "--cat",
+        cat,
+        "--parallel",
+        "1",
+    ]
+    if validate:
+        cmd.append("--validate")
+    if config:
+        cmd.extend(["--config", str(config)])
+    if triton_url:
+        cmd.extend(["--triton-url", triton_url])
+    if verbose:
+        cmd.append("-v")
 
-    class _Args:
-        config = str(config) if config else ""
-
-    raw = _load_raw_config(_Args())
-    cfg_path = config or PKG / "triton_pose_extract_config.json"
-    settings = ExtractSettings.load(
-        cfg_path,
-        triton_url=triton_url or None,
-        require_pose_repo=True,
-    )
-    pipe = load_pipeline_config(raw, output_base=work)
-    pipe.filters.session_close_export = False
-    pipe.filters.subject_bbox_json = None
-    pipe.filters.export_track_id = None
-    strict = pipe.filters.single_user_only and not pipe.filters.export_primary_user_on_multi_track
-    settings.single_user_only = strict
-    ensure_pose_core_importable(settings.triton_pose_repo)
-
-    stack = build_extract_stack(settings)
-    stack.tracker.reset()
-    result, _timings = extract_clip_c1_like(
-        stack,
-        video,
-        out_dir=work / "compare_out",
-        cat=cat,
-        clip_folder=video.stem,
-        pipe_cfg=pipe.extract,
-        filters=pipe.filters,
-    )
-    if not result.user_dirs:
+    env = os.environ.copy()
+    env["PYTHONPATH"] = f"{PKG}{os.pathsep}{env.get('PYTHONPATH', '')}"
+    env["PYTHONUNBUFFERED"] = "1"
+    if verbose:
+        print("Re-extract (batch, sin --session-close):", " ".join(cmd), flush=True)
+    proc = subprocess.run(cmd, cwd=str(PKG), env=env)
+    if proc.returncode != 0:
         raise RuntimeError(
-            "Extract sin user_* (multi-persona filtrada, decode vacío o single_user_only). "
-            "Prueba --no-single-user-only en extract manual o revisa el clip."
+            f"extract_clips.py extract terminó con código {proc.returncode}. "
+            "Revisa Triton (./run_extract.sh check-triton), KANVIS_TRITON_POSE_ROOT y venv."
         )
-    return Path(result.out_dir)
+
+    clip_root = out_base / cat / video.stem
+    if not clip_root.is_dir():
+        raise FileNotFoundError(f"No existe salida esperada: {clip_root}")
+    if not list(clip_root.glob("user_*")):
+        raise RuntimeError(
+            f"Extract sin user_* en {clip_root} (multi-persona filtrada o decode vacío). "
+            "Misma política que extract-csv; prueba otro clip o revisa meta.json."
+        )
+    return clip_root
 
 
 def main() -> int:
@@ -220,6 +228,11 @@ def main() -> int:
     ap.add_argument("--cat", type=str, default="compare", help="Subcarpeta cat en salida")
     ap.add_argument("--epsilon", type=float, default=EPS_DEFAULT)
     ap.add_argument("--json", type=Path, default=None, help="Escribir informe JSON")
+    ap.add_argument(
+        "--no-validate",
+        action="store_true",
+        help="No pasar --validate al extract (más rápido)",
+    )
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args()
 
@@ -277,6 +290,8 @@ def main() -> int:
                 config=args.config,
                 triton_url=args.triton_url or None,
                 cat=args.cat,
+                validate=not args.no_validate,
+                verbose=args.verbose,
             )
             if args.fresh_user_dir:
                 fresh_user_dir = args.fresh_user_dir.resolve()

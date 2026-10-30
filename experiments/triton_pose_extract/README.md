@@ -129,9 +129,26 @@ Re-analizar un informe con pendientes manuales (p.ej. tras contar npy):
 
 **`[SKIP] sin carpetas user_*` / `single_user_only y 2 tracks`:** el clip se procesó pero **no se exportó npy** (varias personas en cámara o filtros de calidad). Es normal en `clip_buffer` de sesiones online; no es fallo de red Triton. Para prueba rápida usa un `.mp4` con una persona: `./run_extract.sh smoke-one --video …`
 
-**Comparar datos antiguos (`pose_extractor_clean`) vs extract actual:**  
-`python3 scripts/compare_legacy_pose_npy.py --video clip.mp4 --reference .../user_*/poses_full.npy`  
-(batch normal, sin `--session-close`; requiere Triton). Ver `--help`.
+**Comparar datos antiguos vs extract Triton actual (mismo pipeline que `extract-csv`):**
+
+| Qué | Dónde |
+|-----|--------|
+| **Triton** | Contenedor Docker `triton-pose` (inferencia GPU, puerto **47811** gRPC) |
+| **Extract Python** | **Host** (wudebian): venv + `~/IAModel/experiments/triton_pose_extract` |
+| **`KANVIS_TRITON_POSE_ROOT`** | Clone **`kanvis-triton-pose`** en disco del host (librería `pose_core`), **no** va dentro del contenedor Triton |
+
+```bash
+cd IAModel/experiments/triton_pose_extract
+source ../training/venv/bin/activate
+export KANVIS_TRITON_POSE_ROOT=~/kanvis/piloto_v1/kanvis-triton-pose   # ajustar
+export KANVIS_TRITON_URL=127.0.0.1:47811
+./run_extract.sh check-triton
+./run_extract.sh compare-legacy \
+  --video /ruta/data_result/CAT/clip/clip.mp4 \
+  --reference /ruta/data_result/CAT/clip/user_0/poses_full.npy
+```
+
+Batch masivo (como preparaste clips): `./run_extract.sh extract-csv --input-root … --output-base …` — el compare usa el mismo motor **`c1_like`** + config JSON, **sin** `--session-close`.
 
 **Cierre sesión C1 + sidecar:** kanvis-triton-pose con `pose_core.session_close_track_vote` (`run_session_close_track_vote_export`, contrato **`session_close_track_vote_v1`**: ByteTrack offline → votos IoU en anclas → export track ganador **0…T−1**). IAModel `c1_like` llama la misma API que `ClipExtractor`; `session_close_min_iou=0.3`. Ver `IAModel/docs/AGENT_TRITON_NPY_BRIEF.md` (§ `--session-close`).
 

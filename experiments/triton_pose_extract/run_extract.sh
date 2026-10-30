@@ -32,6 +32,9 @@ case "$CMD" in
   smoke-one)
     "$PY" smoke_one_clip.py "$@"
     ;;
+  compare-legacy)
+    "$PY" scripts/compare_legacy_pose_npy.py "$@"
+    ;;
   help|*)
     cat <<EOF
 Uso: $0 <comando> [args]
@@ -42,10 +45,14 @@ Uso: $0 <comando> [args]
   bench-csv --input-root DIR          Muestra (50 clips) + ETA batch real
   bench-analyze REPORT.json           Re-proyectar ETA desde un informe
   extract --video FILE --out DIR      Un clip o carpeta suelta
+  compare-legacy --video MP4 --reference .../poses_full.npy
+                                      Re-extract batch + comparar npy antiguo
   smoke-one [--video PATH]            Prueba 1 clip
 
 Variables:
-  KANVIS_TRITON_POSE_ROOT, KANVIS_TRITON_URL (default config: kanvis-pilot.ai:47811)
+  KANVIS_TRITON_POSE_ROOT  Ruta al repo kanvis-triton-pose en el HOST (pose_core Python)
+  KANVIS_TRITON_URL        gRPC Triton (contenedor suele ser 127.0.0.1:47811 en el host)
+  TRITON_EXTRACT_DECODE_BACKEND  opencv | ffmpeg_nvdec (paridad clip.mp4 → opencv)
 
 Flujo típico (mismo equipo que Triton):
   $0 check-triton
