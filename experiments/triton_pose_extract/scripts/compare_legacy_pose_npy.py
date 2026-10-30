@@ -147,6 +147,39 @@ def _pick_fresh_user_dir(clip_root: Path, ref: np.ndarray, ref_vm: np.ndarray) -
     return best
 
 
+def _resolve_extract_clip_root(out_base: Path, cat: str, video: Path) -> Path:
+    """Misma regla que ``discover_videos``: ``clip.mp4`` → carpeta padre, no stem ``clip``."""
+    if video.name == "clip.mp4":
+        folder = video.parent.name
+    else:
+        folder = video.stem
+    clip_root = out_base / cat / folder
+    if clip_root.is_dir() and list(clip_root.glob("user_*")):
+        return clip_root
+
+    report_path = out_base / "_extract_report.json"
+    if report_path.is_file():
+        data = json.loads(report_path.read_text(encoding="utf-8"))
+        for row in data.get("results") or []:
+            if row.get("ok") and row.get("out_dir"):
+                p = Path(str(row["out_dir"]))
+                if p.is_dir() and list(p.glob("user_*")):
+                    return p
+
+    cat_dir = out_base / cat
+    if cat_dir.is_dir():
+        candidates = [
+            d for d in cat_dir.iterdir() if d.is_dir() and list(d.glob("user_*"))
+        ]
+        if len(candidates) == 1:
+            return candidates[0]
+
+    raise FileNotFoundError(
+        f"No se encontró salida con user_* bajo {out_base / cat} "
+        f"(esperado {folder}); revisa _extract_report.json"
+    )
+
+
 def _run_fresh_extract(
     video: Path,
     work: Path,
@@ -194,15 +227,7 @@ def _run_fresh_extract(
             "Revisa Triton (./run_extract.sh check-triton), KANVIS_TRITON_POSE_ROOT y venv."
         )
 
-    clip_root = out_base / cat / video.stem
-    if not clip_root.is_dir():
-        raise FileNotFoundError(f"No existe salida esperada: {clip_root}")
-    if not list(clip_root.glob("user_*")):
-        raise RuntimeError(
-            f"Extract sin user_* en {clip_root} (multi-persona filtrada o decode vacío). "
-            "Misma política que extract-csv; prueba otro clip o revisa meta.json."
-        )
-    return clip_root
+    return _resolve_extract_clip_root(out_base, cat, video)
 
 
 def main() -> int:
