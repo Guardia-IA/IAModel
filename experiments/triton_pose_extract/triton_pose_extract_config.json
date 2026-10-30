@@ -35,13 +35,18 @@
   },
   "extract": {
     "engine": "c1_like",
-    "_engine_comment": "c1_like = NVDEC FFmpeg + preprocess paralelo (solo IAModel). clip_extractor = OpenCV en pose_core",
+    "_engine_comment": "c1_like = motor IAModel (mismo grafo que C1 al cierre: run_extract.sh). clip_extractor = ClipExtractor vendor",
     "decode_backend": "opencv",
-    "_decode_backend_comment": "Gold N2 = paridad C1 clip_buffer_reinfer (OpenCV VideoCapture). ffmpeg_nvdec opcional batch 5090",
+    "_decode_backend_comment": "Gold N2 = paridad C1 clip_buffer_reinfer (OpenCV VideoCapture). ffmpeg_nvdec opcional batch 5090 (NO paridad)",
     "decode_c1_pixel_parity": true,
     "preprocess_workers": 8,
     "fallback_opencv_decode": true,
-    "ffmpeg_hwaccel": "cuda"
+    "ffmpeg_hwaccel": "cuda",
+    "pipeline_enabled": true,
+    "_pipeline_comment": "Streaming decode → prep → Triton (infer_inflight chunks en vuelo) → tracker en orden. Misma salida que secuencial; env TRITON_EXTRACT_PIPELINE=0 para A/B. Solo batch (session-close sigue secuencial).",
+    "infer_inflight": 3,
+    "ffprobe_fast_count": true,
+    "_ffprobe_fast_count_comment": "T objetivo con -count_packets (sin decodificar); si no cuadra con el decode, confirma con -count_frames (criterio gold)."
   },
   "ffmpeg": {
     "clip_scale_height": 0,

@@ -256,6 +256,8 @@ def _cmd_extract_csv(args: argparse.Namespace) -> int:
         parallel=args.parallel if args.parallel > 0 else None,
         limit=int(args.limit or 0),
         verbose=bool(getattr(args, "verbose", False)),
+        progress=not getattr(args, "no_progress", False),
+        progress_interval_sec=float(getattr(args, "progress_interval", 20) or 20),
     )
     if report.get("jobs_fail_infra", 0) > 0:
         return 1
@@ -431,6 +433,18 @@ def main() -> int:
         help="Exportar aunque haya varios tracks (ClipExtractConfig; ver TRITON_EXTRACT_C1_HANDOFF.md)",
     )
     excsv.add_argument("-v", "--verbose", action="store_true")
+    excsv.add_argument(
+        "--no-progress",
+        action="store_true",
+        help="No imprimir ETA periódico durante el batch",
+    )
+    excsv.add_argument(
+        "--progress-interval",
+        type=float,
+        default=20.0,
+        metavar="SEC",
+        help="Cada cuántos segundos actualizar porcentaje y ETA (default 20)",
+    )
     excsv.set_defaults(func=_cmd_extract_csv)
 
     bench = sub.add_parser(

@@ -61,6 +61,17 @@ Volver al camino antiguo: `"engine": "clip_extractor"`.
 
 En `meta.json` verás `iamodel_extract_engine: c1_like` en clips nuevos.
 
+### Modo pipelined (batch, misma salida)
+
+| Campo | Default | Efecto |
+|--------|---------|--------|
+| `pipeline_enabled` | `true` | Decode OpenCV en streaming → preprocess → Triton con `infer_inflight` chunks en vuelo → tracker en orden. **Mismo grafo post-frame** (mismos chunks de 8 frames, mismo orden en ByteTrack) → npy idéntico al secuencial. Env `TRITON_EXTRACT_PIPELINE=0` para desactivar. |
+| `infer_inflight` | 3 | Requests Triton concurrentes por clip. |
+| `ffprobe_fast_count` | `true` | T con `-count_packets`; `-count_frames` solo si no cuadra. |
+
+Solo aplica al batch (`extract-csv`, `extract` sin `--session-close`); el cierre de sesión C1 sigue el camino secuencial. Ya no carga el clip entero en RAM → puedes subir `parallel_clips` (prueba 3–4).  
+Validar paridad bit a bit con Triton real: `./run_extract.sh parity-ab --video clip.mp4`. Detalle: [`../../docs/OFFLINE_EXTRACT_C1_PARITY_SOLUTION.md`](../../docs/OFFLINE_EXTRACT_C1_PARITY_SOLUTION.md).
+
 ## Paralelismo
 
 Auto: `min(gpu_instance_count×2, max_batch_size // triton_batch_size)` desde `config/pose.yaml` del vendor (~**4 workers** en piloto).
@@ -88,6 +99,8 @@ chmod +x run_extract.sh
 ./run_extract.sh extract-csv \
   --input-root /media/8TB/DatosEntrenamiento/datos_3/csv_buenos \
   --output-base /media/8TB/DatosEntrenamiento/data_clips/data_triton_pose
+
+Durante el batch verás líneas `[PROGRESS]` cada **20 s** (% hecho, OK/SKIP/FAIL, ETA por throughput y mediana) y una segunda línea `medias/clip:` con el desglose por etapa (`ffmpeg_cut`, `decode_wall`, `infer_wait`, `triton_rtt`, `track`, `export`, `post`). Prueba corta: `--limit 30`. Desactivar: `--no-progress`. Intervalo: `--progress-interval 15`.
 
 # Debug: primeros N clips (`--limit` usa máx. 2 workers; `--parallel 1` = log más claro)
 ./run_extract.sh extract-csv --input-root ... --output-base ... --limit 5 --parallel 1 -v

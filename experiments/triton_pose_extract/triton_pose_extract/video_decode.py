@@ -51,6 +51,52 @@ def ffprobe_nb_read_frames(path: Path) -> int | None:
     return None
 
 
+def ffprobe_nb_read_packets(path: Path) -> int | None:
+    """Conteo rápido (solo demux, sin decodificar). Mismo criterio que C1 ``probe_clip_frame_count``.
+
+    Para MP4 bien formados coincide con ``nb_read_frames``; el llamador debe verificar que el
+    decode real produce ese número y, si no, confirmar con ``ffprobe_nb_read_frames``.
+    """
+    cmd = [
+        "ffprobe",
+        "-v",
+        "error",
+        "-select_streams",
+        "v:0",
+        "-count_packets",
+        "-show_entries",
+        "stream=nb_read_packets",
+        "-of",
+        "default=nokey=1:noprint_wrappers=1",
+        str(path),
+    ]
+    try:
+        out = subprocess.check_output(cmd, stderr=subprocess.DEVNULL, text=True, timeout=120).strip()
+        if out.isdigit():
+            n = int(out)
+            return n if n > 0 else None
+    except (FileNotFoundError, subprocess.SubprocessError, ValueError):
+        pass
+    return None
+
+
+def iter_frames_opencv(path: Path):
+    """Generador de frames BGR con ``cv2.VideoCapture`` (mismas lecturas y orden que ``_read_opencv``)."""
+    import cv2
+
+    cap = cv2.VideoCapture(str(path))
+    if not cap.isOpened():
+        raise RuntimeError(f"No se pudo abrir: {path}")
+    try:
+        while True:
+            ok, frame = cap.read()
+            if not ok:
+                break
+            yield frame
+    finally:
+        cap.release()
+
+
 def probe_video(path: Path) -> VideoTiming:
     cmd = [
         "ffprobe",
@@ -177,22 +223,16 @@ def read_frames_bgr(
                 break
 
     if decode_c1_pixel_parity and target:
-        for name, reader in (
-            ("ffmpeg_nvdec", lambda: _read_ffmpeg_nvdec(path, timing, ffmpeg_hwaccel)),
-            ("ffmpeg_software", lambda: _read_ffmpeg_software(path, timing)),
-            ("opencv", lambda: _read_opencv(path, timing)),
-        ):
-            if any(n == name for n, _, _ in attempts):
-                continue
+        # Paridad C1 = OpenCV. Si ya hay un intento OpenCV con T == ffprobe no hace falta
+        # decodificar nada más (antes se lanzaba un decode NVDEC extra por clip que luego se
+        # descartaba en _pick_decode_attempt). Solo si OpenCV no se intentó, probarlo.
+        opencv_exact = any(n == "opencv" and len(f) == target for n, f, _ in attempts)
+        if not opencv_exact and not any(n == "opencv" for n, _, _ in attempts):
             try:
-                frames, t = reader()
-                _record(name, frames, t)
+                frames, t = _read_opencv(path, timing)
+                _record("opencv", frames, t)
             except Exception as exc:
-                logger.warning("%s paridad C1 falló (%s)", name, exc)
-            if not _needs_more() and any(
-                len(f) == target for _, f, _ in attempts if f
-            ):
-                break
+                logger.warning("opencv paridad C1 falló (%s)", exc)
 
     if not attempts:
         raise RuntimeError(f"decode falló sin frames: {path}")

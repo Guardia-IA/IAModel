@@ -20,6 +20,7 @@ from triton_pose_extract.pipeline_config import PipelineConfig
 from triton_pose_extract.settings import ExtractSettings
 from triton_pose_extract.export_diagnosis import infer_export_status, is_infra_failure
 from triton_pose_extract.primary_user import prune_to_primary_user
+from triton_pose_extract.batch_progress import BatchProgressMonitor
 from triton_pose_extract.validate_output import validate_clip_dir
 
 logger = logging.getLogger(__name__)
@@ -64,14 +65,17 @@ class JobResult:
     seconds: float
     csv_row: int
     status: str = "fail_infra"
+    timings: Optional[Dict[str, float]] = None
 
 
 def _process_one_job(job: ExtractClipJob, pipe: PipelineConfig, settings: ExtractSettings) -> JobResult:
     t0 = time.perf_counter()
     r = job.row
+    timings: Dict[str, float] = {}
     try:
         if job.clip_is_temp:
             if not job.work_video.is_file():
+                t_ff0 = time.perf_counter()
                 ok, ff_err = cut_clip(
                     r.video_path,
                     r.ffmpeg_start,
@@ -79,6 +83,7 @@ def _process_one_job(job: ExtractClipJob, pipe: PipelineConfig, settings: Extrac
                     job.work_video,
                     pipe.ffmpeg,
                 )
+                timings["ffmpeg_cut_sec"] = round(time.perf_counter() - t_ff0, 3)
                 if not ok:
                     msg = "ffmpeg_falló"
                     if ff_err:
@@ -95,7 +100,7 @@ def _process_one_job(job: ExtractClipJob, pipe: PipelineConfig, settings: Extrac
 
         job.data_dir.parent.mkdir(parents=True, exist_ok=True)
         if pipe.extract.use_c1_like():
-            result, _timings = extract_clip_c1_like(
+            result, ext_timings = extract_clip_c1_like(
                 _get_stack(),
                 job.work_video,
                 out_dir=job.data_dir.parent,
@@ -103,6 +108,7 @@ def _process_one_job(job: ExtractClipJob, pipe: PipelineConfig, settings: Extrac
                 clip_folder=job.clip_name,
                 pipe_cfg=pipe.extract,
             )
+            timings.update(ext_timings or {})
         else:
             result = _get_extractor().extract(
                 job.work_video,
@@ -123,6 +129,7 @@ def _process_one_job(job: ExtractClipJob, pipe: PipelineConfig, settings: Extrac
             meta["iamodel_single_user_only"] = pipe.filters.single_user_only
             meta["iamodel_export_primary_user"] = pipe.filters.export_primary_user_on_multi_track
 
+        t_post0 = time.perf_counter()
         if pipe.filters.export_primary_user_on_multi_track:
             pr_ok, pr_err = prune_to_primary_user(result.out_dir)
             if pr_ok and meta_path.is_file():
@@ -131,6 +138,7 @@ def _process_one_job(job: ExtractClipJob, pipe: PipelineConfig, settings: Extrac
                 pass
 
         errs = validate_clip_dir(result.out_dir)
+        timings["post_sec"] = round(time.perf_counter() - t_post0, 3)
         effective_strict = pipe.filters.single_user_only and not pipe.filters.export_primary_user_on_multi_track
         export_status, export_hint = infer_export_status(
             meta or None,
@@ -157,6 +165,7 @@ def _process_one_job(job: ExtractClipJob, pipe: PipelineConfig, settings: Extrac
                 time.perf_counter() - t0,
                 r.row_csv,
                 status="ok",
+                timings=timings,
             )
 
         err_msg = export_hint or (errs[0] if errs else export_status)
@@ -168,6 +177,7 @@ def _process_one_job(job: ExtractClipJob, pipe: PipelineConfig, settings: Extrac
             time.perf_counter() - t0,
             r.row_csv,
             status=export_status,
+            timings=timings,
         )
     except Exception as exc:
         logger.exception("job %s", job.clip_name)
@@ -190,6 +200,8 @@ def run_csv_batch(
     parallel: int | None = None,
     limit: int = 0,
     verbose: bool = True,
+    progress: bool = True,
+    progress_interval_sec: float = 20.0,
 ) -> Dict[str, Any]:
     print("extract-csv: buscando *.csv en raíces…", flush=True)
     t_disc = time.perf_counter()
@@ -221,6 +233,11 @@ def run_csv_batch(
     _USE_C1_LIKE = pipe.extract.use_c1_like()
     engine_msg = (
         f"c1_like decode={pipe.extract.decode_backend} prep_workers={pipe.extract.preprocess_workers}"
+        + (
+            f" pipeline=on inflight={pipe.extract.infer_inflight}"
+            if pipe.extract.pipeline_enabled
+            else " pipeline=off"
+        )
         if _USE_C1_LIKE
         else "clip_extractor (OpenCV en pose_core)"
     )
@@ -231,29 +248,40 @@ def run_csv_batch(
         flush=True,
     )
 
-    with ThreadPoolExecutor(
-        max_workers=n_workers,
-        initializer=_init_worker,
-        initargs=(settings,),
-        thread_name_prefix="csv_triton",
-    ) as pool:
-        futs = {pool.submit(_process_one_job, job, pipe, settings): job for job in jobs}
-        for fut in as_completed(futs):
-            res = fut.result()
-            results.append(res)
-            if res.ok:
-                tag = "OK"
-            elif res.status in ("skip_no_export", "skip_no_tracks"):
-                tag = "SKIP"
-            elif is_infra_failure(res.status, res.error):  # type: ignore[arg-type]
-                tag = "FAIL"
-            else:
-                tag = "SKIP"
-            print(
-                f"[{tag}] {res.clip_name} fila={res.csv_row} {res.seconds:.1f}s"
-                + (f" — {res.error}" if res.error else ""),
-                flush=True,
-            )
+    progress_mon = BatchProgressMonitor(
+        total=len(jobs),
+        workers=n_workers,
+        interval_sec=max(5.0, float(progress_interval_sec)),
+        enabled=bool(progress),
+    )
+    progress_mon.start()
+    try:
+        with ThreadPoolExecutor(
+            max_workers=n_workers,
+            initializer=_init_worker,
+            initargs=(settings,),
+            thread_name_prefix="csv_triton",
+        ) as pool:
+            futs = {pool.submit(_process_one_job, job, pipe, settings): job for job in jobs}
+            for fut in as_completed(futs):
+                res = fut.result()
+                results.append(res)
+                progress_mon.on_job_done(seconds=res.seconds, status=res.status, timings=res.timings)
+                if res.ok:
+                    tag = "OK"
+                elif res.status in ("skip_no_export", "skip_no_tracks"):
+                    tag = "SKIP"
+                elif is_infra_failure(res.status, res.error):  # type: ignore[arg-type]
+                    tag = "FAIL"
+                else:
+                    tag = "SKIP"
+                print(
+                    f"[{tag}] {res.clip_name} fila={res.csv_row} {res.seconds:.1f}s"
+                    + (f" — {res.error}" if res.error else ""),
+                    flush=True,
+                )
+    finally:
+        progress_mon.stop()
 
     ok_n = sum(1 for r in results if r.status == "ok")
     skip_n = sum(1 for r in results if r.status in ("skip_no_export", "skip_no_tracks"))
@@ -277,6 +305,7 @@ def run_csv_batch(
         "workers": n_workers,
         "by_category_planned": by_cat,
         "wall_seconds": round(time.perf_counter() - t0, 2),
+        "progress_final": progress_mon.snapshot() if progress else None,
         "data_result": str(pipe.paths.data_result_dir),
         "results": [asdict(r) for r in results],
         "skipped_prefilter_csv": len(skipped),

@@ -45,6 +45,14 @@ class C1LikeExtractConfig:
     preprocess_workers: int = 8
     fallback_opencv_decode: bool = True
     ffmpeg_hwaccel: str = "cuda"
+    """Pipeline por clip: decode OpenCV en streaming → preprocess → Triton (N chunks en vuelo) →
+    tracker en orden. Mismo grafo post-frame que el camino secuencial (misma salida); solo
+    cambia el solape temporal y la memoria (no carga el clip entero en RAM)."""
+    pipeline_enabled: bool = False
+    """Chunks (triton_batch_size frames consecutivos del mismo clip) en vuelo hacia Triton."""
+    infer_inflight: int = 3
+    """T objetivo: ffprobe -count_packets (demux, rápido) y solo -count_frames si no cuadra."""
+    ffprobe_fast_count: bool = True
 
     @classmethod
     def from_raw(cls, raw: dict | None) -> "C1LikeExtractConfig":
@@ -54,6 +62,13 @@ class C1LikeExtractConfig:
         backend = str(ex.get("decode_backend") or env_backend or "opencv").strip().lower()
         if backend not in ("ffmpeg_nvdec", "opencv"):
             backend = "opencv"
+        env_pipe = os.getenv("TRITON_EXTRACT_PIPELINE", "").strip().lower()
+        if env_pipe in ("0", "false", "no", "off"):
+            pipeline_enabled = False
+        elif env_pipe in ("1", "true", "yes", "on"):
+            pipeline_enabled = True
+        else:
+            pipeline_enabled = bool(ex.get("pipeline_enabled", False))
         return cls(
             engine=engine if engine in ("clip_extractor", "c1_like") else "clip_extractor",
             decode_backend=backend,
@@ -61,6 +76,9 @@ class C1LikeExtractConfig:
             preprocess_workers=max(1, min(int(ex.get("preprocess_workers") or 8), 32)),
             fallback_opencv_decode=bool(ex.get("fallback_opencv_decode", True)),
             ffmpeg_hwaccel=str(ex.get("ffmpeg_hwaccel") or "cuda"),
+            pipeline_enabled=pipeline_enabled,
+            infer_inflight=max(1, min(int(ex.get("infer_inflight") or 3), 16)),
+            ffprobe_fast_count=bool(ex.get("ffprobe_fast_count", True)),
         )
 
     def use_c1_like(self) -> bool:

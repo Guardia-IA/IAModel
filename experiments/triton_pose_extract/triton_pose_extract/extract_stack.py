@@ -21,6 +21,37 @@ class PoseExtractStack:
     bundle: dict
     extract_cfg: Any
     decode_conf: float
+    # Pools perezosos del motor c1_like pipelined (por worker; ver c1_like_pipeline.py).
+    infer_pool: Any = None
+    prep_pool: Any = None
+
+
+def clone_triton_client(client: Any) -> Any:
+    """Nuevo TritonPoseClient con los mismos parámetros (un canal gRPC por hilo de inferencia).
+
+    Si el objeto expone ``clone()`` (dobles de test / otros clientes) se usa eso.
+    """
+    clone_fn = getattr(client, "clone", None)
+    if callable(clone_fn):
+        return clone_fn()
+    from pose_core.triton_client import TritonPoseClient
+
+    if not isinstance(client, TritonPoseClient):
+        return client
+    c = TritonPoseClient(
+        url=client.url,
+        model_name=client.model_name,
+        model_version=getattr(client, "model_version", ""),
+        input_name=client.input_name,
+        output_name=client.output_name,
+        imgsz=int(client.imgsz),
+        input_fp16=bool(client.input_fp16),
+        connect_timeout_seconds=float(getattr(client, "connect_timeout_seconds", 15.0)),
+        infer_timeout_seconds=float(client.infer_timeout_seconds),
+        use_system_shm=False,
+    )
+    c.connect()
+    return c
 
 
 def build_extract_stack(settings: ExtractSettings) -> PoseExtractStack:

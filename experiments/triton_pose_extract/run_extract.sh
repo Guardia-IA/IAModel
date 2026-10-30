@@ -35,6 +35,9 @@ case "$CMD" in
   compare-legacy)
     "$PY" scripts/compare_legacy_pose_npy.py "$@"
     ;;
+  parity-ab)
+    "$PY" scripts/parity_ab_pipeline.py "$@"
+    ;;
   help|*)
     cat <<EOF
 Uso: $0 <comando> [args]
@@ -47,12 +50,14 @@ Uso: $0 <comando> [args]
   extract --video FILE --out DIR      Un clip o carpeta suelta
   compare-legacy --video MP4 --reference .../poses_full.npy
                                       Re-extract batch + comparar npy antiguo
+  parity-ab --video MP4 [...]         Secuencial vs pipelined: npy bit a bit + tiempos
   smoke-one [--video PATH]            Prueba 1 clip
 
 Variables:
   KANVIS_TRITON_POSE_ROOT  Ruta al repo kanvis-triton-pose en el HOST (pose_core Python)
   KANVIS_TRITON_URL        gRPC Triton (contenedor suele ser 127.0.0.1:47811 en el host)
   TRITON_EXTRACT_DECODE_BACKEND  opencv | ffmpeg_nvdec (paridad clip.mp4 → opencv)
+  TRITON_EXTRACT_PIPELINE  1|0  fuerza motor c1_like pipelined on/off (A/B rendimiento)
 
 Flujo típico (mismo equipo que Triton):
   $0 check-triton

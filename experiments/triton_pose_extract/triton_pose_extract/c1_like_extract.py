@@ -44,17 +44,7 @@ def extract_clip_c1_like(
     pipe_cfg: C1LikeExtractConfig,
     filters: Any | None = None,
 ) -> tuple[Any, dict[str, float]]:
-    from pose_core.clip_extractor import ClipPoseResult
-    from pose_core.export import (
-        PersonRows,
-        build_masked_pose_from_xyn,
-        frame_valid,
-        keypoint_mask,
-        write_person_artifacts,
-    )
-    from pose_core.postprocess import decode_end2end
     from pose_core.preprocess import letterbox, prepare_infer_image, to_tensor
-    from pose_core.yolo_result import detections_to_mock, ensure_track_ids
 
     video_path = Path(video_path)
     out_dir = Path(out_dir)
@@ -64,6 +54,34 @@ def extract_clip_c1_like(
     clip_root.mkdir(parents=True, exist_ok=True)
 
     import time
+
+    subject_json_early = getattr(filters, "subject_bbox_json", None) if filters else None
+    session_close_early = bool(getattr(filters, "session_close_export", False))
+    export_tid_early = getattr(filters, "export_track_id", None) if filters else None
+    if (
+        pipe_cfg.pipeline_enabled
+        and pipe_cfg.decode_backend == "opencv"
+        and not subject_json_early
+        and not session_close_early
+        and export_tid_early is None
+    ):
+        from triton_pose_extract.c1_like_pipeline import extract_clip_pipelined
+
+        piped = extract_clip_pipelined(
+            stack,
+            video_path,
+            clip_root=clip_root,
+            clip_name=clip_name,
+            cat=cat,
+            pipe_cfg=pipe_cfg,
+            filters=filters,
+        )
+        if piped is not None:
+            return piped
+        logger.warning(
+            "clip %s: pipeline streaming no cuadró T con ffprobe → camino secuencial (reconcile)",
+            clip_name,
+        )
 
     t0 = time.perf_counter()
     frames, timing = read_frames_bgr(
@@ -142,18 +160,94 @@ def extract_clip_c1_like(
     for frame_index, (prep, lb_meta, raw_out) in enumerate(
         zip(prepared_list, meta_list, raw_batches, strict=True)
     ):
-        dets = decode_end2end(raw_out, lb_meta, stack.decode_conf)
-        mock = detections_to_mock(dets, orig_shape=(lb_meta.orig_h, lb_meta.orig_w))
-        if cfg.tracker_kind == "none":
-            mock = _none_tracker_pick(mock)
-        else:
-            mock = stack.tracker.update(mock, prep)
-        mock = ensure_track_ids(mock)
-        if use_keep_all:
-            _process_frame_keep_all(users, mock, cfg, frame_index)
-        else:
-            _accumulate_frame(users, mock, cfg, frame_policy=cfg.frame_policy)
+        track_frame(stack, users, cfg, frame_index, prep, lb_meta, raw_out, use_keep_all)
 
+    t_infer = time.perf_counter() - t2
+    timings = {
+        "decode_sec": round(t_decode, 3),
+        "preprocess_sec": round(t_prep, 3),
+        "infer_track_export_sec": round(t_infer, 3),
+    }
+    return finalize_users_export(
+        stack=stack,
+        users=users,
+        clip_root=clip_root,
+        clip_name=clip_name,
+        video_path=video_path,
+        cat=cat,
+        pipe_cfg=pipe_cfg,
+        filters=filters,
+        decoded_t=decoded_t,
+        frame_count=frame_count,
+        fps=fps,
+        ffprobe_t=timing.nb_read_frames,
+        decode_backend_used=timing.decode_backend_used or pipe_cfg.decode_backend,
+        extra_meta={"iamodel_pipeline": False},
+        timings=timings,
+        t0=t0,
+    )
+
+
+def track_frame(
+    stack: PoseExtractStack,
+    users: dict[int, _UserAccum],
+    cfg: Any,
+    frame_index: int,
+    prep: np.ndarray,
+    lb_meta: Any,
+    raw_out: np.ndarray,
+    use_keep_all: bool,
+) -> None:
+    """Post-infer de UN frame (en orden): decode end2end → mock → tracker → acumular.
+
+    Única implementación compartida por el camino secuencial y el pipelined (paridad C1).
+    """
+    from pose_core.postprocess import decode_end2end
+    from pose_core.yolo_result import detections_to_mock, ensure_track_ids
+
+    dets = decode_end2end(raw_out, lb_meta, stack.decode_conf)
+    mock = detections_to_mock(dets, orig_shape=(lb_meta.orig_h, lb_meta.orig_w))
+    if cfg.tracker_kind == "none":
+        mock = _none_tracker_pick(mock)
+    else:
+        mock = stack.tracker.update(mock, prep)
+    mock = ensure_track_ids(mock)
+    if use_keep_all:
+        _process_frame_keep_all(users, mock, cfg, frame_index)
+    else:
+        _accumulate_frame(users, mock, cfg, frame_policy=cfg.frame_policy)
+
+
+def finalize_users_export(
+    *,
+    stack: PoseExtractStack,
+    users: dict[int, _UserAccum],
+    clip_root: Path,
+    clip_name: str,
+    video_path: Path,
+    cat: str | int | None,
+    pipe_cfg: C1LikeExtractConfig,
+    filters: Any | None,
+    decoded_t: int,
+    frame_count: int,
+    fps: float,
+    ffprobe_t: int | None,
+    decode_backend_used: str,
+    extra_meta: dict[str, Any],
+    timings: dict[str, float],
+    t0: float,
+) -> tuple[Any, dict[str, float]]:
+    """Filtros, selección de usuarios, escritura npy, meta.json y pose_bundle.json.
+
+    Compartido por el camino secuencial y el pipelined: misma salida para los mismos ``users``.
+    """
+    import time
+
+    from pose_core.clip_extractor import ClipPoseResult
+    from pose_core.export import PersonRows, frame_valid, write_person_artifacts
+
+    cfg = stack.extract_cfg
+    use_keep_all = cfg.frame_policy == "keep_all"
     if use_keep_all:
         _assert_keep_all_timeline(users, decoded_t, clip_name)
 
@@ -180,6 +274,7 @@ def extract_clip_c1_like(
             sorted(users.keys()),
         )
 
+    t_exp0 = time.perf_counter()
     user_dirs: list[Path] = []
     meta_users: list[dict] = []
     filtered = 0
@@ -226,7 +321,7 @@ def extract_clip_c1_like(
             clip_name,
             len(users),
             filtered,
-            len(prepared_list),
+            decoded_t,
         )
     elif not users:
         logger.warning("clip %s: 0 tracks", clip_name)
@@ -237,10 +332,7 @@ def extract_clip_c1_like(
             shutil.copy2(video_path, dest_mp4)
 
     cat_val = str(cat) if cat is not None else "0"
-    ffprobe_t = timing.nb_read_frames
-    exported_pose_t = (
-        int(meta_users[0]["poses_full_T"]) if meta_users else 0
-    )
+    exported_pose_t = int(meta_users[0]["poses_full_T"]) if meta_users else 0
     meta = {
         "clip_name": clip_name,
         "fps": fps,
@@ -249,12 +341,10 @@ def extract_clip_c1_like(
         "frame_policy": cfg.frame_policy,
         "video_frame_count": frame_count,
         "ffprobe_nb_read_frames": ffprobe_t,
-        "decode_backend_used": timing.decode_backend_used or pipe_cfg.decode_backend,
-        "frame_count_matches_ffprobe": (
-            ffprobe_t is not None and len(prepared_list) == int(ffprobe_t)
-        ),
+        "decode_backend_used": decode_backend_used,
+        "frame_count_matches_ffprobe": (ffprobe_t is not None and decoded_t == int(ffprobe_t)),
         "cat": cat_val,
-        "clip_duration": round(len(prepared_list) / fps, 3) if fps > 0 else 0,
+        "clip_duration": round(decoded_t / fps, 3) if fps > 0 else 0,
         "yolo_backend": "triton_tensorrt_plan",
         "pose_bundle_id": stack.bundle.get("pose_bundle_id", ""),
         "users": meta_users,
@@ -265,6 +355,7 @@ def extract_clip_c1_like(
         "iamodel_session_close_export": session_close,
         "iamodel_export_track_id": export_track_id,
     }
+    meta.update(extra_meta)
     (clip_root / "meta.json").write_text(
         json.dumps(meta, indent=2, ensure_ascii=False) + "\n",
         encoding="utf-8",
@@ -273,15 +364,11 @@ def extract_clip_c1_like(
         json.dumps(stack.bundle, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
-    t_infer = time.perf_counter() - t2
-    timings = {
-        "decode_sec": round(t_decode, 3),
-        "preprocess_sec": round(t_prep, 3),
-        "infer_track_export_sec": round(t_infer, 3),
-        "total_sec": round(time.perf_counter() - t0, 3),
-    }
+    out_timings = dict(timings)
+    out_timings["export_sec"] = round(time.perf_counter() - t_exp0, 3)
+    out_timings["total_sec"] = round(time.perf_counter() - t0, 3)
     result = ClipPoseResult(clip_name=clip_name, out_dir=clip_root, meta=meta, user_dirs=user_dirs)
-    return result, timings
+    return result, out_timings
 
 
 def _export_session_subject_iou(
