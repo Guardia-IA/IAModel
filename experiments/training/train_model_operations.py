@@ -822,6 +822,34 @@ def _aug_for_target_rows(
     return min(max_aug, max(0, needed))
 
 
+def propose_realistic_augment_counts(
+    train_counts: Dict[int, int],
+    *,
+    max_aug: int = 5,
+) -> Dict[int, int]:
+    """
+    Banco realista: cada categoría con clips parte de max_aug variantes (5).
+    Las que ya superan la mediana bajan una (a 4). El ratio entre clases casi no cambia;
+    lo que cambia es el volumen de train. Val y test no pasan por aquí.
+    """
+    counts = {int(k): int(v) for k, v in train_counts.items()}
+    max_aug = max(0, int(max_aug))
+    positive = sorted(n for n in counts.values() if n > 0)
+    if not positive or max_aug <= 0:
+        return {cat: 0 for cat in counts}
+    median = positive[len(positive) // 2]
+    floor = max(0, max_aug - 1)
+    out: Dict[int, int] = {}
+    for cat, n in counts.items():
+        if n <= 0:
+            out[cat] = 0
+        elif n > median:
+            out[cat] = floor
+        else:
+            out[cat] = max_aug
+    return out
+
+
 def propose_category_augment_counts(
     train_counts: Dict[int, int],
     *,
@@ -3646,12 +3674,25 @@ def build_datasets_and_loaders(
         assert_no_uid_leak_between_splits(train_ex, val_ex, test_ex)
     elif _category_augment_is_active(cat_aug_cfg):
         print(f"[CATEGORY-AUG] Config: {cat_aug_path} | solo split train (val/test sin augmentación)")
+        n_val_before = len(val_ex)
+        n_test_before = len(test_ex)
         train_ex = expand_examples_with_category_augmentation(
             train_ex, cat_aug_cfg, augment_ranges=aug_ranges, seed=augment_seed
         )
+        if len(val_ex) != n_val_before or len(test_ex) != n_test_before:
+            raise RuntimeError("El augment ha modificado val o test. Solo puede crecer train.")
+        for split_name, rows in (("val", val_ex), ("test", test_ex)):
+            for ex in rows:
+                if ex.forced_ops:
+                    raise RuntimeError(
+                        f"El split {split_name} tiene una fila sintética. Val y test son solo clips reales."
+                    )
+        n_syn = sum(1 for ex in train_ex if ex.forced_ops)
+        n_real_train = len(train_ex) - n_syn
         print(
-            f"Tras expansión por categoría (solo train) => Train filas: {len(train_ex)} | "
-            f"Val filas: {len(val_ex)} | Test filas: {len(test_ex)}"
+            f"Tras expansión por categoría (solo train) => "
+            f"Train: {n_real_train} reales + {n_syn} sintéticas = {len(train_ex)} filas | "
+            f"Val: {len(val_ex)} reales | Test: {len(test_ex)} reales"
         )
         assert_no_uid_leak_between_splits(train_ex, val_ex, test_ex)
     else:

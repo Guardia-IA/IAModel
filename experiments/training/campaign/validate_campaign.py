@@ -294,6 +294,8 @@ def check_preflight_smoke(
     report: ValidationReport,
     config: Dict[str, Any],
     data_root: Optional[Path],
+    *,
+    data_augmentation: bool = False,
 ) -> None:
     """Ejecuta build_training_plan en la 1ª celda (sin escribir) para detectar errores de runtime."""
     if not config:
@@ -322,6 +324,7 @@ def check_preflight_smoke(
             skip_time_estimate=True,
             class_map_spec=class_map_spec,
             experiment_ids=exp_ids if exp_ids else None,
+            data_augmentation=data_augmentation,
         )
         report.add(
             "Preflight smoke (build_training_plan 1ª celda)",
@@ -423,6 +426,7 @@ def run_validation(
     skip_smoke: bool = False,
     run_id: Optional[str] = None,
     cell_ids: Optional[List[str]] = None,
+    data_augmentation: bool = False,
 ) -> ValidationReport:
     report = ValidationReport()
     check_python_syntax(report)
@@ -438,7 +442,9 @@ def run_validation(
     check_data_root(report, data_root, single_user_only=su)
 
     if not skip_smoke and report.passed:
-        check_preflight_smoke(report, config, data_root)
+        check_preflight_smoke(
+            report, config, data_root, data_augmentation=data_augmentation
+        )
         check_model_forward_smoke(report, config)
 
     check_plans_and_augments(report, config, require_written=require_plans, run_id=run_id, cell_ids=cell_ids)
@@ -477,7 +483,7 @@ def main() -> int:
     ap.add_argument(
         "--data-augmentation",
         action="store_true",
-        help="Lo usa el preflight. Aquí se acepta para no romper el comando y no cambia la validación.",
+        help="La comprobación de la primera celda usa el mismo augment que el preflight.",
     )
     args = ap.parse_args()
 
@@ -489,6 +495,7 @@ def main() -> int:
         skip_smoke=args.skip_smoke,
         run_id=str(args.run_id).strip() if args.run_id else None,
         cell_ids=args.cells,
+        data_augmentation=bool(args.data_augmentation),
     )
     print_report(report)
     return 0 if report.passed else 1

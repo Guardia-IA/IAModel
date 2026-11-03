@@ -233,13 +233,24 @@ def run_preflight_cell(
     print(
         f"  Clips reales train={totals_now.get('clips_real_train', 0)} | "
         f"val={totals_now.get('clips_real_val', 0)} | "
-        f"test={totals_now.get('clips_real_test', 0)}"
+        f"test={totals_now.get('clips_real_test', 0)} (val y test sin sintéticos)"
     )
     print(
-        f"  Filas train con sintéticos={totals_now.get('rows_total_train', 0)} "
+        f"  Filas train que se entrenan={totals_now.get('rows_total_train', 0)} "
         f"(reales {totals_now.get('clips_real_train', 0)} + "
         f"sintéticas {totals_now.get('rows_synthetic_train', 0)})"
     )
+    if data_augmentation:
+        by_cat = (plan.get("dataset_stats") or {}).get("by_category") or {}
+        print(f"  {'cat':>4} | {'real':>5} | {'aug/c':>5} | {'rows':>7} | {'sint':>7}")
+        for cat in sorted(by_cat, key=lambda x: int(x)):
+            row = by_cat[cat]
+            print(
+                f"  {int(cat):4d} | {int(row.get('clips_real_train', 0)):5d} | "
+                f"{int(row.get('aug_per_clip', 0)):5d} | "
+                f"{int(row.get('rows_total_train', 0)):7d} | "
+                f"{int(row.get('rows_synthetic_train', 0)):7d}"
+            )
     if not skip_time_estimate:
         store_and_print_time_estimate(
             plan,
@@ -295,6 +306,8 @@ def run_preflight_cell(
         "rows_synthetic_train": totals_now.get("rows_synthetic_train"),
         "models_dir": str(arts["models_dir"]),
         "time_estimate_seconds": cell_seconds,
+        "time_gpu_seconds": float(time_est.get("total_gpu_seconds") or 0.0),
+        "time_cpu_seconds": float(time_est.get("total_cpu_seconds") or 0.0),
         "time_estimate_human": time_est.get("primary_total_human"),
         "parallel_wall_seconds": cell_wall,
         "parallel_wall_human": time_est.get("parallel_wall_human") or fmt_duration(cell_wall),
@@ -312,6 +325,8 @@ def build_campaign_time_rollup(
     if not rows:
         return None
     total_s = sum(float(r.get("time_estimate_seconds", 0.0)) for r in rows)
+    total_gpu = sum(float(r.get("time_gpu_seconds") or r.get("time_estimate_seconds") or 0.0) for r in rows)
+    total_cpu = sum(float(r.get("time_cpu_seconds") or 0.0) for r in rows)
     total_wall = sum(float(r.get("parallel_wall_seconds", r.get("time_estimate_seconds", 0.0))) for r in rows)
     slots = max(int(r.get("parallel_jobs") or 1) for r in rows)
     n_cells = len(rows)
@@ -341,6 +356,18 @@ def build_campaign_time_rollup(
         "parallel_wall_seconds": total_wall,
         "parallel_wall_human": fmt_duration(total_wall),
         "parallel_wall_hours": round(total_wall / 3600.0, 2),
+        "total_gpu_seconds": total_gpu,
+        "total_gpu_human": fmt_duration(total_gpu),
+        "total_gpu_hours": round(total_gpu / 3600.0, 2),
+        "gpu_wall_seconds": total_gpu / slots,
+        "gpu_wall_human": fmt_duration(total_gpu / slots),
+        "gpu_wall_hours": round((total_gpu / slots) / 3600.0, 2),
+        "total_cpu_seconds": total_cpu,
+        "total_cpu_human": fmt_duration(total_cpu),
+        "total_cpu_hours": round(total_cpu / 3600.0, 2),
+        "cpu_wall_seconds": total_cpu / slots,
+        "cpu_wall_human": fmt_duration(total_cpu / slots),
+        "cpu_wall_hours": round((total_cpu / slots) / 3600.0, 2),
         "primary_device": device,
         "per_cell": [
             {
@@ -387,8 +414,10 @@ def print_campaign_time_rollup(
         "=" * 88,
         f"Celdas: {n_cells} | experimentos/celda: {n_exp} | entrenamientos totales: {total_runs}",
         f"Dispositivo: {device.upper()} | paralelo: {slots} experimentos a la vez en la misma GPU",
-        f"TIEMPO GPU CON PARALELIZACIÓN: {wall_human} ({wall_hours} h)",
-        f"Suma en serie (1 a la vez): {rollup['total_human']} ({rollup['total_hours']} h)",
+        f"TIEMPO TOTAL GPU en serie: {rollup.get('total_gpu_human', rollup['total_human'])} ({rollup.get('total_gpu_hours', rollup['total_hours'])} h)",
+        f"TIEMPO TOTAL GPU con paralelización ({slots}): {rollup.get('gpu_wall_human', wall_human)} ({rollup.get('gpu_wall_hours', wall_hours)} h)",
+        f"TIEMPO TOTAL CPU en serie: {rollup.get('total_cpu_human', '?')} ({rollup.get('total_cpu_hours', '?')} h)",
+        f"TIEMPO TOTAL CPU con paralelización ({slots}): {rollup.get('cpu_wall_human', '?')} ({rollup.get('cpu_wall_hours', '?')} h)",
         "",
         f"{'Celda':<22} | {'Reales':>7} | {'Sint':>7} | {'Filas':>7} | {'Serie':>12} | {'Paralelo':>12}",
         "-" * 88,
@@ -402,8 +431,10 @@ def print_campaign_time_rollup(
     lines.extend(
         [
             "-" * 88,
-            f"GPU CON PARALELIZACIÓN ({slots}): {wall_human} ({wall_hours} h)",
-            f"SUMA EN SERIE: {rollup['total_human']} ({rollup['total_hours']} h)",
+            f"GPU EN SERIE: {rollup.get('total_gpu_human', rollup['total_human'])} ({rollup.get('total_gpu_hours', rollup['total_hours'])} h)",
+            f"GPU CON PARALELIZACIÓN ({slots}): {rollup.get('gpu_wall_human', wall_human)} ({rollup.get('gpu_wall_hours', wall_hours)} h)",
+            f"CPU EN SERIE: {rollup.get('total_cpu_human', '?')} ({rollup.get('total_cpu_hours', '?')} h)",
+            f"CPU CON PARALELIZACIÓN ({slots}): {rollup.get('cpu_wall_human', '?')} ({rollup.get('cpu_wall_hours', '?')} h)",
             "Nota: heurística de train. La evaluación final no está incluida.",
             "=" * 88,
             "",
@@ -415,11 +446,22 @@ def print_campaign_time_rollup(
     print(f"  Celdas: {CYAN}{n_cells}{RESET} | experimentos/celda: {n_exp} | entrenamientos: {total_runs}")
     print(f"  Dispositivo: {CYAN}{str(device).upper()}{RESET} | paralelo: {slots}")
     print(
-        f"  {BOLD}TIEMPO GPU CON PARALELIZACIÓN ({slots}):{RESET} "
-        f"{BOLD}{CYAN}{wall_human}{RESET} ({wall_hours} h)"
+        f"  {BOLD}TIEMPO TOTAL GPU en serie:{RESET} "
+        f"{rollup.get('total_gpu_human', rollup['total_human'])} "
+        f"({rollup.get('total_gpu_hours', rollup['total_hours'])} h)"
     )
     print(
-        f"  Suma en serie (1 experimento a la vez): {rollup['total_human']} ({rollup['total_hours']} h)"
+        f"  {BOLD}TIEMPO TOTAL GPU con paralelización ({slots}):{RESET} "
+        f"{BOLD}{CYAN}{rollup.get('gpu_wall_human', wall_human)}{RESET} "
+        f"({rollup.get('gpu_wall_hours', wall_hours)} h)"
+    )
+    print(
+        f"  {BOLD}TIEMPO TOTAL CPU en serie:{RESET} "
+        f"{rollup.get('total_cpu_human', '?')} ({rollup.get('total_cpu_hours', '?')} h)"
+    )
+    print(
+        f"  {BOLD}TIEMPO TOTAL CPU con paralelización ({slots}):{RESET} "
+        f"{rollup.get('cpu_wall_human', '?')} ({rollup.get('cpu_wall_hours', '?')} h)"
     )
     print(
         f"\n  {'Celda':<22} | {'Reales':>7} | {'Sint':>7} | {'Filas':>7} | {'Serie':>12} | {'Paralelo':>12}"
@@ -432,7 +474,14 @@ def print_campaign_time_rollup(
             f"{row['human']:>12} | {row.get('wall_human', row['human']):>12}"
         )
     print("  " + "-" * 80)
-    print(f"  {BOLD}GPU CON PARALELIZACIÓN:{RESET} {CYAN}{wall_human}{RESET} ({wall_hours} h)")
+    print(
+        f"  {BOLD}GPU en serie:{RESET} {rollup.get('total_gpu_human', rollup['total_human'])} | "
+        f"{BOLD}GPU con paralelización:{RESET} {CYAN}{rollup.get('gpu_wall_human', wall_human)}{RESET}"
+    )
+    print(
+        f"  {BOLD}CPU en serie:{RESET} {rollup.get('total_cpu_human', '?')} | "
+        f"{BOLD}CPU con paralelización:{RESET} {rollup.get('cpu_wall_human', '?')}"
+    )
     print(f"  {YELLOW}La evaluación final no entra en esta cifra.{RESET}\n")
 
     if run_id:
@@ -704,11 +753,27 @@ def main() -> int:
             f.write("\n")
     print(f"\nResumen: {master}")
     if time_rollup:
+        slots_n = time_rollup.get("parallel_jobs", 1)
+        runs_n = time_rollup["total_train_runs"]
         print(
-            f"{BOLD}Tiempo GPU con paralelización "
-            f"({time_rollup.get('parallel_jobs', 1)}, {time_rollup['total_train_runs']} runs): "
-            f"{CYAN}{time_rollup.get('parallel_wall_human', time_rollup['total_human'])}{RESET} "
-            f"({time_rollup.get('parallel_wall_hours', time_rollup['total_hours'])} h)"
+            f"{BOLD}Tiempo total GPU en serie ({runs_n} runs):{RESET} "
+            f"{time_rollup.get('total_gpu_human', time_rollup['total_human'])} "
+            f"({time_rollup.get('total_gpu_hours', time_rollup['total_hours'])} h)"
+        )
+        print(
+            f"{BOLD}Tiempo total GPU con paralelización ({slots_n}):{RESET} "
+            f"{CYAN}{time_rollup.get('gpu_wall_human', time_rollup.get('parallel_wall_human'))}{RESET} "
+            f"({time_rollup.get('gpu_wall_hours', time_rollup.get('parallel_wall_hours'))} h)"
+        )
+        print(
+            f"{BOLD}Tiempo total CPU en serie:{RESET} "
+            f"{time_rollup.get('total_cpu_human', '?')} "
+            f"({time_rollup.get('total_cpu_hours', '?')} h)"
+        )
+        print(
+            f"{BOLD}Tiempo total CPU con paralelización ({slots_n}):{RESET} "
+            f"{time_rollup.get('cpu_wall_human', '?')} "
+            f"({time_rollup.get('cpu_wall_hours', '?')} h)"
         )
     elif args.skip_time_estimate:
         print(f"{YELLOW}[!] Estimación omitida (--skip-time-estimate).{RESET}")

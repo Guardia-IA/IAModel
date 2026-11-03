@@ -46,6 +46,7 @@ try:
         load_category_augmentation_config,
         count_examples_by_folder_category,
         propose_category_augment_counts,
+        propose_realistic_augment_counts,
         summarize_category_aug_on_train,
         analyze_robbery_augment_balance,
         build_plan_stats_by_category,
@@ -84,6 +85,7 @@ except ImportError:
         load_category_augmentation_config,
         count_examples_by_folder_category,
         propose_category_augment_counts,
+        propose_realistic_augment_counts,
         summarize_category_aug_on_train,
         analyze_robbery_augment_balance,
         build_plan_stats_by_category,
@@ -156,8 +158,9 @@ def _build_proposed_config(
             f"Generado por preflight_train_plan.py. Clase {robbery_class}=robo. "
             "Solo train; val/test sin augment. "
             + (
-                "mode=realistic_balanced: espejo, giro ±6°, velocidad ×0.90/×1.10; "
-                "el número por categoría lo marca el balance (tope 5)."
+                "mode=realistic_balanced: 5 variantes por clip de train "
+                "(espejo, giro ±6°, velocidad ×0.90/×1.10); "
+                "las categorías por encima de la mediana bajan a 4."
                 if mode == "realistic_balanced"
                 else "mode=balance_only: augment solo para equilibrar clases."
             )
@@ -513,17 +516,23 @@ def build_training_plan(
     include_identity = bool(current_cfg.get("include_identity", True))
 
     rob_for_aug = pos_ids if task == "binary" else None
-    proposed_aug = propose_category_augment_counts(
-        train_counts,
-        robbery_class=robbery_class,
-        robbery_classes=rob_for_aug,
-        target_samples=target_samples,
-        min_robbery_rows=min_robbery_rows,
-        min_negative_rows=min_negative_rows,
-        negative_to_robbery_ratio=negative_to_robbery_ratio,
-        max_aug=max_aug_ops,
-        include_identity=include_identity,
-    )
+    if data_augmentation:
+        proposed_aug = propose_realistic_augment_counts(
+            train_counts,
+            max_aug=max_aug_ops,
+        )
+    else:
+        proposed_aug = propose_category_augment_counts(
+            train_counts,
+            robbery_class=robbery_class,
+            robbery_classes=rob_for_aug,
+            target_samples=target_samples,
+            min_robbery_rows=min_robbery_rows,
+            min_negative_rows=min_negative_rows,
+            negative_to_robbery_ratio=negative_to_robbery_ratio,
+            max_aug=max_aug_ops,
+            include_identity=include_identity,
+        )
     for cat in folder_scan:
         if class_map_spec and int(cat) in set(class_map_spec.get("exclude") or []):
             continue
@@ -563,20 +572,34 @@ def build_training_plan(
     totals = dataset_stats["totals"]
     print(f"  Task: {task} | positive_class={positive_class}")
     print(f"  Split: {tr:.3f}/{vr:.3f}/{te:.3f} | seed={SEED}")
+    n_real_all = (
+        int(totals["clips_real_train"])
+        + int(totals["clips_real_val"])
+        + int(totals["clips_real_test"])
+    )
     if data_augmentation:
         print(
-            "  Modo augment: data-augmentation. Tope 5 por clip "
+            "  Modo augment: data-augmentation. Cada clip de train genera 5 variantes "
             "(espejo, giro +6°, giro −6°, velocidad ×0.90, velocidad ×1.10). "
-            "Si el balance pide menos, se generan menos, en ese orden."
+            "Las categorías por encima de la mediana bajan a 4."
+        )
+        print(
+            f"  Los {n_real_all} clips reales del corpus no se multiplican todos: "
+            f"val ({totals['clips_real_val']}) y test ({totals['clips_real_test']}) se quedan reales. "
+            f"Solo los {totals['clips_real_train']} de train generan sintéticos."
         )
     else:
         print("  Modo augment: solo balanceo de clases.")
-    print(f"  Augment máx ops/clip: {max_aug_ops} (banco={len(CATEGORY_AUGMENT_RECIPE_BANK)} recetas)")
+    bank_n = len(REALISTIC_AUGMENT_RECIPE_BANK) if data_augmentation else len(CATEGORY_AUGMENT_RECIPE_BANK)
+    print(f"  Augment máx ops/clip: {max_aug_ops} (banco={bank_n} recetas)")
     print(
         f"  Train filas totales propuestas: {GREEN}{totals['rows_total_train']}{RESET} "
         f"(reales {totals['clips_real_train']} + sintéticas {totals['rows_synthetic_train']})"
     )
-    print(f"  Val clips reales: {totals['clips_real_val']} | Test clips reales: {totals['clips_real_test']}")
+    print(
+        f"  Val clips reales: {totals['clips_real_val']} | "
+        f"Test clips reales: {totals['clips_real_test']} | sin sintéticos"
+    )
     if balance_rob.get("warnings"):
         for w in balance_rob["warnings"]:
             print(f"  {YELLOW}[!] {w}{RESET}")
