@@ -30,7 +30,7 @@ TEMP_CLIPS = None  # Solo modo CSV_PATH: None = temp_clips en dir del CSV
 
 # --- SALIDA ---
 # OUTPUT_BASE = carpeta donde van temp_clips/ y data_result/ (recomendado con varios PATH_ROOTS)
-OUTPUT_BASE = "/media/8TB/DatosEntrenamiento/data_clips/data_yolo26s_061026"
+OUTPUT_BASE = "/media/8TB/DatosEntrenamiento/datos_limpios_triton"
 #OUTPUT_BASE="/home/angel/videos_output"
 # Subcarpeta bajo cada PATH_ROOT cuando OUTPUT_BASE es None y hay varios PATH_ROOTS
 DEFAULT_OUTPUT_SUBDIR = "data_yolo26s"

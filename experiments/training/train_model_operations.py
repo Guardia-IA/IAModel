@@ -341,18 +341,28 @@ def _candidate_data_result_roots(explicit: str | Path | None = None) -> List[Pat
             part = part.strip()
             if part:
                 _add(Path(part))
+        return candidates
     for cfg_root in _data_result_roots_from_experiments_config():
         _add(cfg_root)
     _add(Path(DATA_RESULT_ROOT))
     return candidates
 
 
+_ROOTS_MEMO: Dict[str, List[Path]] = {}
+
+
 def get_data_result_roots(data_root: str | Path | None = None) -> List[Path]:
     """
-    Lista de carpetas data_result (PATH_ROOTS / OUTPUT_BASE / --data-root / env).
-    Devuelve solo las que existen en disco.
+    Lista de carpetas data_result que existen en disco.
+    Si hay --data-root o GUADIA_DATA_RESULT_ROOT, solo esa. Si no, OUTPUT_BASE de config.py.
     """
-    return [p for p in _candidate_data_result_roots(data_root) if p.is_dir()]
+    key = f"{data_root or ''}|{os.environ.get('GUADIA_DATA_RESULT_ROOT', '')}"
+    hit = _ROOTS_MEMO.get(key)
+    if hit is not None:
+        return list(hit)
+    roots = [p for p in _candidate_data_result_roots(data_root) if p.is_dir()]
+    _ROOTS_MEMO[key] = roots
+    return list(roots)
 
 
 def get_data_result_root(data_root: str | Path | None = None) -> Path:
@@ -1273,12 +1283,18 @@ def _copy_pose_example(
     )
 
 
+_UID_MEMO: Dict[str, List[str]] = {}
+
+
 def _manifest_lookup_uids(ex: PoseExample) -> List[str]:
     """
     Candidatos de UID para manifest_cache (md5 por string UTF-8).
     1) Ruta relativa posix bajo cada data_result (prefijo si hay varios PATH_ROOTS).
     2) Ruta absoluta resuelta (compatibilidad con cachés y splits antiguos).
     """
+    cached_uid = _UID_MEMO.get(str(ex.pose_path))
+    if cached_uid is not None:
+        return list(cached_uid)
     pp = Path(ex.pose_path).resolve()
     out: List[str] = []
     roots = get_data_result_roots()
@@ -1312,6 +1328,7 @@ def _manifest_lookup_uids(ex: PoseExample) -> List[str]:
         if u not in seen:
             seen.add(u)
             uniq.append(u)
+    _UID_MEMO[str(ex.pose_path)] = list(uniq)
     return uniq
 
 

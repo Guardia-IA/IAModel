@@ -426,6 +426,11 @@ def build_training_plan(
         max_occlusion_ratio=float(max_occlusion_ratio),
         data_root=data_root,
     )
+    print(
+        f"  [progreso] {len(examples)} ejemplos en memoria. "
+        "Reparto train/val/test y estimación de tiempo (sin volver a leer npy).",
+        flush=True,
+    )
     if class_map_spec:
         try:
             from .class_map_utils import (

@@ -152,6 +152,7 @@ run_preflight() {
   echo "Log preflight: ${logfile}"
   mkdir -p "$(run_root)/example_cache"
   export GUADIA_EXAMPLE_CACHE="$(run_root)/example_cache"
+  export PYTHONUNBUFFERED=1
   echo "Caché de lecturas: ${GUADIA_EXAMPLE_CACHE} (poses.npy una vez, poses_full.npy una vez)"
 
   {
