@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import random
 import sys
 from pathlib import Path
@@ -26,18 +27,73 @@ from triton_pose_extract.validate_output import validate_clip_dir  # noqa: E402
 
 
 def _resolve_root(path: Path) -> Path:
-    path = path.expanduser().resolve()
+    path = path.expanduser()
     if not path.is_dir():
         raise SystemExit(f"No existe la carpeta: {path}")
     nested = path / "data_result"
-    if nested.is_dir() and any(nested.glob("*/*/meta.json")):
+    if nested.is_dir():
+        print(f"Usando {nested}", flush=True)
         return nested
     return path
 
 
-def _discover_clips(root: Path) -> list[Path]:
-    clips = {p.parent.parent for p in root.glob("*/*/user_*/poses_full.npy")}
-    return sorted(clips)
+def _has_poses_full(clip: Path) -> bool:
+    try:
+        with os.scandir(clip) as it:
+            for entry in it:
+                if not entry.is_dir(follow_symlinks=False) or not entry.name.startswith("user_"):
+                    continue
+                if os.path.isfile(os.path.join(entry.path, "poses_full.npy")):
+                    return True
+    except OSError:
+        return False
+    return False
+
+
+def _category_names(root: Path) -> list[str]:
+    with os.scandir(root) as it:
+        return sorted(e.name for e in it if e.is_dir(follow_symlinks=False))
+
+
+def _clip_names(cat_dir: Path) -> list[str]:
+    with os.scandir(cat_dir) as it:
+        return [e.name for e in it if e.is_dir(follow_symlinks=False)]
+
+
+def _sample_with_npy(root: Path, n: int, rng: random.Random) -> tuple[list[Path], list[str]]:
+    """Elige N clips sin recorrer todas las categorías.
+
+    Solo lista los nombres de una categoría cuando sale en el sorteo.
+    """
+    cats = _category_names(root)
+    print(f"Categorías ({len(cats)}): {', '.join(cats)}", flush=True)
+    if not cats:
+        return [], []
+    remaining = list(cats)
+    names: dict[str, list[str]] = {}
+    chosen: list[Path] = []
+    tried = 0
+    limit = max(n * 40, n)
+    while len(chosen) < n and remaining and tried < limit:
+        tried += 1
+        cat = rng.choice(remaining)
+        if cat not in names:
+            print(f"Nombres de la categoría {cat} …", flush=True)
+            names[cat] = _clip_names(root / cat)
+            print(f"  {cat}: {len(names[cat])} clips", flush=True)
+        pool = names[cat]
+        if not pool:
+            remaining.remove(cat)
+            continue
+        clip_name = pool.pop(rng.randrange(len(pool)))
+        clip = root / cat / clip_name
+        if not _has_poses_full(clip):
+            continue
+        chosen.append(clip)
+        print(f"  elegido {len(chosen)}/{n}: {cat}/{clip_name}", flush=True)
+    if len(chosen) < n:
+        print(f"Solo {len(chosen)} clips con npy (intentos {tried}).", flush=True)
+    return chosen, list(names)
 
 
 def _as_bool(arr: np.ndarray) -> np.ndarray:
@@ -232,21 +288,25 @@ def main() -> int:
         print("N tiene que ser >= 1", file=sys.stderr)
         return 2
 
+    print("Auditoría: categorías al azar, sin recorrer todo data_result.", flush=True)
     root = _resolve_root(args.data_result)
-    clips = _discover_clips(root)
-    if not clips:
+    rng = random.Random(args.seed)
+    sample, cats_opened = _sample_with_npy(root, args.n, rng)
+    if not sample:
         print(f"No hay user_*/poses_full.npy bajo {root}", file=sys.stderr)
         return 2
-    n = min(args.n, len(clips))
-    rng = random.Random(args.seed)
-    sample = rng.sample(clips, n)
+    n = len(sample)
 
-    print(f"Raíz: {root}")
-    print(f"Clips con npy: {len(clips)} | muestra: {n}" + (f" | seed={args.seed}" if args.seed is not None else ""))
+    print(
+        f"Raíz: {root} | categorías abiertas: {', '.join(cats_opened) or '-'} | muestra: {n}"
+        + (f" | seed={args.seed}" if args.seed is not None else ""),
+        flush=True,
+    )
 
     reports = []
     n_pass = 0
     for i, clip in enumerate(sample, start=1):
+        print(f"[{i}/{n}] leyendo {clip.parent.name}/{clip.name} …", flush=True)
         rep = _check_clip(clip)
         reports.append(rep)
         mark = "PASS" if rep["pass"] else "FAIL"
@@ -267,7 +327,7 @@ def main() -> int:
     print(f"Resumen: {n_pass}/{n} PASS")
     payload = {
         "data_result": str(root),
-        "clips_with_npy": len(clips),
+        "categories_opened": cats_opened,
         "n": n,
         "seed": args.seed,
         "n_pass": n_pass,
