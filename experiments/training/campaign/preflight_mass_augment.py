@@ -120,6 +120,7 @@ def _build_base_plan(
         plan = build_training_plan(
             task=cell["task"],
             positive_class=int(config.get("robbery_class", ROBBERY_CLASS)),
+            positive_classes=[int(x) for x in (config.get("robbery_classes") or [config.get("robbery_class", ROBBERY_CLASS)])],
             pose_source=cell["pose_source"],
             single_user_only=bool(config.get("single_user_only", True)),
             data_root=data_root,

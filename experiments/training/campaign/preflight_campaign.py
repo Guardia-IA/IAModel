@@ -37,6 +37,7 @@ try:
         artifacts_root,
         CONFIG_PATH,
         resolve_experiment_ids,
+        robbery_class_ids,
     )
     from improve_utils import (
         load_fp_manifest_csv,
@@ -143,9 +144,11 @@ def run_preflight_cell(
         exp_ids = []
 
     neg_ratio = float(aug_prof.get("negative_to_robbery_ratio", PREFLIGHT_NEGATIVE_TO_ROBBERY_RATIO))
+    pos_ids = robbery_class_ids(config)
     plan = build_training_plan(
         task=cell["task"],
-        positive_class=int(config.get("robbery_class", ROBBERY_CLASS)),
+        positive_class=pos_ids[0],
+        positive_classes=pos_ids,
         pose_source=cell["pose_source"],
         single_user_only=bool(config.get("single_user_only", True)),
         data_root=data_root,
@@ -174,7 +177,8 @@ def run_preflight_cell(
     if aug_prof.get("fp_hardened"):
         proposed_counts = adjust_augment_for_fp_hardened(
             proposed_counts,
-            robbery_class=int(config.get("robbery_class", ROBBERY_CLASS)),
+            robbery_class=pos_ids[0],
+            robbery_classes=pos_ids if cell["task"] == "binary" else None,
         )
 
     fp_rows: List[Dict[str, str]] = []
@@ -189,7 +193,8 @@ def run_preflight_cell(
                     proposed_counts,
                     fp_rows,
                     boost_factor=boost,
-                    robbery_class=int(config.get("robbery_class", ROBBERY_CLASS)),
+                    robbery_class=pos_ids[0],
+                    robbery_classes=pos_ids if cell["task"] == "binary" else None,
                 )
 
     uniform_ops = int(improve_meta.get("uniform_ops_per_clip") or 0)
@@ -197,7 +202,8 @@ def run_preflight_cell(
         proposed_counts = apply_uniform_ops_per_clip(
             proposed_counts,
             uniform_ops,
-            robbery_class=int(config.get("robbery_class", ROBBERY_CLASS)),
+            robbery_class=pos_ids[0],
+            robbery_classes=pos_ids if cell["task"] == "binary" else None,
         )
 
     if aug_prof.get("fp_hardened") or fp_rows or uniform_ops > 0:

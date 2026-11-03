@@ -191,6 +191,14 @@ def resolve_experiment_ids(spec: Any) -> List[int]:
     raise ValueError(f"experiment_ids inválido: {spec!r} (usa lista de enteros o \"all\")")
 
 
+def robbery_class_ids(config: Dict[str, Any]) -> List[int]:
+    """Carpetas que cuentan como robo. En binario, cualquiera de ellas es la clase positiva."""
+    raw = config.get("robbery_classes")
+    if isinstance(raw, (list, tuple)) and raw:
+        return sorted({int(x) for x in raw})
+    return [int(config.get("robbery_class", 6))]
+
+
 def _config_block(config: Dict[str, Any], key: str) -> Dict[str, Any]:
     block = config.get(key)
     return block if isinstance(block, dict) else {}

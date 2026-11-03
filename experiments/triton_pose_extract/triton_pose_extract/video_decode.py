@@ -390,3 +390,60 @@ def _read_ffmpeg_software(path: Path, timing: VideoTiming) -> tuple[list[np.ndar
         raise RuntimeError("ffmpeg software: 0 frames")
     logger.info("ffmpeg software %s → %d frames", path.name, len(frames))
     return frames, VideoTiming(w, h, timing.fps, len(frames), timing.codec)
+
+
+def iter_ffmpeg_software_frames(path: Path, timing: VideoTiming, *, skip: int = 0, max_frames: int | None = None):
+    """Pipe ``ffmpeg`` raw BGR (mismo comando que ``_read_ffmpeg_software``).
+
+    Igual que C1 ``iter_clip_frames_bgr``: cola ffmpeg si OpenCV se queda corto. ``skip``
+    descarta los primeros N frames (ya emitidos por OpenCV) sin reordenar.
+    """
+    w, h = timing.width, timing.height
+    if w <= 0 or h <= 0:
+        return
+    cmd = [
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-nostdin",
+        "-i",
+        str(path),
+        "-an",
+        "-pix_fmt",
+        "bgr24",
+        "-f",
+        "rawvideo",
+        "pipe:1",
+    ]
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    assert proc.stdout is not None
+    fb = int(w) * int(h) * 3
+    emitted = 0
+    idx = 0
+    try:
+        while True:
+            if max_frames is not None and emitted >= max_frames:
+                break
+            buf = proc.stdout.read(fb)
+            if not buf or len(buf) < fb:
+                break
+            if idx < skip:
+                idx += 1
+                continue
+            idx += 1
+            emitted += 1
+            yield np.frombuffer(buf, dtype=np.uint8).reshape(int(h), int(w), 3).copy()
+    finally:
+        try:
+            proc.stdout.close()
+        except Exception:
+            pass
+        try:
+            proc.kill()
+        except Exception:
+            pass
+        try:
+            proc.wait(timeout=5)
+        except Exception:
+            pass

@@ -381,6 +381,7 @@ def _load_examples_for_plan(
     *,
     task: str,
     positive_class: int,
+    positive_classes: Optional[List[int]] = None,
     class_map_spec: Optional[Dict[str, Any]] = None,
 ) -> List[Any]:
     data_root = Path(master_plan["data_root"])
@@ -401,7 +402,9 @@ def _load_examples_for_plan(
             from .class_map_utils import apply_class_map_spec  # type: ignore
         examples = apply_class_map_spec(examples, class_map_spec)
     if task == "binary":
-        examples = make_binary_examples(examples, positive_class=positive_class)
+        examples = make_binary_examples(
+            examples, positive_class=positive_class, positive_classes=positive_classes
+        )
     return examples
 
 
@@ -755,7 +758,8 @@ def run_learning_curve_preflight(
     examples = _load_examples_for_plan(
         master_plan,
         task=str(cell["task"]),
-        positive_class=int(config.get("robbery_class", ROBBERY_CLASS)),
+        positive_class=int((master_plan.get("positive_classes") or [config.get("robbery_class", ROBBERY_CLASS)])[0]),
+        positive_classes=[int(x) for x in (master_plan.get("positive_classes") or config.get("robbery_classes") or [config.get("robbery_class", ROBBERY_CLASS)])],
         class_map_spec=class_map_spec,
     )
 
@@ -859,7 +863,8 @@ def run_learning_curve_preflight_all(
         examples = _load_examples_for_plan(
             block["master_plan"],
             task=str(cell["task"]),
-            positive_class=int(config.get("robbery_class", ROBBERY_CLASS)),
+            positive_class=int((block["master_plan"].get("positive_classes") or [config.get("robbery_class", ROBBERY_CLASS)])[0]),
+            positive_classes=[int(x) for x in (block["master_plan"].get("positive_classes") or config.get("robbery_classes") or [config.get("robbery_class", ROBBERY_CLASS)])],
             class_map_spec=class_map_spec,
         )
         derived = _derive_plans_for_cell(

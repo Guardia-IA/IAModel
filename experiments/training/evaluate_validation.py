@@ -125,6 +125,9 @@ def load_split_uids(
         meta["training_plan_path"] = str(training_plan_path)
         meta["task"] = plan.get("task")
         meta["positive_class"] = plan.get("positive_class")
+        meta["positive_classes"] = plan.get("positive_classes") or (
+            [int(plan["positive_class"])] if plan.get("positive_class") is not None else None
+        )
         meta["filters"] = plan.get("filters", {})
         meta["data_root"] = plan.get("data_root")
         meta["pose_source"] = plan.get("pose_source", "filtered")
@@ -156,6 +159,7 @@ def load_split_uids(
         meta["split_manifest_path"] = str(split_manifest_path)
         meta["task"] = data.get("task")
         meta["positive_class"] = data.get("positive_class")
+        meta["positive_classes"] = data.get("positive_classes")
         meta["filters"] = data.get("filters", {})
         meta["pose_source"] = data.get("pose_source", "filtered")
         meta["single_user_only"] = data.get("single_user_only", False)
@@ -191,6 +195,7 @@ def build_split_examples(
     single_user_only: Optional[bool] = None,
     task: Optional[str] = None,
     positive_class: int = 6,
+    positive_classes: Optional[List[int]] = None,
     min_clip_seconds: float = MIN_CLIP_SECONDS,
     min_valid_frames: int = MIN_VALID_FRAMES,
     min_valid_pct: float = MIN_VALID_PCT,
@@ -204,6 +209,9 @@ def build_split_examples(
     )
     t_task = task or split_meta.get("task", "multiclass")
     pos = int(split_meta.get("positive_class", positive_class))
+    pos_classes = split_meta.get("positive_classes") or positive_classes
+    if not pos_classes:
+        pos_classes = [pos]
 
     root = data_root
     if root is None and split_meta.get("data_root"):
@@ -222,7 +230,9 @@ def build_split_examples(
 
     all_examples = collect_examples(**collect_kw)
     if t_task == "binary":
-        all_examples = make_binary_examples(all_examples, positive_class=pos)
+        all_examples = make_binary_examples(
+            all_examples, positive_class=pos, positive_classes=[int(x) for x in pos_classes]
+        )
 
     split_uids_dict = split_meta.get("split_uids_all")
     if split_uids_dict:
@@ -250,6 +260,7 @@ def build_split_examples(
         "single_user_only": su,
         "task": t_task,
         "positive_class": pos,
+        "positive_classes": [int(x) for x in pos_classes],
     }
     return examples, info
 
@@ -458,6 +469,8 @@ def evaluate_validation(
         split_manifest_path=split_manifest_path,
     )
     split_meta["split_name"] = split_name
+    if not split_meta.get("positive_classes") and checkpoint.get("positive_classes"):
+        split_meta["positive_classes"] = list(checkpoint["positive_classes"])
 
     examples, pool_info = build_split_examples(
         split_uids=split_uids,

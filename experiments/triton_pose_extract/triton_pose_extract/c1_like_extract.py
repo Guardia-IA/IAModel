@@ -79,17 +79,20 @@ def extract_clip_c1_like(
         if piped is not None:
             return piped
         logger.warning(
-            "clip %s: pipeline streaming no cuadró T con ffprobe → camino secuencial (reconcile)",
+            "clip %s: pipeline devolvió None (decode 0 / error) → secuencial OpenCV, "
+            "sin ffprobe -count_frames",
             clip_name,
         )
 
     t0 = time.perf_counter()
+    gold_close = bool(session_close_early or subject_json_early or export_tid_early is not None)
     frames, timing = read_frames_bgr(
         video_path,
         backend=pipe_cfg.decode_backend,
         fallback_opencv=pipe_cfg.fallback_opencv_decode,
         ffmpeg_hwaccel=pipe_cfg.ffmpeg_hwaccel,
-        decode_c1_pixel_parity=pipe_cfg.decode_c1_pixel_parity,
+        decode_c1_pixel_parity=gold_close and pipe_cfg.decode_c1_pixel_parity,
+        reconcile_ffprobe_frames=gold_close,
     )
     t_decode = time.perf_counter() - t0
 

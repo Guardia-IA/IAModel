@@ -16,8 +16,8 @@ Lo que cambia (solo rendimiento / memoria):
 * Preprocess y envío a Triton de los chunks k+1..k+N ocurren mientras el tracker consume k.
 * Hasta ``infer_inflight`` requests gRPC concurrentes por clip (un canal por hilo).
 
-Si el nº de frames decodificados no coincide con ffprobe, devuelve ``None`` y el llamador
-repite el clip por el camino secuencial (que reconcilia backends igual que siempre).
+T = frames OpenCV (contrato C1 ``VideoCapture``). Si ``count_packets`` pide más filas,
+cola ffmpeg software como C1 (sin ``-count_frames`` ni re-extract secuencial).
 """
 from __future__ import annotations
 
@@ -34,8 +34,8 @@ import numpy as np
 from triton_pose_extract.extract_stack import PoseExtractStack, clone_triton_client
 from triton_pose_extract.pipeline_config import C1LikeExtractConfig
 from triton_pose_extract.video_decode import (
-    ffprobe_nb_read_frames,
     ffprobe_nb_read_packets,
+    iter_ffmpeg_software_frames,
     iter_frames_opencv,
     probe_video,
 )
@@ -130,6 +130,7 @@ def extract_clip_pipelined(
     cancel = threading.Event()
     producer_err: list[BaseException] = []
     decode_wall: list[float] = [0.0]
+    ffmpeg_tail: list[int] = [0]
 
     def _acquire_slot() -> bool:
         while not cancel.is_set():
@@ -139,19 +140,59 @@ def extract_clip_pipelined(
 
     def _producer() -> None:
         t_d0 = time.perf_counter()
+        n_emitted = 0
+        n_tail = 0
         try:
             frames: list[np.ndarray] = []
-            for frame in iter_frames_opencv(video_path):
-                frames.append(frame)
-                if len(frames) == bs:
-                    if not _acquire_slot():
-                        return
-                    chunk_q.put(stack.infer_pool.submit(_infer_chunk, frames))
-                    frames = []
-                if cancel.is_set():
-                    return
-            if frames and _acquire_slot():
+
+            def _flush_chunk() -> bool:
+                nonlocal frames
+                if not frames:
+                    return True
+                if not _acquire_slot():
+                    return False
                 chunk_q.put(stack.infer_pool.submit(_infer_chunk, frames))
+                frames = []
+                return True
+
+            def _emit(frame: np.ndarray) -> bool:
+                nonlocal n_emitted, frames
+                if target is not None and n_emitted >= int(target):
+                    return False
+                frames.append(frame)
+                n_emitted += 1
+                if len(frames) == bs:
+                    return _flush_chunk()
+                return True
+
+            for frame in iter_frames_opencv(video_path):
+                if cancel.is_set() or not _emit(frame):
+                    break
+            # OpenCV corto vs packets (C1: cola ffmpeg). No -count_frames ni 2º extract.
+            if (
+                not cancel.is_set()
+                and target is not None
+                and n_emitted < int(target)
+                and timing.width > 0
+                and timing.height > 0
+            ):
+                missing = int(target) - n_emitted
+                logger.info(
+                    "%s: OpenCV T=%d < packets=%d → ffmpeg tail %d",
+                    video_path.name,
+                    n_emitted,
+                    target,
+                    missing,
+                )
+                for frame in iter_ffmpeg_software_frames(
+                    video_path, timing, skip=n_emitted, max_frames=missing
+                ):
+                    n_tail += 1
+                    if cancel.is_set() or not _emit(frame):
+                        break
+            if frames:
+                _flush_chunk()
+            ffmpeg_tail[0] = n_tail
         except BaseException as exc:  # noqa: BLE001
             producer_err.append(exc)
         finally:
@@ -196,24 +237,17 @@ def extract_clip_pipelined(
     if decoded == 0:
         raise RuntimeError(f"0 frames: {video_path}")
 
-    # Verificación T: packets (rápido) → si no cuadra, conteo autoritativo -count_frames.
-    ffprobe_t = target
-    if target is None or decoded != int(target):
-        t_c0 = time.perf_counter()
-        authoritative = ffprobe_nb_read_frames(video_path)
-        t_probe += time.perf_counter() - t_c0
-        if authoritative is not None:
-            ffprobe_t = authoritative
-            count_mode = "frames"
-        if authoritative is None or decoded != int(authoritative):
-            logger.warning(
-                "%s: pipeline decode=%d != ffprobe packets=%s frames=%s → fallback secuencial",
-                video_path.name,
-                decoded,
-                target,
-                authoritative,
-            )
-            return None
+    # T = frames emitidos (OpenCV + cola ffmpeg). Nunca -count_frames ni 2º extract:
+    # eso dejaba GPU al 0 % y duplicaba el wall (decode CPU ×2–3 por clip).
+    ffprobe_t = int(target) if target is not None else decoded
+    if target is not None and decoded != int(target):
+        logger.warning(
+            "%s: T=%d packets=%d tail=%d (se exporta T OpenCV/ffmpeg, sin re-extract)",
+            video_path.name,
+            decoded,
+            target,
+            ffmpeg_tail[0],
+        )
 
     frame_count = timing.frame_count or decoded
     timings = {
@@ -242,6 +276,7 @@ def extract_clip_pipelined(
             "iamodel_infer_inflight": inflight,
             "iamodel_ffprobe_count_mode": count_mode,
             "iamodel_triton_chunks": n_chunks,
+            "iamodel_ffmpeg_tail_frames": ffmpeg_tail[0],
         },
         timings=timings,
         t0=t0,

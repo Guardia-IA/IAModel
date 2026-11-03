@@ -105,6 +105,9 @@ def build_extract_stack(settings: ExtractSettings) -> PoseExtractStack:
         single_user_only=settings.single_user_only,
         frame_policy=str(clip_cfg_yaml.get("frame_policy") or "keep_all"),  # type: ignore[arg-type]
     )
+    # ByteTrack solo necesita el .pt como contenedor Ultralytics; la pose va a Triton.
+    # Si el wrapper carga en CUDA 0, pelea VRAM/SM con Triton y nvidia-smi engaña.
+    TrackerAdapter._resolve_device = staticmethod(lambda: "cpu")  # type: ignore[method-assign]
     tracker = TrackerAdapter(
         kind=extract_cfg.tracker_kind,
         config_path=clip_cfg_yaml.get("tracker_yaml"),

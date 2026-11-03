@@ -38,6 +38,9 @@ case "$CMD" in
   parity-ab)
     "$PY" scripts/parity_ab_pipeline.py "$@"
     ;;
+  audit-sample)
+    "$PY" scripts/audit_export_sample.py "$@"
+    ;;
   help|*)
     cat <<EOF
 Uso: $0 <comando> [args]
@@ -51,6 +54,8 @@ Uso: $0 <comando> [args]
   compare-legacy --video MP4 --reference .../poses_full.npy
                                       Re-extract batch + comparar npy antiguo
   parity-ab --video MP4 [...]         Secuencial vs pipelined: npy bit a bit + tiempos
+  audit-sample --data-result DIR --n N
+                                      N clips al azar: forma, máscaras, fps, T
   smoke-one [--video PATH]            Prueba 1 clip
 
 Variables:

@@ -299,7 +299,7 @@ def check_preflight_smoke(
     if not config:
         return
     try:
-        from campaign_paths import filter_cells, class_map_path, category_aug_path, resolve_experiment_ids
+        from campaign_paths import filter_cells, class_map_path, category_aug_path, resolve_experiment_ids, robbery_class_ids
         from class_map_utils import load_class_map
         from preflight_train_plan import build_training_plan
 
@@ -310,8 +310,11 @@ def check_preflight_smoke(
         cell = cells[0]
         class_map_spec = load_class_map(class_map_path(cell["class_map_id"]))
         exp_ids = resolve_experiment_ids(config.get("experiment_ids") or [])
+        pos_ids = robbery_class_ids(config)
         build_training_plan(
             task=cell["task"],
+            positive_class=pos_ids[0],
+            positive_classes=pos_ids,
             pose_source=cell["pose_source"],
             single_user_only=bool(config.get("single_user_only", True)),
             data_root=data_root,

@@ -46,13 +46,17 @@ def apply_uniform_ops_per_clip(
     ops_per_clip: int,
     *,
     robbery_class: int = 6,
+    robbery_classes: Optional[List[int]] = None,
     cap_robbery: bool = True,
 ) -> Dict[int, int]:
     """Fija el mismo número de variantes augment por categoría (experimento uniforme)."""
     n = max(0, int(ops_per_clip))
+    rob_ids = {int(x) for x in robbery_classes} if robbery_classes else {int(robbery_class)}
     out = {int(k): n for k in proposed.keys()}
-    if cap_robbery and robbery_class in out and n > 0:
-        out[int(robbery_class)] = max(0, int(round(n * 0.85)))
+    if cap_robbery and n > 0:
+        for rc in rob_ids:
+            if rc in out:
+                out[rc] = max(0, int(round(n * 0.85)))
     return out
 
 
@@ -63,13 +67,15 @@ def boost_aug_from_fp_categories(
     boost_factor: float = 1.5,
     extra_per_fp_cat: int = 1,
     robbery_class: int = 6,
+    robbery_classes: Optional[List[int]] = None,
     max_aug: int = 15,
 ) -> Dict[int, int]:
     """Sube augment en categorías que aparecen en el manifest de falsos positivos."""
+    rob_ids = {int(x) for x in robbery_classes} if robbery_classes else {int(robbery_class)}
     counts = fp_category_counts(fp_rows)
     out = {int(k): int(v) for k, v in proposed.items()}
     for cat, n_fp in counts.items():
-        if cat == robbery_class:
+        if cat in rob_ids:
             continue
         cur = out.get(cat, 0)
         boosted = int(round(cur * boost_factor)) + int(extra_per_fp_cat)

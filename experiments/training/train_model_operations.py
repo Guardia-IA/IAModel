@@ -735,6 +735,7 @@ def propose_category_augment_counts(
     train_counts: Dict[int, int],
     *,
     robbery_class: int = ROBBERY_CLASS,
+    robbery_classes: Optional[List[int]] = None,
     target_samples: Optional[int] = None,
     min_robbery_rows: Optional[int] = None,
     min_negative_rows: Optional[int] = None,
@@ -758,8 +759,9 @@ def propose_category_augment_counts(
     negative_to_robbery_ratio = max(1.0, float(negative_to_robbery_ratio))
 
     counts = {int(k): int(v) for k, v in train_counts.items()}
-    n_rob = counts.get(robbery_class, 0)
-    neg_counts = {k: v for k, v in counts.items() if k != robbery_class}
+    rob_ids = positive_class_set(robbery_class, robbery_classes)
+    n_rob = sum(counts.get(c, 0) for c in rob_ids)
+    neg_counts = {k: v for k, v in counts.items() if k not in rob_ids}
     neg_vals = [v for v in neg_counts.values() if v > 0]
     total_train = sum(counts.values())
 
@@ -781,22 +783,24 @@ def propose_category_augment_counts(
 
     proposals: Dict[int, int] = {cat: 0 for cat in counts}
 
-    # --- Fase A: recall de robo (evitar FN) ---
-    if n_rob > 0:
+    # --- Fase A: recall de robo (evitar FN). Varias carpetas pueden ser robo. ---
+    for rc in rob_ids:
+        n_one = counts.get(rc, 0)
+        if n_one <= 0:
+            continue
         if n_rob >= min_robbery_rows * 2:
-            proposals[robbery_class] = 0
+            proposals[rc] = 0
         else:
-            proposals[robbery_class] = _aug_for_target_rows(
-                n_rob, min_robbery_rows, include_identity, max_aug
+            proposals[rc] = _aug_for_target_rows(
+                n_one, min_robbery_rows, include_identity, max_aug
             )
         rob_share = n_rob / max(1, total_train)
-        if rob_share < PREFLIGHT_ROBBERY_RARE_THRESHOLD and proposals[robbery_class] < max_aug:
-            proposals[robbery_class] = min(max_aug, proposals[robbery_class] + 1)
-    else:
-        proposals[robbery_class] = 0
+        if rob_share < PREFLIGHT_ROBBERY_RARE_THRESHOLD and proposals[rc] < max_aug:
+            proposals[rc] = min(max_aug, proposals[rc] + 1)
 
-    effective_rob = train_rows_after_category_aug(
-        n_rob, proposals.get(robbery_class, 0), include_identity
+    effective_rob = sum(
+        train_rows_after_category_aug(counts.get(rc, 0), proposals.get(rc, 0), include_identity)
+        for rc in rob_ids
     )
     target_total_neg = max(
         len(neg_counts) * min_negative_rows,
@@ -831,20 +835,22 @@ def analyze_robbery_augment_balance(
     proposals: Dict[int, int],
     *,
     robbery_class: int = ROBBERY_CLASS,
+    robbery_classes: Optional[List[int]] = None,
     include_identity: bool = True,
     negative_to_robbery_ratio: float = PREFLIGHT_NEGATIVE_TO_ROBBERY_RATIO,
 ) -> Dict[str, Any]:
     """Métricas de balance robo vs negativos tras una propuesta de augment."""
-    robbery_class = int(robbery_class)
+    rob_ids = positive_class_set(robbery_class, robbery_classes)
     counts = {int(k): int(v) for k, v in train_counts.items()}
     props = {int(k): int(v) for k, v in proposals.items()}
-    n_rob = counts.get(robbery_class, 0)
-    rob_rows = train_rows_after_category_aug(
-        n_rob, props.get(robbery_class, 0), include_identity
+    n_rob = sum(counts.get(c, 0) for c in rob_ids)
+    rob_rows = sum(
+        train_rows_after_category_aug(counts.get(rc, 0), props.get(rc, 0), include_identity)
+        for rc in rob_ids
     )
     neg_rows = 0
     for cat, n in counts.items():
-        if cat == robbery_class:
+        if cat in rob_ids:
             continue
         neg_rows += train_rows_after_category_aug(n, props.get(cat, 0), include_identity)
     ratio = neg_rows / max(1, rob_rows)
@@ -2756,18 +2762,29 @@ def build_label_mapping(examples: List[PoseExample]) -> Dict[int, int]:
     return {lab: i for i, lab in enumerate(labels)}
 
 
+def positive_class_set(
+    positive_class: int = 6,
+    positive_classes: Optional[List[int]] = None,
+) -> set:
+    if positive_classes:
+        return {int(x) for x in positive_classes}
+    return {int(positive_class)}
+
+
 def make_binary_examples(
     examples: List[PoseExample],
     positive_class: int = 6,
+    positive_classes: Optional[List[int]] = None,
 ) -> List[PoseExample]:
     """
     Construye una lista de ejemplos binarios:
-      - label = 1 si la clase original == positive_class
+      - label = 1 si la carpeta de categoría está en las clases de robo (6 y 14, p. ej.)
       - label = 0 en caso contrario
     """
+    positives = positive_class_set(positive_class, positive_classes)
     binary_examples: List[PoseExample] = []
     for ex in examples:
-        bin_label = 1 if ex.label == positive_class else 0
+        bin_label = 1 if _example_folder_category(ex) in positives else 0
         binary_examples.append(
             PoseExample(
                 pose_path=ex.pose_path,
@@ -3131,6 +3148,7 @@ def build_datasets_and_loaders(
     num_workers: int = 4,
     task: str = "multiclass",
     positive_class: int = 6,
+    positive_classes: Optional[List[int]] = None,
     balanced: bool = False,
     single_user_only: bool = False,
     min_clip_seconds: float = MIN_CLIP_SECONDS,
@@ -3180,11 +3198,6 @@ def build_datasets_and_loaders(
             raise ValueError(
                 f"task={task!r} no coincide con training_plan ({plan_task!r})"
             )
-        if task == "binary" and int(training_plan.get("positive_class", positive_class)) != int(positive_class):
-            raise ValueError(
-                "positive_class del CLI no coincide con el training_plan"
-            )
-
     if training_plan is not None and training_plan.get("class_map"):
         try:
             from .class_map_utils import apply_class_map_spec
@@ -3202,8 +3215,21 @@ def build_datasets_and_loaders(
         print(f"[DEBUG] Usando solo {len(examples)} ejemplos para train/val/test")
 
     if task == "binary":
-        print(f"[BINARIO] Usando clase positiva original: {positive_class}")
-        examples = make_binary_examples(examples, positive_class=positive_class)
+        if training_plan is not None and training_plan.get("positive_classes"):
+            plan_pos = {int(x) for x in training_plan["positive_classes"]}
+        elif training_plan is not None:
+            plan_pos = {int(training_plan.get("positive_class", positive_class))}
+        else:
+            plan_pos = None
+        arg_pos = positive_class_set(positive_class, positive_classes)
+        if plan_pos is not None and plan_pos != arg_pos:
+            raise ValueError(
+                f"positive_classes del plan {sorted(plan_pos)} != entrenamiento {sorted(arg_pos)}. "
+                "Vuelve a ejecutar el preflight."
+            )
+        use_pos = sorted(plan_pos or arg_pos)
+        print(f"[BINARIO] Clases positivas (robo): {use_pos} · resto → 0")
+        examples = make_binary_examples(examples, positive_class=use_pos[0], positive_classes=use_pos)
 
     n_ex = len(examples)
     if training_plan is not None:
@@ -3754,6 +3780,7 @@ def run_experiment(
     device: torch.device,
     task: str = "multiclass",
     positive_class: int = 6,
+    positive_classes: Optional[List[int]] = None,
     pose_source_override: str | None = None,
     balanced: bool = False,
     single_user_only: bool = False,
@@ -3824,12 +3851,22 @@ def run_experiment(
             f"uids={len(hard_negative_uid_set)} weight={hn_weight:.2f}"
         )
 
+    num_workers = 4
+    raw_workers = os.environ.get("CAMPAIGN_NUM_WORKERS", "").strip()
+    if raw_workers:
+        try:
+            num_workers = max(0, int(raw_workers))
+        except ValueError:
+            num_workers = 4
+
     loaders, input_dim, label_to_idx, split_manifest = build_datasets_and_loaders(
         seq_len=seq_len,
         batch_size=batch_size,
         pose_source=pose_source,
+        num_workers=num_workers,
         task=task,
         positive_class=positive_class,
+        positive_classes=positive_classes,
         balanced=balanced,
         single_user_only=single_user_only,
         min_clip_seconds=min_clip_seconds,
@@ -3979,7 +4016,7 @@ def run_experiment(
         base_msg += (
             f" | f1_pos={f1_pos:.4f} | "
             f"rec_pos={rec_pos:.4f} | prec_pos={prec_pos:.4f} "
-            f"(clase positiva={positive_class})"
+            f"(clases positivas={sorted(positive_class_set(positive_class, positive_classes))})"
         )
     if task == "binary" and test_metrics.get("binary"):
         extra = format_binary_metrics_line(test_metrics["binary"], prefix="test: ")
@@ -3997,6 +4034,7 @@ def run_experiment(
         "seq_len": seq_len,
         "task": task,
         "positive_class": positive_class,
+        "positive_classes": sorted(positive_class_set(positive_class, positive_classes)),
         "num_classes": num_classes,
         "metrics": {
             "best_val_acc": float(best_val_acc),

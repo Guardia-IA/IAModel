@@ -66,6 +66,7 @@ def categories_below_clip_threshold(
 def resolve_class_map_spec(
     class_map_spec: Dict[str, Any],
     folder_scan: Optional[Dict[int, Dict[str, int]]] = None,
+    keep_categories: Optional[List[int]] = None,
 ) -> Dict[str, Any]:
     """
     Fusiona exclude estático + exclude_below_clip_count (dinámico según inventario).
@@ -77,6 +78,8 @@ def resolve_class_map_spec(
     if threshold is not None and folder_scan:
         for cat in categories_below_clip_threshold(folder_scan, int(threshold)):
             exclude.add(cat)
+    if keep_categories:
+        exclude -= {int(x) for x in keep_categories}
     spec["exclude"] = sorted(exclude)
     if threshold is not None:
         spec["exclude_below_clip_count"] = int(threshold)
@@ -113,9 +116,12 @@ def apply_class_map_spec(
 def plan_class_map_block(
     class_map_spec: Dict[str, Any],
     folder_scan: Optional[Dict[int, Dict[str, int]]] = None,
+    keep_categories: Optional[List[int]] = None,
 ) -> Dict[str, Any]:
     """Subconjunto serializable para training_plan.json (exclude ya resuelto)."""
-    resolved = resolve_class_map_spec(class_map_spec, folder_scan)
+    resolved = resolve_class_map_spec(
+        class_map_spec, folder_scan, keep_categories=keep_categories
+    )
     block: Dict[str, Any] = {
         "id": resolved.get("id"),
         "description": resolved.get("description"),
@@ -132,13 +138,15 @@ def adjust_augment_for_fp_hardened(
     proposed: Dict[int, int],
     *,
     robbery_class: int = 6,
+    robbery_classes: Optional[List[int]] = None,
     boost_factor: float = 1.35,
 ) -> Dict[int, int]:
     """Sube augment en negativos; mantiene robo moderado."""
+    rob_ids = {int(x) for x in robbery_classes} if robbery_classes else {int(robbery_class)}
     out: Dict[int, int] = {}
     for cat, count in proposed.items():
         c = int(cat)
-        if c == int(robbery_class):
+        if c in rob_ids:
             out[c] = max(0, int(round(int(count) * 0.85)))
         else:
             out[c] = int(round(int(count) * boost_factor))

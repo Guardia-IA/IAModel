@@ -52,6 +52,7 @@ try:
         _category_augment_count_for_label,
         _category_augment_is_active,
         make_binary_examples,
+        positive_class_set,
     )
 except ImportError:
     from model_config import (  # type: ignore[attr-defined]
@@ -88,6 +89,7 @@ except ImportError:
         _category_augment_count_for_label,
         _category_augment_is_active,
         make_binary_examples,
+        positive_class_set,
     )
 
 try:
@@ -225,6 +227,7 @@ def build_training_plan(
     *,
     task: str = "multiclass",
     positive_class: int = ROBBERY_CLASS,
+    positive_classes: Optional[List[int]] = None,
     pose_source: str = "filtered",
     single_user_only: bool = False,
     min_clip_seconds: float = MIN_CLIP_SECONDS,
@@ -285,7 +288,13 @@ def build_training_plan(
                 plan_class_map_block,
                 resolve_class_map_spec,
             )
-        resolved_map = resolve_class_map_spec(class_map_spec, folder_scan)
+        resolved_map = resolve_class_map_spec(
+            class_map_spec,
+            folder_scan,
+            keep_categories=sorted(positive_class_set(positive_class, positive_classes))
+            if task == "binary"
+            else None,
+        )
         n_before = len(examples)
         examples = apply_class_map_spec(examples, resolved_map)
         excluded = resolved_map.get("exclude") or []
@@ -303,9 +312,12 @@ def build_training_plan(
     n_total = len(examples)
     print(f"  Ejemplos válidos: {CYAN}{n_total}{RESET} | categorías: {len(global_counts)}")
 
+    pos_ids = sorted(positive_class_set(positive_class, positive_classes if task == "binary" else None))
     if task == "binary":
-        examples_for_split = make_binary_examples(examples, positive_class=positive_class)
-        print(f"  Modo binario: clase {positive_class} (robo) → 1, resto → 0")
+        examples_for_split = make_binary_examples(
+            examples, positive_class=pos_ids[0], positive_classes=pos_ids
+        )
+        print(f"  Modo binario: clases {pos_ids} (robo) → 1, resto → 0")
     else:
         examples_for_split = examples
         print("  Modo multiclass: categorías 0–14")
@@ -339,9 +351,11 @@ def build_training_plan(
     current_cfg = load_category_augmentation_config(cfg_path)
     include_identity = bool(current_cfg.get("include_identity", True))
 
+    rob_for_aug = pos_ids if task == "binary" else None
     proposed_aug = propose_category_augment_counts(
         train_counts,
         robbery_class=robbery_class,
+        robbery_classes=rob_for_aug,
         target_samples=target_samples,
         min_robbery_rows=min_robbery_rows,
         min_negative_rows=min_negative_rows,
@@ -365,6 +379,7 @@ def build_training_plan(
         train_counts,
         proposed_aug,
         robbery_class=robbery_class,
+        robbery_classes=rob_for_aug,
         include_identity=include_identity,
         negative_to_robbery_ratio=negative_to_robbery_ratio,
     )
@@ -403,6 +418,7 @@ def build_training_plan(
         "seed": SEED,
         "task": task,
         "positive_class": int(positive_class),
+        "positive_classes": pos_ids if task == "binary" else [int(positive_class)],
         "campaign_class_map_id": (class_map_spec or {}).get("id"),
         "data_root": str(resolved_root),
         "data_roots": [str(r) for r in resolved_roots],
@@ -456,7 +472,11 @@ def build_training_plan(
             from .class_map_utils import plan_class_map_block
         except ImportError:
             from class_map_utils import plan_class_map_block  # type: ignore
-        plan["class_map"] = plan_class_map_block(class_map_spec, folder_scan)
+        plan["class_map"] = plan_class_map_block(
+            class_map_spec,
+            folder_scan,
+            keep_categories=pos_ids if task == "binary" else None,
+        )
 
     if not skip_time_estimate:
         est_title = "7) Estimación de tiempo (todos los experimentos en model_config.py)"

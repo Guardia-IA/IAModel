@@ -3,30 +3,35 @@
   "description": "Batería de experimentos: multiclase/binario × full/filtered × class maps × augment",
   "single_user_only": true,
   "robbery_class": 6,
+  "robbery_classes": [6, 14],
+  "_robbery_classes_comment": "Binario: positivo si la carpeta es 6 o 14; el resto es no robo. Multiclass deja cada categoría aparte. En celdas binarias estas dos no se excluyen por drop_below_50.",
   "interactions_per_day": 1000,
   "target_recall_pct": 60.0,
   "target_fp_rate_pct": 0.01,
-  "_experiment_ids_comment": "Curado 2026-10 desde campaign_20260805_220606. Fuera: pose_cnn2d(33-35), gru(42-44), tcn débil(7), ms_tcn(55), joint_attn débil(36), mc-only flojos(1,2,24,27,51). Núcleo: tcn_gru 48-50, dilated 11-12, tcn_lstm 40-41.",
+  "_experiment_ids_comment": "Recorte 2026-11 tras campaign_20261006_231053 (val bin_full). Fuera por cola, no por F1<60 (nadie bajó de ~69): tcn 4/6/8, dilated_tcn 10, transformer 25/26, conformer_lite 54, ms_tcn 56. Se quedan 12: tcn 5, dilated 11-12, res_tcn 13, joint_attn 37, tcn_lstm 40-41, tcn_gru 48-50, conformer 53, ms_tcn 57. Paralelo: 2 jobs en la misma GPU.",
+  "parallelism": {
+    "max_parallel_jobs": 2,
+    "cuda_device_index": 0,
+    "dataloader_workers": 2
+  },
   "experiment_ids": [
-    4, 5, 6, 8, 10, 11, 12, 13, 25, 26, 37, 40, 41, 48, 49, 50, 53, 54, 56, 57
+    5, 11, 12, 13, 37, 40, 41, 48, 49, 50, 53, 57
   ],
   "binary_experiment_ids": [
-    4, 5, 6, 8,
-    10, 11, 12, 13,
-    25, 26,
+    5,
+    11, 12, 13,
     37,
     40, 41,
     48, 49, 50,
-    53, 54, 56, 57
+    53, 57
   ],
   "multiclass_experiment_ids": [
-    4, 5, 6, 8,
-    10, 11, 12, 13,
-    25, 26,
+    5,
+    11, 12, 13,
     37,
     40, 41,
     48, 49, 50,
-    53, 54, 56, 57
+    53, 57
   ],
   "threshold_sweep": {
     "softmax_min": 0.5,
@@ -53,22 +58,20 @@
     "keep_all_robbery": true,
     "eval_split": "val",
     "binary_experiment_ids": [
-      4, 5, 6, 8,
-      10, 11, 12, 13,
-      25, 26,
+      5,
+      11, 12, 13,
       37,
       40, 41,
       48, 49, 50,
-      53, 54, 56, 57
+      53, 57
     ],
     "multiclass_experiment_ids": [
-      4, 5, 6, 8,
-      10, 11, 12, 13,
-      25, 26,
+      5,
+      11, 12, 13,
       37,
       40, 41,
       48, 49, 50,
-      53, 54, 56, 57
+      53, 57
     ],
     "ensemble": {
       "auto_from_eval": true
@@ -84,22 +87,20 @@
       "bin_filtered_hardened"
     ],
     "binary_experiment_ids": [
-      4, 5, 6, 8,
-      10, 11, 12, 13,
-      25, 26,
+      5,
+      11, 12, 13,
       37,
       40, 41,
       48, 49, 50,
-      53, 54, 56, 57
+      53, 57
     ],
     "multiclass_experiment_ids": [
-      4, 5, 6, 8,
-      10, 11, 12, 13,
-      25, 26,
+      5,
+      11, 12, 13,
       37,
       40, 41,
       48, 49, 50,
-      53, 54, 56, 57
+      53, 57
     ],
     "config_path": "config_mass_augmentation.json",
     "variants_per_clip": 15,
@@ -110,8 +111,7 @@
     "keep_all_robbery_in_train": true,
     "hard_negative_category_boost": {
       "2": 2.5,
-      "3": 2.0,
-      "14": 2.5
+      "3": 2.0
     },
     "robbery_category_extra_variants": 2,
     "synthetic_gate_max_ratio": 2.0,
