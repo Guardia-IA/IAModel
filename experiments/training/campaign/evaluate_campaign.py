@@ -763,6 +763,11 @@ def main() -> int:
         help="Evaluar modelos bajo artifacts/runs/<run-id>/",
     )
     ap.add_argument(
+        "--data-augmentation",
+        action="store_true",
+        help="Lo aplica el preflight. La evaluación usa el plan ya escrito.",
+    )
+    ap.add_argument(
         "--learning-curve",
         "--prediction",
         dest="learning_curve",

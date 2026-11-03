@@ -474,6 +474,18 @@ case "$CMD" in
   preflight)
     run_preflight
     ;;
+  debug)
+    ensure_run_id
+    mkdir -p "$(run_root)/logs"
+    logfile="$(logs_dir)/debug.log"
+    log_banner "$logfile" "DEBUG"
+    echo "Run de producción: ${RUN_ID} (no se modifica)"
+    echo "Ensayo: ${RUN_ID}_debug"
+    echo "Log: ${logfile}"
+    {
+      "$PY" debug_campaign.py --source-run-id "$RUN_ID" "${EXTRA_ARGS[@]}"
+    } 2>&1 | tee -a "$logfile"
+    ;;
   train|train-bg)
     run_train_bg
     ;;
@@ -552,7 +564,8 @@ Comandos:
   new-run          Crea RUN_ID nuevo y lo deja como run activo
   status           Muestra RUN_ID, PIDs y logs
   check            Validación sin planes
-  preflight        Preflight + logs/preflight.log (foreground)
+  preflight        Preflight + logs/preflight.log (foreground). Acepta --data-augmentation
+  debug            Ensayo con --n 10: train+val+test en <RUN_ID>_debug (no toca el run real)
   train            Entrena en BACKGROUND → logs/train.log
   train-fg         Entrena en primer plano (con log)
   eval             Eval + summary en BACKGROUND (espera train si sigue vivo)

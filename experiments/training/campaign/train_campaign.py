@@ -419,6 +419,11 @@ def train_cell(
         raise FileNotFoundError(f"Falta plan: {plan_path}. Ejecuta preflight_campaign.py --write-all")
 
     plan = load_training_plan_json(plan_path)
+    aug_mode = str((plan.get("augmentation") or {}).get("mode") or (plan.get("proposed_category_augmentation") or {}).get("mode") or "balance_only")
+    if aug_mode == "realistic_balanced":
+        print("[AUG] data-augmentation: hasta 5 variantes realistas; el número por categoría sale del plan.")
+    else:
+        print("[AUG] Solo balanceo de clases (plan sin --data-augmentation).")
     if exp_ids is not None:
         exp_list = resolve_experiment_ids(exp_ids)
     else:
@@ -540,6 +545,11 @@ def main() -> int:
     ap.add_argument("--worker", action="store_true", help=argparse.SUPPRESS)
     ap.add_argument("--job-result", type=str, default=None, help=argparse.SUPPRESS)
     ap.add_argument("--exp-ids", type=int, nargs="*", default=None, help="Override experiment_ids")
+    ap.add_argument(
+        "--data-augmentation",
+        action="store_true",
+        help="Lo aplica el preflight y queda en el plan. Aquí no cambia el entrenamiento.",
+    )
     ap.add_argument(
         "--run-id",
         type=str,

@@ -415,6 +415,7 @@ def _scan_one_data_result_root(root: Path) -> Dict[int, Dict[str, int]]:
         cat = _parse_category_dir_name(cat_dir.name)
         if cat is None:
             continue
+        print(f"[inventario] {root.name}/{cat_dir.name}", flush=True)
         clip_dirs = 0
         clips = 0
         users = 0
@@ -501,6 +502,16 @@ CATEGORY_AUGMENT_RECIPE_BANK: List[Dict[str, Any]] = [
     {"name": "scale_speed_fast", "ops": [{"op": "scale", "pct": 96.0}, {"op": "speed", "factor": 0.9}]},
     {"name": "mirror_speed_slow", "ops": [{"op": "mirror"}, {"op": "speed", "factor": 1.1}]},
     {"name": "shift_noise", "ops": [{"op": "shift", "dx": -0.03, "dy": 0.02}, {"op": "noise", "sx": 0.0025, "sy": 0.0025}]},
+]
+
+# Las que sobreviven al centrado del esqueleto: lado, inclinación y tempo.
+# Orden fijo: si el balance pide 2, se usan las dos primeras.
+REALISTIC_AUGMENT_RECIPE_BANK: List[Dict[str, Any]] = [
+    {"name": "mirror", "ops": [{"op": "mirror"}]},
+    {"name": "rotate_plus_6", "ops": [{"op": "rotate", "deg": 6.0}]},
+    {"name": "rotate_minus_6", "ops": [{"op": "rotate", "deg": -6.0}]},
+    {"name": "speed_fast", "ops": [{"op": "speed", "factor": 0.90}]},
+    {"name": "speed_slow", "ops": [{"op": "speed", "factor": 1.10}]},
 ]
 
 
@@ -606,13 +617,21 @@ def _category_augment_ops_for_clip(
     recipe_bank: List[Dict[str, Any]],
     ranges: Dict[str, Tuple[float, float]],
     seed: int = SEED,
+    fixed_order: bool = False,
 ) -> List[List[Dict[str, Any]]]:
     """Devuelve exactamente n_variants listas de ops (una por variante augmentada)."""
     if n_variants <= 0:
         return []
     bank = recipe_bank or CATEGORY_AUGMENT_RECIPE_BANK
-    perm = _stable_permutation(len(bank), (_stable_uid_hash(uid) ^ int(seed)) & 0xFFFFFFFF)
     out: List[List[Dict[str, Any]]] = []
+    if fixed_order:
+        for slot in range(n_variants):
+            if slot < len(bank):
+                out.append(list(bank[slot].get("ops", []) or []))
+            else:
+                out.append(_random_ops_for_augment_slot(uid, slot, ranges))
+        return out
+    perm = _stable_permutation(len(bank), (_stable_uid_hash(uid) ^ int(seed)) & 0xFFFFFFFF)
     for slot in range(n_variants):
         if slot < len(bank):
             recipe = bank[int(perm[slot % len(perm)])]
@@ -646,7 +665,8 @@ def expand_examples_with_category_augmentation(
         "speed_factor": (AUGMENT_SPEED_FACTOR_LO, AUGMENT_SPEED_FACTOR_HI),
     }
     include_identity = bool(cfg.get("include_identity", True))
-    bank = recipe_bank or CATEGORY_AUGMENT_RECIPE_BANK
+    bank = cfg.get("recipe_bank") or recipe_bank or CATEGORY_AUGMENT_RECIPE_BANK
+    fixed_order = str(cfg.get("recipe_order") or "") == "fixed"
 
     out: List[PoseExample] = []
     expanded_clips = 0
@@ -663,7 +683,9 @@ def expand_examples_with_category_augmentation(
             continue
 
         uid = _example_uid(ex)
-        ops_list = _category_augment_ops_for_clip(uid, n_req, bank, ranges, seed=seed)
+        ops_list = _category_augment_ops_for_clip(
+            uid, n_req, bank, ranges, seed=seed, fixed_order=fixed_order
+        )
         if include_identity:
             out.append(_copy_pose_example(ex, forced_ops=[]))
         else:
@@ -1458,6 +1480,100 @@ def _augment_poses_on_the_fly(
     return out
 
 
+def _examples_in_clip_dir(
+    clip_dir: Path,
+    *,
+    cat_str: str,
+    folder_cat: int,
+    pose_source: str,
+    single_user_only: bool,
+    min_clip_seconds: float,
+    min_valid_frames: int,
+    min_valid_pct: float,
+    max_occlusion_ratio: float,
+) -> List[PoseExample]:
+    """Un clip → 0 o 1 ejemplo (single_user). Misma criba que el recorrido completo."""
+    meta_path = clip_dir / "meta.json"
+    if not meta_path.exists():
+        return []
+    try:
+        with open(meta_path, "r", encoding="utf-8") as f:
+            meta = json.load(f)
+    except Exception:
+        return []
+
+    users = meta.get("users", [])
+    if not users:
+        return []
+    if single_user_only and len(users) != 1:
+        return []
+
+    out: List[PoseExample] = []
+    for user in users:
+        track_id = user.get("track_id")
+        if track_id is None:
+            continue
+        user_dir = clip_dir / f"user_{track_id}"
+        pose_filename = "poses.npy" if pose_source == "filtered" else "poses_full.npy"
+        pose_path = user_dir / pose_filename
+        if not pose_path.exists():
+            continue
+        try:
+            poses = np.load(pose_path)
+        except Exception:
+            continue
+        if poses.ndim != 3 or poses.shape[-1] != 2:
+            continue
+
+        valid_mask_path = None
+        effective_len = poses.shape[0]
+        if pose_source == "full":
+            mask_path = user_dir / "valid_mask.npy"
+            if mask_path.exists():
+                try:
+                    valid_mask = np.load(mask_path)
+                    if valid_mask.ndim != 1 or len(valid_mask) != poses.shape[0]:
+                        continue
+                    effective_len = int(valid_mask.sum())
+                    if effective_len < MIN_SEQ_LEN:
+                        continue
+                    valid_mask_path = mask_path
+                except Exception:
+                    continue
+            elif np.any(np.isnan(poses)):
+                continue
+
+        if not _user_quality_ok(
+            user,
+            meta,
+            effective_len,
+            min_clip_seconds=min_clip_seconds,
+            min_valid_frames=min_valid_frames,
+            min_valid_pct=min_valid_pct,
+            max_occlusion_ratio=max_occlusion_ratio,
+        ):
+            continue
+
+        user_cat = user.get("user_cat")
+        if user_cat is not None:
+            label = _to_int(user_cat, default=_to_int(meta.get("cat", cat_str), default=0))
+        else:
+            label = _to_int(meta.get("cat", cat_str), default=0)
+        out.append(
+            PoseExample(
+                pose_path=pose_path,
+                label=label,
+                track_id=int(track_id),
+                clip_name=str(meta.get("clip_name", clip_dir.name)),
+                category_str=cat_str,
+                valid_mask_path=valid_mask_path,
+                users_in_clip=int(len(users)),
+                action_label=int(folder_cat),
+            )
+        )
+    return out
+
+
 def _collect_examples_from_root(
     root: Path,
     *,
@@ -1478,94 +1594,43 @@ def _collect_examples_from_root(
         folder_cat = _parse_category_dir_name(cat_str)
         if folder_cat is None:
             continue
+        print(f"[progreso] {root.name}/{cat_str}: leyendo clips…", flush=True)
+        seen = 0
+        valid_before = len(examples)
         for clip_dir in sorted(cat_dir.iterdir()):
             if not clip_dir.is_dir():
                 continue
-            meta_path = clip_dir / "meta.json"
-            if not meta_path.exists():
-                continue
-            try:
-                with open(meta_path, "r", encoding="utf-8") as f:
-                    meta = json.load(f)
-            except Exception:
-                continue
-
-            users = meta.get("users", [])
-            if not users:
-                continue
-
-            if single_user_only and len(users) != 1:
-                continue
-            users_selected = users
-
-            for user in users_selected:
-                track_id = user.get("track_id")
-                if track_id is None:
-                    continue
-
-                user_dir = clip_dir / f"user_{track_id}"
-                pose_filename = "poses.npy" if pose_source == "filtered" else "poses_full.npy"
-                pose_path = user_dir / pose_filename
-                if not pose_path.exists():
-                    continue
-
-                try:
-                    poses = np.load(pose_path)
-                except Exception:
-                    continue
-
-                if poses.ndim != 3 or poses.shape[-1] != 2:
-                    continue
-
-                valid_mask_path = None
-                effective_len = poses.shape[0]
-                if pose_source == "full":
-                    mask_path = user_dir / "valid_mask.npy"
-                    if mask_path.exists():
-                        try:
-                            valid_mask = np.load(mask_path)
-                            if valid_mask.ndim != 1 or len(valid_mask) != poses.shape[0]:
-                                continue
-                            effective_len = int(valid_mask.sum())
-                            if effective_len < MIN_SEQ_LEN:
-                                continue
-                            valid_mask_path = mask_path
-                        except Exception:
-                            continue
-                    elif np.any(np.isnan(poses)):
-                        continue
-
-                if not _user_quality_ok(
-                    user,
-                    meta,
-                    effective_len,
+            seen += 1
+            examples.extend(
+                _examples_in_clip_dir(
+                    clip_dir,
+                    cat_str=cat_str,
+                    folder_cat=int(folder_cat),
+                    pose_source=pose_source,
+                    single_user_only=single_user_only,
                     min_clip_seconds=min_clip_seconds,
                     min_valid_frames=min_valid_frames,
                     min_valid_pct=min_valid_pct,
                     max_occlusion_ratio=max_occlusion_ratio,
-                ):
-                    continue
-
-                user_cat = user.get("user_cat")
-                if user_cat is not None:
-                    label = _to_int(user_cat, default=_to_int(meta.get("cat", cat_str), default=0))
-                else:
-                    label = _to_int(meta.get("cat", cat_str), default=0)
-
-                examples.append(
-                    PoseExample(
-                        pose_path=pose_path,
-                        label=label,
-                        track_id=int(track_id),
-                        clip_name=str(meta.get("clip_name", clip_dir.name)),
-                        category_str=cat_str,
-                        valid_mask_path=valid_mask_path,
-                        users_in_clip=int(len(users)),
-                        action_label=int(folder_cat),
-                    )
                 )
-                if max_examples > 0 and len(examples) >= max_examples:
-                    return examples
+            )
+            if seen % 50 == 0:
+                print(
+                    f"[progreso] {cat_str}: {seen} clips mirados, "
+                    f"{len(examples) - valid_before} válidos aquí, {len(examples)} en total",
+                    flush=True,
+                )
+            if max_examples > 0 and len(examples) >= max_examples:
+                print(
+                    f"[progreso] {cat_str} cortado en {len(examples)} ejemplos (max_examples)",
+                    flush=True,
+                )
+                return examples
+        print(
+            f"[progreso] {cat_str} listo: {len(examples) - valid_before} válidos | "
+            f"acumulado {len(examples)}",
+            flush=True,
+        )
     return examples
 
 
@@ -1587,6 +1652,10 @@ def collect_examples(
     if not roots:
         roots = [get_data_result_root(data_root)]
 
+    print(
+        f"[progreso] Leyendo ejemplos (pose_source={pose_source}) en {len(roots)} raíz(ces)…",
+        flush=True,
+    )
     examples: List[PoseExample] = []
     for root in roots:
         remaining = 0
@@ -1610,7 +1679,106 @@ def collect_examples(
     if not examples:
         tried = ", ".join(str(r) for r in roots)
         raise RuntimeError(f"No se encontraron ejemplos válidos en data_result. Rutas: {tried}")
+    print(f"[progreso] Lectura terminada: {len(examples)} ejemplos válidos", flush=True)
     return examples
+
+
+def collect_debug_examples(
+    *,
+    n: int,
+    pose_source: str = "filtered",
+    single_user_only: bool = False,
+    min_clip_seconds: float = MIN_CLIP_SECONDS,
+    min_valid_frames: int = MIN_VALID_FRAMES,
+    min_valid_pct: float = MIN_VALID_PCT,
+    max_occlusion_ratio: float = MAX_OCCLUSION_RATIO,
+    data_root: str | Path | None = None,
+    skip_categories: Optional[set] = None,
+    seed: int = SEED,
+) -> List[PoseExample]:
+    """
+    Coge como mucho n clips válidos, rotando categorías, y se para.
+    Misma semilla y mismos filtros → los mismos clips.
+    """
+    del seed  # el orden es el de las carpetas, estable
+    roots = get_data_result_roots(data_root)
+    if not roots:
+        roots = [get_data_result_root(data_root)]
+    skip = {int(x) for x in (skip_categories or set())}
+    groups: List[tuple] = []
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for cat_dir in sorted(root.iterdir()):
+            if not cat_dir.is_dir():
+                continue
+            folder_cat = _parse_category_dir_name(cat_dir.name)
+            if folder_cat is None or int(folder_cat) in skip:
+                continue
+            clips = sorted(
+                p for p in cat_dir.iterdir() if p.is_dir() and (p / "meta.json").is_file()
+            )
+            if clips:
+                groups.append((root, cat_dir.name, int(folder_cat), clips))
+    groups.sort(key=lambda g: (g[2], g[0].name))
+    print(
+        f"[debug] Busco {int(n)} clips en {len(groups)} categorías (sin recorrer todo el corpus)",
+        flush=True,
+    )
+    cursors = [0] * len(groups)
+    examples: List[PoseExample] = []
+    target = max(0, int(n))
+    while len(examples) < target and groups:
+        progressed = False
+        for i, (root, cat_str, folder_cat, clips) in enumerate(groups):
+            if len(examples) >= target:
+                break
+            while cursors[i] < len(clips):
+                clip_dir = clips[cursors[i]]
+                cursors[i] += 1
+                got = _examples_in_clip_dir(
+                    clip_dir,
+                    cat_str=cat_str,
+                    folder_cat=folder_cat,
+                    pose_source=pose_source,
+                    single_user_only=single_user_only,
+                    min_clip_seconds=min_clip_seconds,
+                    min_valid_frames=min_valid_frames,
+                    min_valid_pct=min_valid_pct,
+                    max_occlusion_ratio=max_occlusion_ratio,
+                )
+                if not got:
+                    continue
+                examples.extend(got)
+                progressed = True
+                print(
+                    f"[debug] {min(len(examples), target)}/{target}  {root.name}/{cat_str}/{clip_dir.name}",
+                    flush=True,
+                )
+                break
+        if not progressed:
+            break
+    examples = examples[:target]
+    print(f"[debug] Clips cogidos: {len(examples)}", flush=True)
+    return examples
+
+
+def collect_examples_for_plan(
+    plan: Optional[Dict[str, Any]],
+    **kwargs: Any,
+) -> List[PoseExample]:
+    """Recorrido completo, o el muestreo corto si el plan es de debug."""
+    debug = (plan or {}).get("debug") or {}
+    n = int(debug.get("n") or 0)
+    if n > 0:
+        skip = {int(x) for x in ((plan or {}).get("class_map") or {}).get("exclude") or []}
+        return collect_debug_examples(
+            n=n,
+            skip_categories=skip,
+            seed=int(debug.get("seed") or SEED),
+            **kwargs,
+        )
+    return collect_examples(**kwargs)
 
 
 def normalize_sequence(poses: np.ndarray) -> np.ndarray:
@@ -3178,17 +3346,6 @@ def build_datasets_and_loaders(
     hard_negative_uid_set: Optional[set] = None,
     hard_negative_uid_weight: float = 3.0,
 ) -> Tuple[Dict[str, DataLoader], int, Dict[int, int], Dict[str, Any]]:
-    print(f"Recolectando ejemplos desde data_result... (pose_source='{pose_source}')")
-    examples = collect_examples(
-        pose_source=pose_source,
-        single_user_only=single_user_only,
-        min_clip_seconds=float(min_clip_seconds),
-        min_valid_frames=int(min_valid_frames),
-        min_valid_pct=float(min_valid_pct),
-        max_occlusion_ratio=float(max_occlusion_ratio),
-    )
-    print(f"Ejemplos totales (tras filtrado): {len(examples)}")
-
     training_plan: Optional[Dict[str, Any]] = None
     if training_plan_path is not None:
         training_plan = load_training_plan_json(training_plan_path)
@@ -3198,6 +3355,21 @@ def build_datasets_and_loaders(
             raise ValueError(
                 f"task={task!r} no coincide con training_plan ({plan_task!r})"
             )
+    debug_n = int(((training_plan or {}).get("debug") or {}).get("n") or 0)
+    if debug_n > 0:
+        print(f"[DEBUG] Recolectando {debug_n} clips de ejemplo (pose_source='{pose_source}')")
+    else:
+        print(f"Recolectando ejemplos desde data_result... (pose_source='{pose_source}')")
+    examples = collect_examples_for_plan(
+        training_plan,
+        pose_source=pose_source,
+        single_user_only=single_user_only,
+        min_clip_seconds=float(min_clip_seconds),
+        min_valid_frames=int(min_valid_frames),
+        min_valid_pct=float(min_valid_pct),
+        max_occlusion_ratio=float(max_occlusion_ratio),
+    )
+    print(f"Ejemplos totales (tras filtrado): {len(examples)}")
     if training_plan is not None and training_plan.get("class_map"):
         try:
             from .class_map_utils import apply_class_map_spec
@@ -3837,6 +4009,10 @@ def run_experiment(
     batch_size = cfg.get("batch_size", 32)
     lr = cfg.get("lr", 1e-3)
     epochs = cfg.get("epochs", 20)
+    raw_ep = os.environ.get("CAMPAIGN_DEBUG_EPOCHS", "").strip()
+    if raw_ep:
+        epochs = max(1, int(raw_ep))
+        print(f"[DEBUG] Épocas de este experimento: {epochs}", flush=True)
     pose_source = pose_source_override or cfg.get("pose_source", "filtered")
 
     hard_negative_uid_set: Optional[set] = None

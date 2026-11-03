@@ -47,7 +47,18 @@ try:
         write_hard_negative_manifest,
     )
     from class_map_utils import load_class_map, adjust_augment_for_fp_hardened
-    from preflight_train_plan import build_training_plan, write_training_plan, header, BOLD, RESET, CYAN, YELLOW
+    from preflight_train_plan import (
+        build_training_plan,
+        write_training_plan,
+        header,
+        BOLD,
+        RESET,
+        CYAN,
+        YELLOW,
+        sync_plan_aug_totals,
+        store_and_print_time_estimate,
+    )
+    from train_model_operations import REALISTIC_AUGMENT_RECIPE_BANK
     from model_config import ROBBERY_CLASS, PREFLIGHT_NEGATIVE_TO_ROBBERY_RATIO
     from training_time_estimate import fmt_duration
 except ImportError as exc:
@@ -120,6 +131,8 @@ def run_preflight_cell(
     hard_negative_csv: Optional[Path] = None,
     uniform_ops_per_clip: Optional[int] = None,
     fp_category_boost: Optional[float] = None,
+    data_augmentation: bool = False,
+    parallel_jobs: int = 1,
 ) -> Dict[str, Any]:
     cell_id = cell["id"]
     arts = ensure_cell_dirs(cell_id, run_id=run_id)
@@ -154,9 +167,10 @@ def run_preflight_cell(
         data_root=data_root,
         category_aug_config=category_aug_path(cell_id, run_id=run_id),
         negative_to_robbery_ratio=neg_ratio,
-        skip_time_estimate=skip_time_estimate,
+        skip_time_estimate=True,
         class_map_spec=class_map_spec,
         experiment_ids=exp_ids if exp_ids else None,
+        data_augmentation=data_augmentation,
     )
 
     plan["campaign"] = {
@@ -206,10 +220,32 @@ def run_preflight_cell(
             robbery_classes=pos_ids if cell["task"] == "binary" else None,
         )
 
-    if aug_prof.get("fp_hardened") or fp_rows or uniform_ops > 0:
-        proposed["categories"] = {str(k): int(v) for k, v in sorted(proposed_counts.items())}
-        plan["proposed_category_augmentation"] = proposed
-        plan["campaign"]["aug_fp_hardened"] = bool(aug_prof.get("fp_hardened"))
+    if data_augmentation:
+        cap = len(REALISTIC_AUGMENT_RECIPE_BANK)
+        proposed_counts = {int(k): min(cap, max(0, int(v))) for k, v in proposed_counts.items()}
+        plan.setdefault("augmentation", {})["mode"] = "realistic_balanced"
+    if aug_prof.get("fp_hardened"):
+        plan["campaign"]["aug_fp_hardened"] = True
+    proposed["categories"] = {str(k): int(v) for k, v in sorted(proposed_counts.items())}
+    plan["proposed_category_augmentation"] = proposed
+    sync_plan_aug_totals(plan)
+    totals_now = (plan.get("dataset_stats") or {}).get("totals") or {}
+    print(
+        f"  Clips reales train={totals_now.get('clips_real_train', 0)} | "
+        f"val={totals_now.get('clips_real_val', 0)} | "
+        f"test={totals_now.get('clips_real_test', 0)}"
+    )
+    print(
+        f"  Filas train con sintéticos={totals_now.get('rows_total_train', 0)} "
+        f"(reales {totals_now.get('clips_real_train', 0)} + "
+        f"sintéticas {totals_now.get('rows_synthetic_train', 0)})"
+    )
+    if not skip_time_estimate:
+        store_and_print_time_estimate(
+            plan,
+            experiment_ids=exp_ids if exp_ids else None,
+            parallel_jobs=parallel_jobs,
+        )
 
     hn_manifest_out: Optional[Path] = None
     if fp_rows and write:
@@ -226,6 +262,7 @@ def run_preflight_cell(
 
     time_est = plan.get("training_time_estimate") or {}
     cell_seconds = float(time_est.get("primary_total_seconds", 0.0))
+    cell_wall = float(time_est.get("parallel_wall_seconds", cell_seconds))
 
     if write:
         cfg_out = category_aug_path(cell_id, run_id=run_id)
@@ -252,10 +289,18 @@ def run_preflight_cell(
         "improve_profile": improve_meta.get("improve_profile"),
         "hard_negative_manifest": str(hn_manifest_out) if hn_manifest_out else plan.get("campaign", {}).get("hard_negative_manifest"),
         "train_rows": plan.get("totals", {}).get("rows_train_proposed"),
+        "clips_real_train": totals_now.get("clips_real_train"),
+        "clips_real_val": totals_now.get("clips_real_val"),
+        "clips_real_test": totals_now.get("clips_real_test"),
+        "rows_synthetic_train": totals_now.get("rows_synthetic_train"),
         "models_dir": str(arts["models_dir"]),
         "time_estimate_seconds": cell_seconds,
         "time_estimate_human": time_est.get("primary_total_human"),
+        "parallel_wall_seconds": cell_wall,
+        "parallel_wall_human": time_est.get("parallel_wall_human") or fmt_duration(cell_wall),
+        "parallel_jobs": int(time_est.get("parallel_jobs") or parallel_jobs),
         "experiments_count": len(exp_ids),
+        "data_augmentation": bool(data_augmentation),
     }
 
 
@@ -267,6 +312,8 @@ def build_campaign_time_rollup(
     if not rows:
         return None
     total_s = sum(float(r.get("time_estimate_seconds", 0.0)) for r in rows)
+    total_wall = sum(float(r.get("parallel_wall_seconds", r.get("time_estimate_seconds", 0.0))) for r in rows)
+    slots = max(int(r.get("parallel_jobs") or 1) for r in rows)
     n_cells = len(rows)
     n_exp = max(int(r.get("experiments_count", 0)) for r in rows)
     total_runs = sum(int(r.get("experiments_count", 0) or 0) for r in rows)
@@ -290,14 +337,23 @@ def build_campaign_time_rollup(
         "total_seconds": total_s,
         "total_human": fmt_duration(total_s),
         "total_hours": round(total_s / 3600.0, 2),
+        "parallel_jobs": slots,
+        "parallel_wall_seconds": total_wall,
+        "parallel_wall_human": fmt_duration(total_wall),
+        "parallel_wall_hours": round(total_wall / 3600.0, 2),
         "primary_device": device,
         "per_cell": [
             {
                 "cell_id": r["cell_id"],
                 "train_rows": r.get("train_rows"),
+                "clips_real_train": r.get("clips_real_train"),
+                "rows_synthetic_train": r.get("rows_synthetic_train"),
                 "seconds": float(r.get("time_estimate_seconds", 0.0)),
                 "human": r.get("time_estimate_human")
                 or fmt_duration(float(r.get("time_estimate_seconds", 0.0))),
+                "wall_seconds": float(r.get("parallel_wall_seconds", r.get("time_estimate_seconds", 0.0))),
+                "wall_human": r.get("parallel_wall_human")
+                or fmt_duration(float(r.get("parallel_wall_seconds", r.get("time_estimate_seconds", 0.0)))),
             }
             for r in rows
         ],
@@ -320,29 +376,36 @@ def print_campaign_time_rollup(
     n_exp = int(rollup["experiments_per_cell"])
     total_runs = int(rollup["total_train_runs"])
     device = rollup.get("primary_device", "gpu")
+    slots = int(rollup.get("parallel_jobs") or 1)
+    wall_human = rollup.get("parallel_wall_human") or fmt_duration(total_s / max(1, slots))
+    wall_hours = rollup.get("parallel_wall_hours")
 
     lines = [
         "",
-        "=" * 72,
+        "=" * 88,
         "RESUMEN TOTAL — ESTIMACIÓN DE ENTRENAMIENTO (campaña completa)",
-        "=" * 72,
+        "=" * 88,
         f"Celdas: {n_cells} | experimentos/celda: {n_exp} | entrenamientos totales: {total_runs}",
-        f"Dispositivo de referencia: {device.upper()}",
-        f"TIEMPO TOTAL ESTIMADO: {rollup['total_human']} ({rollup['total_hours']} h)",
+        f"Dispositivo: {device.upper()} | paralelo: {slots} experimentos a la vez en la misma GPU",
+        f"TIEMPO GPU CON PARALELIZACIÓN: {wall_human} ({wall_hours} h)",
+        f"Suma en serie (1 a la vez): {rollup['total_human']} ({rollup['total_hours']} h)",
         "",
-        f"{'Celda':<22} | {'Train rows':>10} | {'Tiempo':>12}",
-        "-" * 50,
+        f"{'Celda':<22} | {'Reales':>7} | {'Sint':>7} | {'Filas':>7} | {'Serie':>12} | {'Paralelo':>12}",
+        "-" * 88,
     ]
     for row in rollup["per_cell"]:
         lines.append(
-            f"{row['cell_id']:<22} | {row.get('train_rows', 0):>10} | {row['human']:>12}"
+            f"{row['cell_id']:<22} | {int(row.get('clips_real_train') or 0):>7} | "
+            f"{int(row.get('rows_synthetic_train') or 0):>7} | {int(row.get('train_rows') or 0):>7} | "
+            f"{row['human']:>12} | {row.get('wall_human', row['human']):>12}"
         )
     lines.extend(
         [
-            "-" * 50,
-            f"SUMA TOTAL: {rollup['total_human']} ({rollup['total_hours']} h)",
-            "Nota: heurística por arquitectura/epochs; eval no incluida.",
-            "=" * 72,
+            "-" * 88,
+            f"GPU CON PARALELIZACIÓN ({slots}): {wall_human} ({wall_hours} h)",
+            f"SUMA EN SERIE: {rollup['total_human']} ({rollup['total_hours']} h)",
+            "Nota: heurística de train. La evaluación final no está incluida.",
+            "=" * 88,
             "",
         ]
     )
@@ -350,20 +413,27 @@ def print_campaign_time_rollup(
 
     header("Resumen estimación — campaña completa")
     print(f"  Celdas: {CYAN}{n_cells}{RESET} | experimentos/celda: {n_exp} | entrenamientos: {total_runs}")
-    print(f"  Dispositivo ref.: {CYAN}{str(device).upper()}{RESET}")
+    print(f"  Dispositivo: {CYAN}{str(device).upper()}{RESET} | paralelo: {slots}")
     print(
-        f"  {BOLD}TIEMPO TOTAL ESTIMADO:{RESET} "
-        f"{BOLD}{CYAN}{rollup['total_human']}{RESET} ({rollup['total_hours']} h)"
+        f"  {BOLD}TIEMPO GPU CON PARALELIZACIÓN ({slots}):{RESET} "
+        f"{BOLD}{CYAN}{wall_human}{RESET} ({wall_hours} h)"
     )
-    print(f"\n  {'Celda':<22} | {'Train rows':>10} | {'Tiempo':>12}")
-    print("  " + "-" * 50)
+    print(
+        f"  Suma en serie (1 experimento a la vez): {rollup['total_human']} ({rollup['total_hours']} h)"
+    )
+    print(
+        f"\n  {'Celda':<22} | {'Reales':>7} | {'Sint':>7} | {'Filas':>7} | {'Serie':>12} | {'Paralelo':>12}"
+    )
+    print("  " + "-" * 80)
     for row in rollup["per_cell"]:
         print(
-            f"  {row['cell_id']:<22} | {row.get('train_rows', 0):>10} | {row['human']:>12}"
+            f"  {row['cell_id']:<22} | {int(row.get('clips_real_train') or 0):>7} | "
+            f"{int(row.get('rows_synthetic_train') or 0):>7} | {int(row.get('train_rows') or 0):>7} | "
+            f"{row['human']:>12} | {row.get('wall_human', row['human']):>12}"
         )
-    print("  " + "-" * 50)
-    print(f"  {BOLD}SUMA TOTAL:{RESET} {CYAN}{rollup['total_human']}{RESET} ({rollup['total_hours']} h)")
-    print(f"  {YELLOW}Nota: heurística train only; eval no incluida.{RESET}\n")
+    print("  " + "-" * 80)
+    print(f"  {BOLD}GPU CON PARALELIZACIÓN:{RESET} {CYAN}{wall_human}{RESET} ({wall_hours} h)")
+    print(f"  {YELLOW}La evaluación final no entra en esta cifra.{RESET}\n")
 
     if run_id:
         log_dir = artifacts_root(run_id) / "logs"
@@ -420,6 +490,14 @@ def main() -> int:
         "--skip-validate",
         action="store_true",
         help="No ejecuta validate_campaign al final.",
+    )
+    ap.add_argument(
+        "--data-augmentation",
+        action="store_true",
+        help=(
+            "Hasta 5 variantes realistas por clip de train (espejo, giro ±6°, velocidad ×0.90/×1.10). "
+            "El balance puede bajar ese número. Sin el flag, el augment solo equilibra clases."
+        ),
     )
     ap.add_argument(
         "--learning-curve",
@@ -518,14 +596,30 @@ def main() -> int:
         print("No hay celdas que procesar.", file=sys.stderr)
         return 1
 
-    print(f"\n=== Preflight campaña — {len(cells)} celdas ===")
+    print(f"\n=== Preflight campaña — {len(cells)} celdas ===", flush=True)
+    if args.data_augmentation:
+        print(
+            "Augment: data-augmentation (tope 5 realistas; el balance puede pedir menos).",
+            flush=True,
+        )
+    else:
+        print("Augment: solo balanceo de clases.", flush=True)
+    print(
+        "[progreso] El inventario y la lectura de clips van saliendo por categoría. "
+        "Si una categoría es grande, verás una línea cada 50 clips.",
+        flush=True,
+    )
     if run_id:
         print(f"Run ID: {run_id} → {artifacts_root(run_id)}")
     if exp_ids and not args.skip_time_estimate:
         print(f"Estimación por celda: experimentos {exp_ids}\n")
     summary: List[Dict[str, Any]] = []
-    for cell in cells:
-        print(f"\n--- Celda: {cell['id']} ({cell['task']}, {cell['pose_source']}) ---")
+    slots = max(1, int((config.get("parallelism") or {}).get("max_parallel_jobs", 1)))
+    for i, cell in enumerate(cells, start=1):
+        print(
+            f"\n--- Celda {i}/{len(cells)}: {cell['id']} ({cell['task']}, {cell['pose_source']}) ---",
+            flush=True,
+        )
         try:
             row = run_preflight_cell(
                 cell,
@@ -539,6 +633,8 @@ def main() -> int:
                 hard_negative_csv=hn_csv,
                 uniform_ops_per_clip=args.uniform_ops_per_clip,
                 fp_category_boost=args.fp_category_boost,
+                data_augmentation=bool(args.data_augmentation),
+                parallel_jobs=slots,
             )
             summary.append(row)
         except Exception as exc:
@@ -584,6 +680,7 @@ def main() -> int:
         "run_id": run_id,
         "config": str(config_path.resolve()) if config_path else str(CONFIG_PATH),
         "experiment_ids": exp_ids,
+        "data_augmentation": bool(args.data_augmentation),
         "hard_negative_csv": str(hn_csv.resolve()) if hn_csv else None,
         "cells": summary,
         "campaign_time_estimate_seconds": total_seconds,
@@ -608,8 +705,10 @@ def main() -> int:
     print(f"\nResumen: {master}")
     if time_rollup:
         print(
-            f"{BOLD}Tiempo total estimado (train, {time_rollup['total_train_runs']} runs): "
-            f"{CYAN}{time_rollup['total_human']}{RESET} ({time_rollup['total_hours']} h)"
+            f"{BOLD}Tiempo GPU con paralelización "
+            f"({time_rollup.get('parallel_jobs', 1)}, {time_rollup['total_train_runs']} runs): "
+            f"{CYAN}{time_rollup.get('parallel_wall_human', time_rollup['total_human'])}{RESET} "
+            f"({time_rollup.get('parallel_wall_hours', time_rollup['total_hours'])} h)"
         )
     elif args.skip_time_estimate:
         print(f"{YELLOW}[!] Estimación omitida (--skip-time-estimate).{RESET}")

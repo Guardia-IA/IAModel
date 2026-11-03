@@ -47,6 +47,7 @@ try:
         MODELS_SINGLE_DIR,
         PoseExample,
         collect_examples,
+        collect_examples_for_plan,
         make_binary_examples,
         build_model,
         build_pose_dataset_for_eval,
@@ -76,6 +77,7 @@ except ImportError:
         MODELS_SINGLE_DIR,
         PoseExample,
         collect_examples,
+        collect_examples_for_plan,
         make_binary_examples,
         build_model,
         build_pose_dataset_for_eval,
@@ -136,6 +138,8 @@ def load_split_uids(
             k: [str(x) for x in v] for k, v in plan.get("split_uids", {}).items()
         }
         meta["evaluation"] = plan.get("evaluation", {})
+        meta["debug"] = plan.get("debug") or {}
+        meta["class_map"] = plan.get("class_map") or {}
         return uids, meta
 
     if split_manifest_path is not None:
@@ -228,7 +232,16 @@ def build_split_examples(
     if root is not None:
         collect_kw["data_root"] = root
 
-    all_examples = collect_examples(**collect_kw)
+    debug_n = int((split_meta.get("debug") or {}).get("n") or 0)
+    if debug_n > 0:
+        plan_for_collect = {
+            "debug": split_meta.get("debug") or {},
+            "class_map": split_meta.get("class_map") or {},
+        }
+        print(f"[DEBUG] Eval: recolectando {debug_n} clips de ejemplo", flush=True)
+        all_examples = collect_examples_for_plan(plan_for_collect, **collect_kw)
+    else:
+        all_examples = collect_examples(**collect_kw)
     if t_task == "binary":
         all_examples = make_binary_examples(
             all_examples, positive_class=pos, positive_classes=[int(x) for x in pos_classes]

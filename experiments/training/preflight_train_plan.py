@@ -36,6 +36,7 @@ try:
     )
     from .train_model_operations import (  # type: ignore[attr-defined]
         CATEGORY_AUGMENT_RECIPE_BANK,
+        REALISTIC_AUGMENT_RECIPE_BANK,
         collect_examples,
         split_examples_stratified_by_uid,
         split_uids_from_example_lists,
@@ -73,6 +74,7 @@ except ImportError:
     )
     from train_model_operations import (  # type: ignore[attr-defined]
         CATEGORY_AUGMENT_RECIPE_BANK,
+        REALISTIC_AUGMENT_RECIPE_BANK,
         collect_examples,
         split_examples_stratified_by_uid,
         split_uids_from_example_lists,
@@ -139,17 +141,164 @@ def _build_proposed_config(
     include_identity: bool = True,
     default: int = 0,
     robbery_class: int = ROBBERY_CLASS,
+    mode: str = "balance_only",
+    recipe_bank: Optional[List[Dict[str, Any]]] = None,
+    recipe_order: str = "stable_perm",
 ) -> Dict[str, Any]:
-    return {
+    cfg: Dict[str, Any] = {
         "enabled": True,
         "include_identity": include_identity,
         "default": int(default),
+        "mode": mode,
+        "recipe_order": recipe_order,
         "categories": {str(k): int(v) for k, v in sorted(proposed.items(), key=lambda x: int(x[0]))},
         "_comment": (
             f"Generado por preflight_train_plan.py. Clase {robbery_class}=robo. "
-            "Solo train; val/test sin augment."
+            "Solo train; val/test sin augment. "
+            + (
+                "mode=realistic_balanced: espejo, giro ±6°, velocidad ×0.90/×1.10; "
+                "el número por categoría lo marca el balance (tope 5)."
+                if mode == "realistic_balanced"
+                else "mode=balance_only: augment solo para equilibrar clases."
+            )
         ),
     }
+    if recipe_bank:
+        cfg["recipe_bank"] = recipe_bank
+    return cfg
+
+
+def sync_plan_aug_totals(plan: Dict[str, Any]) -> Dict[str, Any]:
+    """Recalcula filas reales/sintéticas tras el ajuste final de variantes por categoría."""
+    proposed = plan.get("proposed_category_augmentation") or {}
+    split = plan.get("split_stats_by_category") or {}
+    train_counts = {int(k): int(v) for k, v in (split.get("train") or {}).items()}
+    val_counts = {int(k): int(v) for k, v in (split.get("val") or {}).items()}
+    test_counts = {int(k): int(v) for k, v in (split.get("test") or {}).items()}
+    rows = summarize_category_aug_on_train(train_counts, proposed)
+    by_cat: Dict[str, Dict[str, int]] = {}
+    total_real = 0
+    total_syn = 0
+    total_rows = 0
+    cats = sorted(set(train_counts) | set(val_counts) | set(test_counts))
+    for cat in cats:
+        clips = int(train_counts.get(cat, 0))
+        row_n = int(rows.get(cat, {}).get("train_rows", clips))
+        syn = max(0, row_n - clips)
+        by_cat[str(cat)] = {
+            "clips_real_train": clips,
+            "clips_real_val": int(val_counts.get(cat, 0)),
+            "clips_real_test": int(test_counts.get(cat, 0)),
+            "aug_per_clip": int(rows.get(cat, {}).get("aug_per_clip", 0)),
+            "rows_synthetic_train": syn,
+            "rows_total_train": row_n,
+        }
+        total_real += clips
+        total_syn += syn
+        total_rows += row_n
+    plan["dataset_stats"] = {
+        "by_category": by_cat,
+        "totals": {
+            "clips_real_train": total_real,
+            "clips_real_val": sum(val_counts.values()),
+            "clips_real_test": sum(test_counts.values()),
+            "rows_synthetic_train": total_syn,
+            "rows_total_train": total_rows,
+            "include_identity_in_rows": bool(proposed.get("include_identity", True)),
+        },
+    }
+    totals = plan.setdefault("totals", {})
+    totals["rows_train_proposed"] = int(total_rows)
+    totals["rows_synthetic_train"] = int(total_syn)
+    return plan
+
+
+def store_and_print_time_estimate(
+    plan: Dict[str, Any],
+    *,
+    experiment_ids: Optional[List[int]] = None,
+    parallel_jobs: int = 1,
+    title: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Tiempo de train en GPU: suma en serie y pared con los jobs en paralelo."""
+    totals = (plan.get("dataset_stats") or {}).get("totals") or {}
+    train_rows = int(totals.get("rows_total_train") or 0)
+    val_rows = int(totals.get("clips_real_val") or 0)
+    time_summary = estimate_all_experiments(
+        train_rows=train_rows,
+        val_rows=val_rows,
+        experiment_ids=experiment_ids,
+    )
+    est_title = title
+    if est_title is None:
+        if experiment_ids:
+            ids_str = ", ".join(str(i) for i in experiment_ids)
+            est_title = f"7) Estimación de tiempo — experimentos [{ids_str}]"
+        else:
+            est_title = "7) Estimación de tiempo (todos los experimentos en model_config.py)"
+    format_estimate_report(
+        time_summary,
+        bold=BOLD,
+        reset=RESET,
+        cyan=CYAN,
+        yellow=YELLOW,
+        header_fn=header,
+        title=est_title,
+    )
+    slots = max(1, int(parallel_jobs))
+    serial = float(time_summary["primary_total_seconds"])
+    wall = serial / slots
+    device = str(time_summary["primary_device"])
+    real_train = int(totals.get("clips_real_train") or 0)
+    syn_train = int(totals.get("rows_synthetic_train") or 0)
+    real_val = int(totals.get("clips_real_val") or 0)
+    real_test = int(totals.get("clips_real_test") or 0)
+    print(
+        f"  Clips reales: train={CYAN}{real_train}{RESET} | "
+        f"val={real_val} | test={real_test}"
+    )
+    print(
+        f"  Filas de train con sintéticos: {CYAN}{train_rows}{RESET} "
+        f"(reales {real_train} + sintéticas {syn_train})"
+    )
+    print(f"  {device.upper()} en serie (1 experimento a la vez): {CYAN}{fmt_duration(serial)}{RESET}")
+    print(
+        f"  {device.upper()} con {slots} en paralelo "
+        f"(misma GPU; las celdas van una detrás de otra): {BOLD}{CYAN}{fmt_duration(wall)}{RESET}"
+    )
+    print(f"  {YELLOW}La evaluación final no entra en esta cifra.{RESET}")
+    plan["training_time_estimate"] = {
+        "train_rows_per_epoch": time_summary["train_rows_per_epoch"],
+        "val_rows_per_epoch": time_summary["val_rows_per_epoch"],
+        "clips_real_train": real_train,
+        "clips_real_val": real_val,
+        "clips_real_test": real_test,
+        "rows_synthetic_train": syn_train,
+        "experiments_pending": time_summary["experiments_pending"],
+        "experiments_skipped_done": time_summary["experiments_skipped_done"],
+        "cuda_available": time_summary["cuda_available"],
+        "total_gpu_seconds": time_summary["total_gpu_seconds"],
+        "total_cpu_seconds": time_summary["total_cpu_seconds"],
+        "primary_device": device,
+        "primary_total_seconds": serial,
+        "primary_total_human": fmt_duration(serial),
+        "parallel_jobs": slots,
+        "parallel_wall_seconds": wall,
+        "parallel_wall_human": fmt_duration(wall),
+        "per_experiment": [
+            {
+                "exp_id": item["exp_id"],
+                "arch": item["arch"],
+                "epochs": item["epochs"],
+                "batch_size": item["batch_size"],
+                "seq_len": item["seq_len"],
+                "gpu_minutes": round(item["gpu_seconds"] / 60.0, 2),
+                "cpu_minutes": round(item["cpu_seconds"] / 60.0, 2),
+            }
+            for item in time_summary["per_experiment"]
+        ],
+    }
+    return plan
 
 
 def _merge_train_counts_with_folders(
@@ -249,6 +398,8 @@ def build_training_plan(
     skip_time_estimate: bool = False,
     class_map_spec: Optional[Dict[str, Any]] = None,
     experiment_ids: Optional[List[int]] = None,
+    data_augmentation: bool = False,
+    parallel_jobs: int = 1,
 ) -> Dict[str, Any]:
     resolved_roots = get_data_result_roots(data_root)
     if not resolved_roots:
@@ -344,8 +495,13 @@ def build_training_plan(
 
     _print_split_table(train_counts, val_counts, test_counts, split_uids)
 
-    max_aug_ops = int(max_aug if max_aug is not None else max_category_augment_ops_available())
-    max_aug_ops = min(max_aug_ops, max_category_augment_ops_available())
+    if data_augmentation:
+        max_aug_ops = len(REALISTIC_AUGMENT_RECIPE_BANK)
+        if max_aug is not None:
+            max_aug_ops = min(max_aug_ops, int(max_aug))
+    else:
+        max_aug_ops = int(max_aug if max_aug is not None else max_category_augment_ops_available())
+        max_aug_ops = min(max_aug_ops, max_category_augment_ops_available())
 
     cfg_path = Path(category_aug_config)
     current_cfg = load_category_augmentation_config(cfg_path)
@@ -368,11 +524,15 @@ def build_training_plan(
             continue
         proposed_aug.setdefault(int(cat), 0)
 
+    aug_mode = "realistic_balanced" if data_augmentation else "balance_only"
     proposed_cfg = _build_proposed_config(
         proposed_aug,
         include_identity=include_identity,
         default=int(current_cfg.get("default", 0) or 0),
         robbery_class=robbery_class,
+        mode=aug_mode,
+        recipe_bank=list(REALISTIC_AUGMENT_RECIPE_BANK) if data_augmentation else None,
+        recipe_order="fixed" if data_augmentation else "stable_perm",
     )
     proposed_rows = summarize_category_aug_on_train(train_counts, proposed_cfg)
     balance_rob = analyze_robbery_augment_balance(
@@ -398,6 +558,14 @@ def build_training_plan(
     totals = dataset_stats["totals"]
     print(f"  Task: {task} | positive_class={positive_class}")
     print(f"  Split: {tr:.3f}/{vr:.3f}/{te:.3f} | seed={SEED}")
+    if data_augmentation:
+        print(
+            "  Modo augment: data-augmentation. Tope 5 por clip "
+            "(espejo, giro +6°, giro −6°, velocidad ×0.90, velocidad ×1.10). "
+            "Si el balance pide menos, se generan menos, en ese orden."
+        )
+    else:
+        print("  Modo augment: solo balanceo de clases.")
     print(f"  Augment máx ops/clip: {max_aug_ops} (banco={len(CATEGORY_AUGMENT_RECIPE_BANK)} recetas)")
     print(
         f"  Train filas totales propuestas: {GREEN}{totals['rows_total_train']}{RESET} "
@@ -450,7 +618,11 @@ def build_training_plan(
             "recipe_bank_size": len(CATEGORY_AUGMENT_RECIPE_BANK),
             "include_identity": include_identity,
             "operations_available": ops_available,
-            "recipe_names": [r.get("name", "?") for r in CATEGORY_AUGMENT_RECIPE_BANK],
+            "mode": aug_mode,
+            "recipe_names": [
+                r.get("name", "?")
+                for r in (REALISTIC_AUGMENT_RECIPE_BANK if data_augmentation else CATEGORY_AUGMENT_RECIPE_BANK)
+            ],
         },
         "dataset_stats": dataset_stats,
         "evaluation": {
@@ -479,48 +651,11 @@ def build_training_plan(
         )
 
     if not skip_time_estimate:
-        est_title = "7) Estimación de tiempo (todos los experimentos en model_config.py)"
-        if experiment_ids:
-            ids_str = ", ".join(str(i) for i in experiment_ids)
-            est_title = f"7) Estimación de tiempo — experimentos [{ids_str}]"
-        time_summary = estimate_all_experiments(
-            train_rows=int(totals["rows_total_train"]),
-            val_rows=int(totals["clips_real_val"]),
+        store_and_print_time_estimate(
+            plan,
             experiment_ids=experiment_ids,
+            parallel_jobs=parallel_jobs,
         )
-        format_estimate_report(
-            time_summary,
-            bold=BOLD,
-            reset=RESET,
-            cyan=CYAN,
-            yellow=YELLOW,
-            header_fn=header,
-            title=est_title,
-        )
-        plan["training_time_estimate"] = {
-            "train_rows_per_epoch": time_summary["train_rows_per_epoch"],
-            "val_rows_per_epoch": time_summary["val_rows_per_epoch"],
-            "experiments_pending": time_summary["experiments_pending"],
-            "experiments_skipped_done": time_summary["experiments_skipped_done"],
-            "cuda_available": time_summary["cuda_available"],
-            "total_gpu_seconds": time_summary["total_gpu_seconds"],
-            "total_cpu_seconds": time_summary["total_cpu_seconds"],
-            "primary_device": time_summary["primary_device"],
-            "primary_total_seconds": time_summary["primary_total_seconds"],
-            "primary_total_human": fmt_duration(time_summary["primary_total_seconds"]),
-            "per_experiment": [
-                {
-                    "exp_id": item["exp_id"],
-                    "arch": item["arch"],
-                    "epochs": item["epochs"],
-                    "batch_size": item["batch_size"],
-                    "seq_len": item["seq_len"],
-                    "gpu_minutes": round(item["gpu_seconds"] / 60.0, 2),
-                    "cpu_minutes": round(item["cpu_seconds"] / 60.0, 2),
-                }
-                for item in time_summary["per_experiment"]
-            ],
-        }
 
     return plan
 
@@ -602,6 +737,11 @@ def main() -> int:
         action="store_true",
         help="Omite la estimación de tiempo de todos los experimentos en model_config.py.",
     )
+    parser.add_argument(
+        "--data-augmentation",
+        action="store_true",
+        help="Hasta 5 variantes realistas por clip; el balance puede pedir menos. Sin el flag, solo se balancea.",
+    )
     args = parser.parse_args()
 
     artifacts = resolve_artifacts(
@@ -637,6 +777,7 @@ def main() -> int:
         binary_softmax_threshold=args.binary_softmax_threshold,
         binary_logit_margin=args.binary_logit_margin,
         skip_time_estimate=args.skip_time_estimate,
+        data_augmentation=bool(args.data_augmentation),
     )
 
     header("8) Siguiente paso")

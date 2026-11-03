@@ -474,6 +474,11 @@ def main() -> int:
     ap.add_argument("--skip-smoke", action="store_true", help="Omite build_training_plan y forward smoke")
     ap.add_argument("--run-id", type=str, default=None, help="Validar planes bajo artifacts/runs/<run-id>/")
     ap.add_argument("--cells", nargs="*", default=None, help="Solo validar estas celdas (planes)")
+    ap.add_argument(
+        "--data-augmentation",
+        action="store_true",
+        help="Lo usa el preflight. Aquí se acepta para no romper el comando y no cambia la validación.",
+    )
     args = ap.parse_args()
 
     report = run_validation(
