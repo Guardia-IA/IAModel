@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import json
 import math
 import os
+import pickle
 import random
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Tuple, Any, Optional
@@ -379,6 +381,42 @@ def _parse_category_dir_name(name: str) -> Optional[int]:
     return None
 
 
+_MEM_EXAMPLE_CACHE: Dict[str, List["PoseExample"]] = {}
+_MEM_SCAN_CACHE: Dict[str, Dict[int, Dict[str, int]]] = {}
+
+
+def _example_cache_dir() -> Optional[Path]:
+    raw = os.environ.get("GUADIA_EXAMPLE_CACHE", "").strip()
+    if not raw:
+        return None
+    path = Path(raw)
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _corpus_fingerprint(roots: List[Path]) -> str:
+    """Cambia si entra o sale un clip en alguna categoría (mtime de esa carpeta)."""
+    parts: List[str] = []
+    for root in roots:
+        root = root.resolve()
+        bits = [str(root)]
+        if root.is_dir():
+            for cat in sorted(root.iterdir()):
+                if not cat.is_dir():
+                    continue
+                try:
+                    mtime = cat.stat().st_mtime_ns
+                except OSError:
+                    mtime = 0
+                bits.append(f"{cat.name}:{mtime}")
+        parts.append("|".join(bits))
+    return hashlib.sha1("\n".join(parts).encode("utf-8")).hexdigest()
+
+
+def _clone_examples(examples: List["PoseExample"]) -> List["PoseExample"]:
+    return [replace(ex) for ex in examples]
+
+
 def scan_data_result_folders(data_root: str | Path | None = None) -> Dict[int, Dict[str, int]]:
     """
     Inventario por nombre de carpeta bajo data_result/{cat}/ (sin filtros de calidad).
@@ -393,6 +431,22 @@ def scan_data_result_folders(data_root: str | Path | None = None) -> Dict[int, D
         get_data_result_root(data_root)
         roots = get_data_result_roots(data_root)
 
+    fp = _corpus_fingerprint(roots)
+    if fp in _MEM_SCAN_CACHE:
+        print("[inventario] Reutilizo el inventario ya hecho.", flush=True)
+        return copy.deepcopy(_MEM_SCAN_CACHE[fp])
+    cache_dir = _example_cache_dir()
+    scan_file = cache_dir / f"scan_{fp}.json" if cache_dir else None
+    if scan_file is not None and scan_file.is_file():
+        try:
+            loaded = json.loads(scan_file.read_text(encoding="utf-8"))
+            restored = {int(k): v for k, v in loaded.items()}
+            _MEM_SCAN_CACHE[fp] = restored
+            print("[inventario] Reutilizo el inventario ya hecho.", flush=True)
+            return copy.deepcopy(restored)
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            pass
+
     out: Dict[int, Dict[str, int]] = {}
 
     def _merge_part(part: Dict[int, Dict[str, int]]) -> None:
@@ -404,7 +458,12 @@ def scan_data_result_folders(data_root: str | Path | None = None) -> Dict[int, D
 
     for root in roots:
         _merge_part(_scan_one_data_result_root(root))
-    return out
+    _MEM_SCAN_CACHE[fp] = out
+    if scan_file is not None:
+        tmp = scan_file.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps({str(k): v for k, v in out.items()}), encoding="utf-8")
+        tmp.replace(scan_file)
+    return copy.deepcopy(out)
 
 
 def _scan_one_data_result_root(root: Path) -> Dict[int, Dict[str, int]]:
@@ -1652,6 +1711,38 @@ def collect_examples(
     if not roots:
         roots = [get_data_result_root(data_root)]
 
+    cache_key = ""
+    if max_examples <= 0:
+        cache_key = "|".join(
+            [
+                _corpus_fingerprint(roots),
+                str(pose_source),
+                "1" if single_user_only else "0",
+                f"{float(min_clip_seconds):.4f}",
+                str(int(min_valid_frames)),
+                f"{float(min_valid_pct):.4f}",
+                f"{float(max_occlusion_ratio):.4f}",
+            ]
+        )
+        cached = _MEM_EXAMPLE_CACHE.get(cache_key)
+        if cached is None:
+            cache_dir = _example_cache_dir()
+            blob = cache_dir / f"examples_{hashlib.sha1(cache_key.encode('utf-8')).hexdigest()}.pkl" if cache_dir else None
+            if blob is not None and blob.is_file():
+                try:
+                    with open(blob, "rb") as f:
+                        cached = pickle.load(f)
+                    _MEM_EXAMPLE_CACHE[cache_key] = cached
+                except (OSError, pickle.UnpicklingError, EOFError, AttributeError):
+                    cached = None
+        if cached:
+            print(
+                f"[progreso] pose_source={pose_source}: {len(cached)} ejemplos ya leídos. "
+                "No vuelvo a abrir los npy.",
+                flush=True,
+            )
+            return _clone_examples(cached)
+
     print(
         f"[progreso] Leyendo ejemplos (pose_source={pose_source}) en {len(roots)} raíz(ces)…",
         flush=True,
@@ -1680,6 +1771,16 @@ def collect_examples(
         tried = ", ".join(str(r) for r in roots)
         raise RuntimeError(f"No se encontraron ejemplos válidos en data_result. Rutas: {tried}")
     print(f"[progreso] Lectura terminada: {len(examples)} ejemplos válidos", flush=True)
+    if cache_key:
+        _MEM_EXAMPLE_CACHE[cache_key] = examples
+        cache_dir = _example_cache_dir()
+        if cache_dir is not None:
+            blob = cache_dir / f"examples_{hashlib.sha1(cache_key.encode('utf-8')).hexdigest()}.pkl"
+            tmp = blob.with_suffix(".pkl.tmp")
+            with open(tmp, "wb") as f:
+                pickle.dump(examples, f, protocol=pickle.HIGHEST_PROTOCOL)
+            tmp.replace(blob)
+        return _clone_examples(examples)
     return examples
 
 

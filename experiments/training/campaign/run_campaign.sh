@@ -150,6 +150,9 @@ run_preflight() {
   echo "Run: ${RUN_ID}"
   echo "Artefactos: $(run_root)"
   echo "Log preflight: ${logfile}"
+  mkdir -p "$(run_root)/example_cache"
+  export GUADIA_EXAMPLE_CACHE="$(run_root)/example_cache"
+  echo "Caché de lecturas: ${GUADIA_EXAMPLE_CACHE} (poses.npy una vez, poses_full.npy una vez)"
 
   {
     echo "--- validate ---"
