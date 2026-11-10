@@ -1007,6 +1007,7 @@ def evaluate_cell(
     export_fp: bool = False,
     max_fp_export: int = 100,
     run_id: Optional[str] = None,
+    data_root: Optional[Path] = None,
 ) -> Dict[str, Any]:
     cell_id = cell["id"]
     arts = ensure_cell_dirs(cell_id, run_id=run_id)
@@ -1027,12 +1028,19 @@ def evaluate_cell(
         k: [str(x) for x in v] for k, v in json.loads(plan_path.read_text()).get("split_uids", {}).items()
     }
 
+    plan_root = split_meta.get("data_root")
+    resolved_root = data_root
+    if resolved_root is None and plan_root:
+        pr = Path(str(plan_root))
+        if pr.is_dir():
+            resolved_root = pr
     examples, pool_info = build_split_examples(
         split_uids=split_uids,
         split_meta=split_meta,
         pose_source=cell["pose_source"],
         single_user_only=bool(config.get("single_user_only", True)),
         task=cell["task"],
+        data_root=resolved_root,
     )
 
     per_model_reports: List[Dict[str, Any]] = []
@@ -1478,6 +1486,12 @@ def main() -> int:
             "(y barre mean_threshold_high_conf_grid si está en config). Ej: 0.85 o 0.90."
         ),
     )
+    ap.add_argument(
+        "--data-root",
+        type=str,
+        default=None,
+        help="Carpeta data_result (o padre). Prioridad sobre training_plan y config.py.",
+    )
     args = ap.parse_args()
 
     config = load_merged_campaign_config(Path(args.config) if args.config else None)
@@ -1554,6 +1568,7 @@ def main() -> int:
         return 0
 
     run_id = str(args.run_id).strip() if args.run_id else None
+    data_root = Path(args.data_root).expanduser() if args.data_root else None
     cells = filter_cells(config, None if args.all or not args.cells else args.cells)
     if not cells:
         print("Indica --all o --cells.", file=sys.stderr)
@@ -1574,6 +1589,7 @@ def main() -> int:
                 export_fp=args.export_fp_videos,
                 max_fp_export=args.max_fp_export,
                 run_id=run_id,
+                data_root=data_root,
             )
             summary.append(row)
         except Exception as exc:
