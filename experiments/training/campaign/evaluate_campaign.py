@@ -673,6 +673,50 @@ def rank_ensemble_rows(
     return ranked
 
 
+def parse_ensemble_decision_threshold(row: Dict[str, Any]) -> Optional[float]:
+    """Umbral efectivo para filtrar configs «alta confianza» (mean/and: umbral decisión; majority: high=)."""
+    mode = str(row.get("decision_mode", "")).replace("ensemble_", "")
+    raw = str(row.get("thresholds", ""))
+    if mode == "mean":
+        parts = [p for p in raw.split("|") if p.strip() and "=" not in p]
+        return float(parts[0]) if parts else None
+    if mode == "and":
+        parts = [float(p) for p in raw.split("|") if p.strip() and "=" not in p]
+        return min(parts) if parts else None
+    if mode == "majority":
+        for part in raw.split("|"):
+            if part.startswith("high="):
+                return float(part.split("=", 1)[1])
+    return None
+
+
+def pick_top_ensemble_rows_at_threshold_floor(
+    ensemble_rows: List[Dict[str, Any]],
+    config: Dict[str, Any],
+    floor: float,
+    n: int = 5,
+) -> List[Dict[str, Any]]:
+    ens_cfg = config.get("ensemble") or {}
+    top_n = max(1, int(ens_cfg.get("high_conf_top_n", n)))
+    pool = []
+    for r in ensemble_rows:
+        thr = parse_ensemble_decision_threshold(r)
+        if thr is not None and thr + 1e-9 >= float(floor):
+            pool.append(r)
+    pool.sort(key=lambda r: (-float(r.get("f1_pct", 0)), float(r.get("fp_rate_pct", 999))))
+    out: List[Dict[str, Any]] = []
+    seen: set = set()
+    for r in pool:
+        key = _ensemble_row_key(r)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(r)
+        if len(out) >= top_n:
+            break
+    return out
+
+
 def pick_top_ensemble_rows(
     ensemble_rows: List[Dict[str, Any]],
     config: Dict[str, Any],
@@ -835,6 +879,9 @@ def ensemble_grid_binary(
     high_grid = [float(x) for x in (ens_cfg.get("majority_high_grid") or thr_grid[::4].tolist())]
     low_grid = [float(x) for x in (ens_cfg.get("majority_low_grid") or [0.4, 0.45, 0.48])]
     min_votes_list = [int(x) for x in (ens_cfg.get("majority_min_votes") or [2])]
+    base_mean_thrs = [float(x) for x in thr_grid[::3]]
+    extra_mean = [float(x) for x in (ens_cfg.get("mean_threshold_high_conf_grid") or [])]
+    mean_thr_values = sorted({round(t, 4) for t in base_mean_thrs + extra_mean})
 
     def _add(rule: str, combo: Tuple[str, ...], thr_vals: Tuple[float, ...]) -> None:
         arrays = [model_probs[n] for n in combo]
@@ -939,13 +986,14 @@ def ensemble_grid_binary(
             if rule == "cascade":
                 _add(rule, combo, (0.0, 0.0))
                 continue
-            for thr in thr_grid[::3]:
+            for thr in mean_thr_values:
                 _add(rule, combo, (float(thr), float(thr)))
         if rule in ("and", "mean"):
             for combo in itertools.combinations(names, 3):
                 if len(rows) > max_triplet_rows:
                     break
-                for thr in thr_grid[::4]:
+                tri_thrs = mean_thr_values[::2] if len(mean_thr_values) > 8 else mean_thr_values
+                for thr in tri_thrs:
                     thrs = (float(thr),) * len(combo)
                     _add(rule, combo, thrs)
     return rows
@@ -1134,6 +1182,30 @@ def evaluate_cell(
         top_maj_triplets = pick_top_majority_triplet_rows(ensemble_rows, config)
         if top_maj_triplets:
             write_top_majority_triplets_spec(reports_dir, split, top_maj_triplets)
+        ens_cfg = config.get("ensemble") or {}
+        thr_floor = ens_cfg.get("threshold_floor")
+        if thr_floor is not None and ensemble_rows:
+            high_conf = pick_top_ensemble_rows_at_threshold_floor(
+                ensemble_rows, config, float(thr_floor)
+            )
+            if high_conf:
+                path_hi = reports_dir / f"{split}_top_ensembles_ge_{float(thr_floor):.2f}.json"
+                with open(path_hi, "w", encoding="utf-8") as f:
+                    json.dump(
+                        {
+                            "split": split,
+                            "threshold_floor": float(thr_floor),
+                            "selection": "top_f1_at_or_above_floor",
+                            "ensembles": [
+                                {**row, "rank": i}
+                                for i, row in enumerate(high_conf, start=1)
+                            ],
+                        },
+                        f,
+                        indent=2,
+                        ensure_ascii=False,
+                    )
+                    f.write("\n")
         if best_ens_row is not None and base_records_ref is not None:
             y_pred_ens = ensemble_predict_from_row(model_probs, best_ens_row, config)
             ens_label = (
@@ -1247,6 +1319,25 @@ def evaluate_cell(
                     f"rec={float(row.get('recall_pct') or 0):.1f}% "
                     f"FN={row.get('fn')} FP={row.get('fp')}"
                 )
+        ens_cfg_print = config.get("ensemble") or {}
+        thr_floor_print = ens_cfg_print.get("threshold_floor")
+        if thr_floor_print is not None:
+            hi_rows = pick_top_ensemble_rows_at_threshold_floor(
+                ensemble_rows, config, float(thr_floor_print)
+            )
+            if hi_rows:
+                hi_path = reports_dir / f"{split}_top_ensembles_ge_{float(thr_floor_print):.2f}.json"
+                print(
+                    f"  [{cell_id}] Top alta confianza (umbral ≥ {float(thr_floor_print):.2f}) → {hi_path}"
+                )
+                for row in hi_rows[:5]:
+                    print(
+                        f"    · {row.get('decision_mode')} {row.get('models')} "
+                        f"@ {row.get('thresholds')} — "
+                        f"F1={float(row.get('f1_pct') or 0):.1f}% "
+                        f"rec={float(row.get('recall_pct') or 0):.1f}% "
+                        f"FN={row.get('fn')} FP={row.get('fp')}"
+                    )
     if best_ensemble_info:
         print(
             f"  [{cell_id}] Mejor ensemble operativo ({split}, export FP/FN): "
@@ -1377,9 +1468,21 @@ def main() -> int:
         choices=[0, 1],
         help="Con majority: predicción si no hay mayoría clara (0=no robo, 1=robo).",
     )
+    ap.add_argument(
+        "--ensemble-threshold-floor",
+        type=float,
+        default=None,
+        metavar="T",
+        help=(
+            "Tras el eval, top ensembles con umbral mean/and >= T "
+            "(y barre mean_threshold_high_conf_grid si está en config). Ej: 0.85 o 0.90."
+        ),
+    )
     args = ap.parse_args()
 
     config = load_merged_campaign_config(Path(args.config) if args.config else None)
+    if args.ensemble_threshold_floor is not None:
+        config.setdefault("ensemble", {})["threshold_floor"] = float(args.ensemble_threshold_floor)
 
     if args.ensemble_trial:
         if not args.ensemble_cell or not args.ensemble_models:
