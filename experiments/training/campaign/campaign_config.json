@@ -42,10 +42,15 @@
     "logit_margin_step": 0.25
   },
   "ensemble": {
-    "rules": ["and", "mean", "cascade"],
+    "rules": ["and", "mean", "cascade", "majority"],
     "max_triplets": 20,
+    "top_n": 3,
     "cascade_low": 0.4,
-    "cascade_high": 0.55
+    "cascade_high": 0.55,
+    "majority_high_grid": [0.5, 0.52, 0.55, 0.58, 0.6],
+    "majority_low_grid": [0.4, 0.42, 0.45, 0.48],
+    "majority_min_votes": [2],
+    "majority_tie_pred": 0
   },
   "learning_curve": {
     "cells": [

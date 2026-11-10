@@ -57,6 +57,7 @@ def consolidate(
     all_models: List[Dict[str, Any]] = []
     all_ensemble: List[Dict[str, Any]] = []
     best_ensemble_by_cell: List[Dict[str, Any]] = []
+    top_ensembles_by_cell: List[Dict[str, Any]] = []
 
     for cell in cells:
         cid = cell["id"]
@@ -76,6 +77,12 @@ def consolidate(
         if best_spec.is_file():
             spec = json.loads(best_spec.read_text(encoding="utf-8"))
             best_ensemble_by_cell.append({"cell_id": cid, **spec})
+        top_path = reports / f"{split}_top_ensembles.json"
+        if top_path.is_file():
+            top_ensembles_by_cell.append({
+                "cell_id": cid,
+                **json.loads(top_path.read_text(encoding="utf-8")),
+            })
 
     master_dir = master_reports_dir(run_id)
     leader_path = master_dir / f"campaign_leaderboard_{split}.csv"
@@ -116,7 +123,17 @@ def consolidate(
                 f"{top_model.get('model')} [{top_model.get('decision_mode')}] "
                 f"F1={top_model.get('f1_pct')}% FP={top_model.get('fp_rate_pct')}%"
             )
-        if best_ensemble_by_cell:
+        if top_ensembles_by_cell:
+            for block in top_ensembles_by_cell:
+                cid = block.get("cell_id")
+                for spec in block.get("ensembles") or []:
+                    gaps_lines.append(
+                        f"Top-{spec.get('rank')} ensemble {cid}: {spec.get('decision_mode')} "
+                        f"{spec.get('models')} @ {spec.get('thresholds')} — "
+                        f"F1={spec.get('f1_pct')}% Rec={spec.get('recall_pct')}% "
+                        f"FP={spec.get('fp_rate_pct')}% (FN={spec.get('fn')} FP={spec.get('fp')})"
+                    )
+        elif best_ensemble_by_cell:
             for spec in best_ensemble_by_cell:
                 gaps_lines.append(
                     f"Mejor ensemble {spec.get('cell_id')}: {spec.get('decision_mode')} "
