@@ -428,7 +428,7 @@ def pick_top_majority_triplet_rows(
         parts = [p for p in str(row.get("models", "")).split("|") if p.strip()]
         return len(parts) == 3
 
-    pool = [r for r in ensemble_rows if is_triplet_majority(row)]
+    pool = [r for r in ensemble_rows if is_triplet_majority(r)]
     ranked = sorted(
         pool,
         key=lambda r: (-float(r.get("f1_pct", 0)), float(r.get("fp_rate_pct", 999))),
