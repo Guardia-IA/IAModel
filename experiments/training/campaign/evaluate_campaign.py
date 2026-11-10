@@ -321,6 +321,164 @@ def normalize_model_stems(models: List[str]) -> List[str]:
     return out
 
 
+def _arch_for_model_stem(stem: str) -> str:
+    try:
+        from model_config import EXPERIMENTS
+
+        eid = int(str(stem).replace("modelo_", ""))
+        if 1 <= eid <= len(EXPERIMENTS):
+            return str(EXPERIMENTS[eid - 1].get("arch", "unknown"))
+    except (ValueError, ImportError, IndexError, TypeError):
+        pass
+    return "unknown"
+
+
+def _single_model_f1_at_threshold(
+    probs: np.ndarray,
+    y_true: np.ndarray,
+    threshold: float = 0.5,
+) -> float:
+    pred = (probs >= float(threshold)).astype(np.int64)
+    return float(_binary_metrics(y_true, pred).get("f1_pct", 0.0))
+
+
+def iter_majority_triplet_combos(
+    names: List[str],
+    model_probs: Dict[str, np.ndarray],
+    y_true: np.ndarray,
+    ens_cfg: Dict[str, Any],
+) -> List[Tuple[str, ...]]:
+    """
+  Tríos para majority 2-de-3: presets, un modelo fuerte por arquitectura, y tríos entre top-K.
+    """
+    max_combos = max(1, int(ens_cfg.get("max_majority_triplets", 48)))
+    combos: List[Tuple[str, ...]] = []
+    seen: set = set()
+
+    def add(raw: Tuple[str, ...]) -> None:
+        ordered = tuple(sorted(raw))
+        if len(ordered) != 3:
+            return
+        if any(n not in model_probs for n in ordered):
+            return
+        if ordered in seen:
+            return
+        seen.add(ordered)
+        combos.append(ordered)
+
+    for raw in ens_cfg.get("majority_triplet_presets") or []:
+        if isinstance(raw, (list, tuple)):
+            stems = normalize_model_stems([str(x) for x in raw])
+        else:
+            stems = normalize_model_stems(str(raw).replace("|", ",").split(","))
+        if len(stems) >= 3:
+            add((stems[0], stems[1], stems[2]))
+
+    ranked = sorted(
+        names,
+        key=lambda n: -_single_model_f1_at_threshold(model_probs[n], y_true),
+    )
+    top_k = max(3, int(ens_cfg.get("majority_top_k_models", 6)))
+    top_names = ranked[: min(top_k, len(ranked))]
+
+    by_arch: Dict[str, Tuple[float, str]] = {}
+    for n in ranked:
+        arch = _arch_for_model_stem(n)
+        f1 = _single_model_f1_at_threshold(model_probs[n], y_true)
+        prev = by_arch.get(arch)
+        if prev is None or f1 > prev[0]:
+            by_arch[arch] = (f1, n)
+    diverse = [n for _, n in sorted(by_arch.values(), key=lambda x: -x[0])]
+
+    strategy = str(ens_cfg.get("majority_triplet_strategy", "presets_and_diverse")).strip().lower()
+
+    if strategy in ("presets_and_diverse", "diverse_arch", "diverse"):
+        for combo in itertools.combinations(diverse, 3):
+            add(combo)
+            if len(combos) >= max_combos:
+                return combos[:max_combos]
+        for combo in itertools.combinations(top_names, 3):
+            add(combo)
+            if len(combos) >= max_combos:
+                return combos[:max_combos]
+    elif strategy == "top_k":
+        for combo in itertools.combinations(top_names, 3):
+            add(combo)
+            if len(combos) >= max_combos:
+                break
+    elif strategy == "all":
+        for combo in itertools.combinations(names, 3):
+            add(combo)
+            if len(combos) >= max_combos:
+                break
+    return combos[:max_combos]
+
+
+def pick_top_majority_triplet_rows(
+    ensemble_rows: List[Dict[str, Any]],
+    config: Dict[str, Any],
+    n: int = 3,
+) -> List[Dict[str, Any]]:
+    ens_cfg = config.get("ensemble") or {}
+    top_n = max(1, int(ens_cfg.get("majority_top_n", n)))
+
+    def is_triplet_majority(row: Dict[str, Any]) -> bool:
+        if str(row.get("decision_mode", "")) != "ensemble_majority":
+            return False
+        parts = [p for p in str(row.get("models", "")).split("|") if p.strip()]
+        return len(parts) == 3
+
+    pool = [r for r in ensemble_rows if is_triplet_majority(row)]
+    ranked = sorted(
+        pool,
+        key=lambda r: (-float(r.get("f1_pct", 0)), float(r.get("fp_rate_pct", 999))),
+    )
+    out: List[Dict[str, Any]] = []
+    seen: set = set()
+    for row in ranked:
+        key = _ensemble_row_key(row)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(row)
+        if len(out) >= top_n:
+            break
+    return out
+
+
+def write_top_majority_triplets_spec(
+    reports_dir: Path,
+    split: str,
+    rows: List[Dict[str, Any]],
+) -> Path:
+    specs = []
+    for rank, row in enumerate(rows, start=1):
+        rule = str(row.get("decision_mode", "")).replace("ensemble_", "")
+        models = [m.strip() for m in str(row.get("models", "")).split("|") if m.strip()]
+        arches = [_arch_for_model_stem(m) for m in models]
+        specs.append({
+            "rank": rank,
+            "split": split,
+            "models": models,
+            "arches": arches,
+            "rule": rule,
+            "vote_rule": "2-de-3 (min_votes=2)",
+            "thresholds": row.get("thresholds"),
+            "decision_mode": row.get("decision_mode"),
+            "f1_pct": row.get("f1_pct"),
+            "recall_pct": row.get("recall_pct"),
+            "fp_rate_pct": row.get("fp_rate_pct"),
+            "fn": row.get("fn"),
+            "fp": row.get("fp"),
+        })
+    path = reports_dir / f"{split}_top_majority_triplets.json"
+    payload = {"split": split, "selection": "top_f1_triplets", "ensembles": specs}
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2, ensure_ascii=False)
+        f.write("\n")
+    return path
+
+
 def ensemble_majority_predict(
     arrays: List[np.ndarray],
     *,
@@ -739,22 +897,43 @@ def ensemble_grid_binary(
 
     for rule in rules:
         if rule == "majority":
+            triplets_only = bool(ens_cfg.get("majority_triplets_only", False))
             sampled_high = high_grid[::2] if len(high_grid) > 4 else high_grid
             sampled_low = low_grid[::1] if len(low_grid) <= 4 else low_grid[::2]
-            for combo in itertools.combinations(names, 2):
-                for high in sampled_high:
-                    for low in sampled_low:
-                        for mv in min_votes_list:
-                            _add_majority(combo, high=high, low=low, min_votes=mv)
-            for combo in itertools.combinations(names, 3):
-                if len(rows) > max_triplet_rows:
-                    break
-                highs = sampled_high[::2] if len(sampled_high) > 3 else sampled_high
-                lows = sampled_low[::2] if len(sampled_low) > 3 else sampled_low
+            highs = sampled_high[::2] if len(sampled_high) > 3 else sampled_high
+            lows = sampled_low[::2] if len(sampled_low) > 3 else sampled_low
+            max_maj_cfgs = int(ens_cfg.get("max_majority_triplet_configs", 8000))
+            maj_added = 0
+
+            triplet_combos = iter_majority_triplet_combos(names, model_probs, y_true, ens_cfg)
+            if not triplet_combos and not triplets_only:
+                triplet_combos = list(itertools.combinations(names, 3))[: int(ens_cfg.get("max_majority_triplets", 48))]
+
+            for combo in triplet_combos:
                 for high in highs:
                     for low in lows:
                         for mv in min_votes_list:
+                            if len(combo) == 3 and mv != 2:
+                                continue
+                            if mv > len(combo):
+                                continue
                             _add_majority(combo, high=high, low=low, min_votes=mv)
+                            maj_added += 1
+                            if maj_added >= max_maj_cfgs:
+                                break
+                        if maj_added >= max_maj_cfgs:
+                            break
+                    if maj_added >= max_maj_cfgs:
+                        break
+                if maj_added >= max_maj_cfgs:
+                    break
+
+            if not triplets_only:
+                for combo in itertools.combinations(names, 2):
+                    for high in sampled_high:
+                        for low in sampled_low:
+                            for mv in min_votes_list:
+                                _add_majority(combo, high=high, low=low, min_votes=mv)
             continue
         for combo in itertools.combinations(names, 2):
             if rule == "cascade":
@@ -952,6 +1131,9 @@ def evaluate_cell(
         best_ens_row = top_ens_rows[0] if top_ens_rows else None
         if top_ens_rows:
             write_top_ensembles_spec(reports_dir, split, top_ens_rows)
+        top_maj_triplets = pick_top_majority_triplet_rows(ensemble_rows, config)
+        if top_maj_triplets:
+            write_top_majority_triplets_spec(reports_dir, split, top_maj_triplets)
         if best_ens_row is not None and base_records_ref is not None:
             y_pred_ens = ensemble_predict_from_row(model_probs, best_ens_row, config)
             ens_label = (
@@ -1046,6 +1228,20 @@ def evaluate_cell(
             for row in top_ens_rows:
                 print(
                     f"    · {row.get('decision_mode')} {row.get('models')} "
+                    f"@ {row.get('thresholds')} — "
+                    f"F1={float(row.get('f1_pct') or 0):.1f}% "
+                    f"rec={float(row.get('recall_pct') or 0):.1f}% "
+                    f"FN={row.get('fn')} FP={row.get('fp')}"
+                )
+        top_maj = pick_top_majority_triplet_rows(ensemble_rows, config)
+        if top_maj:
+            maj_path = reports_dir / f"{split}_top_majority_triplets.json"
+            print(f"  [{cell_id}] Top majority 2-de-3 (tríos) ({split}) → {maj_path}")
+            for row in top_maj:
+                stems = [s.strip() for s in str(row.get("models", "")).split("|") if s.strip()]
+                archs = ",".join(_arch_for_model_stem(s) for s in stems)
+                print(
+                    f"    · {row.get('models')} [{archs}] "
                     f"@ {row.get('thresholds')} — "
                     f"F1={float(row.get('f1_pct') or 0):.1f}% "
                     f"rec={float(row.get('recall_pct') or 0):.1f}% "
