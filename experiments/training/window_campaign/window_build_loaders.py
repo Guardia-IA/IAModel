@@ -78,12 +78,16 @@ def _aug_ranges_from_profile(aug_cfg: Dict[str, Any]) -> Dict[str, Tuple[float, 
 
 def _collate_xy(batch):
     xs, ys, *rest = zip(*batch)
-    return torch.stack(xs), torch.stack(ys)
+    return torch.stack(xs), torch.tensor(ys, dtype=torch.long)
 
 
 def _collate_xyw(batch):
     xs, ys, ws = zip(*batch)
-    return torch.stack(xs), torch.stack(ys), torch.stack(ws)
+    return (
+        torch.stack(xs),
+        torch.tensor(ys, dtype=torch.long),
+        torch.tensor(ws, dtype=torch.float32),
+    )
 
 
 def _count_label_states(windows: List[WindowExample]) -> Dict[str, int]:

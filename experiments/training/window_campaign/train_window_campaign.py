@@ -421,9 +421,16 @@ def _train_experiments_parallel(
                 print(f"[paralelo] error exp {exp_id:02d}: {payload.get('error')[:500]}", flush=True)
 
     summary_path = models_out / "parallel_train_summary.json"
+    n_fail = sum(1 for r in results if r.get("error") or int(r.get("returncode") or 0) != 0)
     with open(summary_path, "w", encoding="utf-8") as f:
-        json.dump({"parallel_jobs": parallel, "results": results}, f, indent=2)
-    print(f"[WINDOW] Resumen paralelo → {summary_path}")
+        json.dump(
+            {"parallel_jobs": parallel, "failed": n_fail, "results": results},
+            f,
+            indent=2,
+        )
+    print(f"[WINDOW] Resumen paralelo → {summary_path}", flush=True)
+    if n_fail:
+        raise RuntimeError(f"{n_fail}/{len(results)} experimentos en paralelo fallaron; ver {summary_path}")
 
 
 def _apply_cfg_overrides(cfg: Dict[str, Any], args: argparse.Namespace) -> Dict[str, Any]:
@@ -606,6 +613,7 @@ def main() -> None:
         )
         if hb_stop is not None:
             hb_stop.set()
+        _require_any_checkpoint(out, exp_ids)
         return
 
     try:
@@ -635,6 +643,16 @@ def main() -> None:
     finally:
         if hb_stop is not None:
             hb_stop.set()
+    _require_any_checkpoint(out, exp_ids)
+
+
+def _require_any_checkpoint(models_out: Path, exp_ids: List[int]) -> None:
+    made = [eid for eid in exp_ids if _model_exists(models_out, eid)]
+    if not made:
+        raise SystemExit(
+            f"Ningún checkpoint en {models_out} (esperaba modelo_XX.pt). "
+            "Revisa el log / parallel_train_summary.json"
+        )
 
 
 if __name__ == "__main__":
