@@ -1875,34 +1875,58 @@ def collect_debug_examples(
         )
     print(
         f"[debug] Busco {int(n)} clips válidos en {len(groups)} categorías "
-        f"(indexo cada categoría solo cuando hace falta)",
+        f"(sin listar entera cada categoría; leo meta+npy solo al probar un clip)",
         flush=True,
     )
-    clip_lists: List[Optional[List[Path]]] = [None] * len(groups)
-    clip_idx = [0] * len(groups)
+    clip_iters: List[Optional[Any]] = [None] * len(groups)
     exhausted = [False] * len(groups)
+    tried_per_cat = [0] * len(groups)
     examples: List[PoseExample] = []
     target = max(0, int(n))
 
-    def _clip_dirs(i: int) -> List[Path]:
-        if clip_lists[i] is None:
+    def _clip_iter(i: int):
+        if clip_iters[i] is None:
             _root, cat_str, _fc, cat_dir = groups[i]
-            print(f"[debug] Listando clips en {_root.name}/{cat_str} …", flush=True)
-            clip_lists[i] = sorted(
-                p for p in cat_dir.iterdir() if p.is_dir() and (p / "meta.json").is_file()
+            print(
+                f"[debug] Categoría {_root.name}/{cat_str}: recorrido incremental "
+                f"(sin listar miles de carpetas)",
+                flush=True,
             )
-            print(f"[debug]   → {len(clip_lists[i])} carpetas clip", flush=True)
-        return clip_lists[i] or []
+
+            def _gen():
+                for p in cat_dir.iterdir():
+                    if p.is_dir() and (p / "meta.json").is_file():
+                        yield p
+
+            clip_iters[i] = _gen()
+        return clip_iters[i]
+
+    def _next_clip_dir(i: int) -> Optional[Path]:
+        it = _clip_iter(i)
+        try:
+            return next(it)
+        except StopIteration:
+            exhausted[i] = True
+            return None
 
     while len(examples) < target and groups:
         progressed = False
         for i, (root, cat_str, folder_cat, _cat_dir) in enumerate(groups):
             if len(examples) >= target or exhausted[i]:
                 continue
-            entries = _clip_dirs(i)
-            while clip_idx[i] < len(entries):
-                clip_dir = entries[clip_idx[i]]
-                clip_idx[i] += 1
+            t_cat0 = time.perf_counter()
+            while True:
+                clip_dir = _next_clip_dir(i)
+                if clip_dir is None:
+                    break
+                tried_per_cat[i] += 1
+                if tried_per_cat[i] % 200 == 0:
+                    print(
+                        f"[debug]   … {tried_per_cat[i]} carpetas vistas en "
+                        f"{cat_str} (aún sin clip válido)",
+                        flush=True,
+                    )
+                t0 = time.perf_counter()
                 got = _examples_in_clip_dir(
                     clip_dir,
                     cat_str=cat_str,
@@ -1914,18 +1938,20 @@ def collect_debug_examples(
                     min_valid_pct=min_valid_pct,
                     max_occlusion_ratio=max_occlusion_ratio,
                 )
+                dt_npy = time.perf_counter() - t0
                 if not got:
                     continue
                 examples.extend(got)
                 progressed = True
+                dt_cat = time.perf_counter() - t_cat0
                 print(
                     f"[debug] {min(len(examples), target)}/{target}  "
-                    f"{root.name}/{cat_str}/{clip_dir.name}",
+                    f"{root.name}/{cat_str}/{clip_dir.name}  "
+                    f"(validación {dt_npy:.1f}s | categoría {dt_cat:.1f}s | "
+                    f"intentos={tried_per_cat[i]})",
                     flush=True,
                 )
                 break
-            if clip_idx[i] >= len(entries):
-                exhausted[i] = True
         if not progressed:
             break
     examples = examples[:target]
