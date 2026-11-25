@@ -49,7 +49,11 @@ from train_model_operations import (  # type: ignore
 )
 from window_build_loaders import build_window_datasets_and_loaders
 from window_loss import train_one_epoch_weighted_bce
-from window_parallel_policy import format_parallel_report, resolve_parallelism
+from window_parallel_policy import (
+    format_parallel_report,
+    resolve_dataloader_workers,
+    resolve_parallelism,
+)
 from window_paths import load_window_config, models_dir
 from window_train_progress import (
     DEFAULT_PROGRESS_PATH,
@@ -113,7 +117,11 @@ def run_window_experiment(
     debug_clips = int(cfg_window.get("_debug_max_clips") or 0)
 
     par = cfg_window.get("parallelism") or {}
-    num_workers = int(os.environ.get("WINDOW_DATALOADER_WORKERS") or par.get("dataloader_workers", 2))
+    if os.environ.get("WINDOW_DATALOADER_WORKERS"):
+        num_workers = int(os.environ["WINDOW_DATALOADER_WORKERS"])
+    else:
+        parallel_n = max(1, int(par.get("max_parallel_jobs_cap", 1)))
+        num_workers = resolve_dataloader_workers(par, os.cpu_count() or 8, parallel_n)
     loaders, input_dim, label_to_idx, summary = build_window_datasets_and_loaders(
         data_root=data_root,
         cfg_window=cfg_window,
@@ -280,7 +288,7 @@ def _worker_env(cfg: Dict[str, Any], *, parallel: int, cuda_device: str) -> Dict
     env["CUDA_VISIBLE_DEVICES"] = str(cuda_device)
     env["WINDOW_TRAIN_WORKER"] = "1"
     env["PYTHONUNBUFFERED"] = "1"
-    workers = int(par.get("dataloader_workers", 2))
+    workers = resolve_dataloader_workers(par, os.cpu_count() or 8, parallel)
     env["WINDOW_DATALOADER_WORKERS"] = str(max(0, workers // max(1, parallel)))
     cpus = os.cpu_count() or 8
     threads = max(1, cpus // max(1, parallel * 2))

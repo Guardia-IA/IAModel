@@ -91,10 +91,12 @@ def main() -> int:
         steps.append(cmd)
 
     steps.append([py, "summarize_window_runs.py"] + (["--cell-id", args.cell_id] if args.cell_id else []))
-    steps.append(
+    verify = (
         [py, "verify_split_disjoint.py", "--data-root", data_root]
         + (["--cell-id", args.cell_id] if args.cell_id else [])
     )
+    # Solo si el train generó manifiesto (si train falló, verify daría falso positivo)
+    steps.append(verify)
 
     t0 = time.perf_counter()
     results: list[dict] = []

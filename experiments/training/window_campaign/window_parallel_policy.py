@@ -117,13 +117,13 @@ def resolve_parallelism(
     if override_parallel is not None:
         parallel = max(1, min(cap, int(override_parallel)))
         gpus = manual_ids or (["0"] if cuda_ok else ["0"])
-        dl = _dataloader_workers(par, cpus, parallel)
+        dl = resolve_dataloader_workers(par, cpus, parallel)
         report.update({"source": "cli_override", "parallel": parallel, "gpus": gpus})
         return parallel, _expand_gpu_list(gpus, parallel), dl, report
 
     if not cuda_ok:
         parallel = 1
-        dl = _dataloader_workers(par, cpus, parallel)
+        dl = resolve_dataloader_workers(par, cpus, parallel)
         report.update(
             {
                 "source": "cpu_only",
@@ -203,7 +203,7 @@ def resolve_parallelism(
         gpu_cycle = _expand_gpu_list(ids, parallel)
         report.update({"source": "config_manual", "parallel": parallel, "gpus": ids})
 
-    dl = _dataloader_workers(par, cpus, parallel)
+    dl = resolve_dataloader_workers(par, cpus, parallel)
     report["dataloader_workers"] = dl
     return parallel, gpu_cycle, dl, report
 
@@ -217,7 +217,7 @@ def _expand_gpu_list(ids: List[str], parallel: int) -> List[str]:
     return out
 
 
-def _dataloader_workers(par: Dict[str, Any], cpus: int, parallel: int) -> int:
+def resolve_dataloader_workers(par: Dict[str, Any], cpus: int, parallel: int) -> int:
     raw = par.get("dataloader_workers", "auto")
     if raw == "auto" or raw is None:
         # Dejar CPUs para N procesos train + un poco de margen
