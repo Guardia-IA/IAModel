@@ -102,6 +102,10 @@ class WindowPoseDataset(Dataset):
         rng = np.random.default_rng(sample_seed)
 
         if forced is not None:
+            if self.dataset_split != "train":
+                raise RuntimeError(
+                    f"forced_ops en split {self.dataset_split} (solo permitido en train): {uid}"
+                )
             det_seed = (
                 _stable_uid_hash(uid) * 1009 + _stable_str_hash(repr(forced)) + int(idx) * 131
             ) & 0xFFFFFFFF

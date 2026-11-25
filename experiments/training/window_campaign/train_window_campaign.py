@@ -119,6 +119,8 @@ def run_window_experiment(
         manifest_cache_dir=manifest_cache_dir,
         manifest_variant_set=MANIFEST_VARIANT_SET_DEFAULT,
         extra_manifest_views_per_window=int(syn.get("extra_manifest_views_per_clip", 1)),
+        force_new_split=bool(cfg_window.get("_force_new_split")),
+        cell_id=cfg_window.get("default_cell_id"),
     )
     loss_cfg = cfg_window.get("loss") or {}
     num_classes = len(label_to_idx)
@@ -242,6 +244,11 @@ def main() -> None:
     ap.add_argument("--cell-id", type=str, default=None)
     ap.add_argument("--no-augment", action="store_true")
     ap.add_argument(
+        "--force-new-split",
+        action="store_true",
+        help="Ignora manifiesto congelado y regenera train/val/test",
+    )
+    ap.add_argument(
         "--manifest-cache-dir",
         type=str,
         default=None,
@@ -269,8 +276,11 @@ def main() -> None:
         else get_data_result_roots(None)[0]
     )
     task = "binary"
-    if args.debug_clips > 0 or args.debug_epochs > 0:
+    if args.force_new_split:
         cfg = dict(cfg)
+        cfg["_force_new_split"] = True
+    if args.debug_clips > 0 or args.debug_epochs > 0:
+        cfg = dict(cfg) if not args.force_new_split else cfg
         if args.debug_clips > 0:
             cfg["_debug_max_clips"] = args.debug_clips
         if args.debug_epochs > 0:

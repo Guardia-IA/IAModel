@@ -9,6 +9,24 @@
   "mask_policy": "keep_grid_v2",
   "preprocess_version": 2,
   "pose_source": "full",
+  "clip_filters": {
+    "min_clip_seconds": 4.0,
+    "min_valid_frames": 0,
+    "min_valid_pct": 0.0,
+    "max_occlusion_ratio": 90.0
+  },
+  "quality_gate": {
+    "enabled": true,
+    "hz": 12,
+    "min_content_seconds": 2.0,
+    "min_padded_content_seconds": 1.0,
+    "allow_padded_tail": true,
+    "max_jump_to_median_ratio": 8.0,
+    "max_centroid_jump_norm": 0.55,
+    "min_visible_joints": 5,
+    "max_low_visibility_frame_ratio": 0.35,
+    "max_all_zero_frame_ratio": 0.2
+  },
   "single_user_only": true,
   "robbery_classes": [6, 14],
   "task_default": "binary",
@@ -68,7 +86,10 @@
     "train_ratio": 0.8,
     "val_ratio": 0.1,
     "test_ratio": 0.1,
-    "split_by": "clip_name"
+    "split_by": "clip_uid",
+    "use_frozen_manifest": true,
+    "manifest_path": "artifacts/plans/win_bin_full_baseline_split_manifest.json",
+    "_comment": "Primera corrida: crea manifiesto. Siguientes: mismos clips en val/test (sin mezclar con train). Borra manifiesto o --force-new-split para re-sortear."
   },
   "train_defaults": {
     "batch_size": 32,

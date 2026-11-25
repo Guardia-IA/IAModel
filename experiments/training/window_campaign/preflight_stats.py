@@ -7,6 +7,7 @@ from train_model_operations import PoseExample, split_examples_stratified_by_uid
 
 from core_labels import apply_core_aware_labels, apply_padded_negative_simulation, load_core_index
 from window_index import WindowExample, build_windows_from_examples, summarize_windows
+from window_quality import filter_windows_by_pose_quality
 
 
 def _clip_window_counts(windows: List[WindowExample]) -> Tuple[int, int]:
@@ -67,15 +68,22 @@ def build_preflight_stats(
         return ws
 
     train_w = wins(train_clips)
+    val_w = wins(val_clips)
+    test_w = wins(test_clips)
+    q_before = len(train_w) + len(val_w) + len(test_w)
+    if (cfg.get("quality_gate") or {}).get("enabled", True):
+        train_w, q_tr = filter_windows_by_pose_quality(train_w, cfg=cfg, verbose=False)
+        val_w, q_va = filter_windows_by_pose_quality(val_w, cfg=cfg, verbose=False)
+        test_w, q_te = filter_windows_by_pose_quality(test_w, cfg=cfg, verbose=False)
+    else:
+        q_tr = q_va = q_te = {"dropped": 0}
+
     train_w = apply_padded_negative_simulation(
         train_w,
         prob=float(pad_cfg.get("padded_negative_prob", 0.15)),
         len_range=tuple(pad_cfg.get("padded_len_range", [48, 95])),
         window_len=wl,
     )
-    val_w = wins(val_clips)
-    test_w = wins(test_clips)
-
     all_w = build_windows_from_examples(
         examples,
         window_len=wl,
@@ -124,4 +132,11 @@ def build_preflight_stats(
         "window": {"len": wl, "stride": stride, "min_tail": min_tail},
         "val_rows_per_epoch": len([w for w in val_w if w.label_state != "ignore"]),
         "train_rows_per_epoch": rows_per_epoch,
+        "quality_gate": {
+            "chunks_before": q_before,
+            "dropped_train": q_tr.get("dropped", 0),
+            "dropped_val": q_va.get("dropped", 0),
+            "dropped_test": q_te.get("dropped", 0),
+            "reason_counts_train": q_tr.get("reason_counts", {}),
+        },
     }

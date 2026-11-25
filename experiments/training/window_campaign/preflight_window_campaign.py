@@ -116,10 +116,15 @@ def main() -> None:
         examples = make_binary_examples(examples, positive_classes=rob)
         print(yellow(f"  [DEBUG] Solo {len(examples)} clips para el informe"))
     else:
+        cf = cfg.get("clip_filters") or {}
         examples = collect_examples(
             pose_source=pose_source,
             single_user_only=single_user,
             data_root=data_root,
+            min_clip_seconds=float(cf.get("min_clip_seconds", 0)),
+            min_valid_frames=int(cf.get("min_valid_frames", 0)),
+            min_valid_pct=float(cf.get("min_valid_pct", 0)),
+            max_occlusion_ratio=float(cf.get("max_occlusion_ratio", 90)),
         )
         examples = make_binary_examples(examples, positive_classes=rob)
 
@@ -146,6 +151,27 @@ def main() -> None:
     print(f"  Train / val / test       {ch['train']} / {ch['val']} / {ch['test']}")
     lbl = ch.get("by_label") or {}
     print(f"  Por etiqueta binaria     neg(0)={lbl.get(0, 0)} | pos(1)={lbl.get(1, 0)}")
+
+    qg = stats.get("quality_gate") or {}
+    _section("2b) Filtro calidad por chunk (esqueleto)")
+    print(f"  Chunks antes del filtro        {qg.get('chunks_before', '?')}")
+    print(
+        f"  Descartados train / val / test {qg.get('dropped_train', 0)} / "
+        f"{qg.get('dropped_val', 0)} / {qg.get('dropped_test', 0)}"
+    )
+    rc = qg.get("reason_counts_train") or {}
+    if rc:
+        print(f"  Motivos (train)                {rc}")
+    cf = cfg.get("clip_filters") or {}
+    print(
+        f"  Clips: min duración            {cf.get('min_clip_seconds', 0)} s "
+        f"(collect_examples; último chunk corto permitido)"
+    )
+    qcfg = cfg.get("quality_gate") or {}
+    print(
+        f"  Chunk: min contenido           {qcfg.get('min_content_seconds')} s "
+        f"(padded tail ≥ {qcfg.get('min_padded_content_seconds')} s)"
+    )
 
     _section("3) Chunks en train — core-aware + augment (cota superior)")
     seg = stats["chunks_segmented_train"]

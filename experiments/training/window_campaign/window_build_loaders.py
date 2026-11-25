@@ -18,14 +18,12 @@ from train_model_operations import (  # type: ignore
     TRAIN_DETERMINISTIC_PROB,
     PoseExample,
     _load_augment_profile,
-    assert_no_uid_leak_between_splits,
     build_deterministic_variant_specs,
     build_label_mapping,
     build_per_uid_variant_map,
     collect_debug_examples,
     collect_examples,
     make_binary_examples,
-    split_examples_stratified_by_uid,
     split_uids_from_example_lists,
 )
 
@@ -40,6 +38,22 @@ from window_index import WindowExample, build_windows_from_examples, summarize_w
 from window_paths import WINDOW_ROOT
 from window_sampler import HierarchicalClipCapSampler
 from window_synthetic import expand_windows_with_manifest_extra_views
+from window_quality import filter_windows_by_pose_quality
+from window_split_policy import (
+    assert_eval_windows_not_augmented,
+    split_clips_from_config,
+    write_split_manifest,
+)
+
+
+def _clip_filter_kwargs(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    cf = cfg.get("clip_filters") or {}
+    return {
+        "min_clip_seconds": float(cf.get("min_clip_seconds", 0.0)),
+        "min_valid_frames": int(cf.get("min_valid_frames", 0)),
+        "min_valid_pct": float(cf.get("min_valid_pct", 0.0)),
+        "max_occlusion_ratio": float(cf.get("max_occlusion_ratio", 90.0)),
+    }
 
 
 def _aug_ranges_from_profile(aug_cfg: Dict[str, Any]) -> Dict[str, Tuple[float, float]]:
@@ -98,6 +112,8 @@ def build_window_datasets_and_loaders(
     manifest_variant_set: str = MANIFEST_VARIANT_SET_DEFAULT,
     extra_manifest_views_per_window: int = 1,
     debug_max_clips: int = 0,
+    force_new_split: bool = False,
+    cell_id: str | None = None,
 ) -> Tuple[Dict[str, DataLoader], int, Dict[int, int], Dict[str, Any]]:
     window_len = int(cfg_window.get("window_len", 96))
     stride = int(cfg_window.get("stride", 48))
@@ -113,12 +129,15 @@ def build_window_datasets_and_loaders(
     pad_cfg = cfg_window.get("padding") or {}
     sampler_cfg = cfg_window.get("sampler") or {}
 
+    cf = _clip_filter_kwargs(cfg_window)
+
     if debug_max_clips > 0:
         examples = collect_debug_examples(
             n=int(debug_max_clips),
             pose_source=pose_source,
             single_user_only=single_user,
             data_root=data_root,
+            **cf,
         )
         print(f"[WINDOW-DEBUG] Usando {len(examples)} clips (debug_max_clips={debug_max_clips})")
     else:
@@ -126,18 +145,26 @@ def build_window_datasets_and_loaders(
             pose_source=pose_source,
             single_user_only=single_user,
             data_root=data_root,
+            **cf,
         )
     if task == "binary":
         examples = make_binary_examples(examples, positive_classes=positive_classes)
 
-    train_clips, val_clips, test_clips = split_examples_stratified_by_uid(
+    train_clips, val_clips, test_clips, manifest_path, used_frozen = split_clips_from_config(
         examples,
-        seed=SEED,
-        train_ratio=float(split.get("train_ratio", 0.8)),
-        val_ratio=float(split.get("val_ratio", 0.1)),
+        cfg_window,
+        cell_id=cell_id or cfg_window.get("default_cell_id"),
+        force_new_split=force_new_split,
     )
-    assert_no_uid_leak_between_splits(train_clips, val_clips, test_clips)
     split_uids = split_uids_from_example_lists(train_clips, val_clips, test_clips)
+    if not used_frozen:
+        write_split_manifest(
+            manifest_path,
+            train_clips=train_clips,
+            val_clips=val_clips,
+            test_clips=test_clips,
+            cfg=cfg_window,
+        )
 
     core_path = Path(pl_cfg.get("core_index_path", "artifacts/core_index.json"))
     if not core_path.is_absolute():
@@ -159,6 +186,13 @@ def build_window_datasets_and_loaders(
     val_w = _wins(val_clips)
     test_w = _wins(test_clips)
 
+    q_summary: Dict[str, Any] = {}
+    if (cfg_window.get("quality_gate") or {}).get("enabled", True):
+        train_w, q_tr = filter_windows_by_pose_quality(train_w, cfg=cfg_window)
+        val_w, q_va = filter_windows_by_pose_quality(val_w, cfg=cfg_window, verbose=False)
+        test_w, q_te = filter_windows_by_pose_quality(test_w, cfg=cfg_window, verbose=False)
+        q_summary = {"train": q_tr, "val": q_va, "test": q_te}
+
     if pl_cfg.get("mode") == "core_aware":
         train_w = apply_core_aware_labels(train_w, core_index, robbery_cats=positive_classes, cfg=cfg_window)
         val_w = apply_core_aware_labels(val_w, core_index, robbery_cats=positive_classes, cfg=cfg_window)
@@ -179,6 +213,8 @@ def build_window_datasets_and_loaders(
             extra_manifest_views_per_window,
         )
 
+    assert_eval_windows_not_augmented(val_w, test_w)
+
     summary = {
         "clips": {"train": len(train_clips), "val": len(val_clips), "test": len(test_clips)},
         "windows": {
@@ -192,8 +228,11 @@ def build_window_datasets_and_loaders(
             "test": _count_label_states(test_w),
         },
         "split_uids": split_uids,
+        "split_manifest_path": str(manifest_path),
+        "split_used_frozen_manifest": used_frozen,
         "core_index_path": str(core_path),
         "mask_policy": mask_policy,
+        "quality_gate": q_summary,
     }
     print(
         f"[WINDOW-R2] clips T/V/Te={len(train_clips)}/{len(val_clips)}/{len(test_clips)} | "
@@ -248,12 +287,16 @@ def build_window_datasets_and_loaders(
     val_ds = WindowPoseDataset(
         val_eval,
         augment_on_the_fly=False,
+        use_deterministic_in_train=False,
+        train_deterministic_prob=0.0,
         dataset_split="val",
         **ds_kw,
     )
     test_ds = WindowPoseDataset(
         test_eval,
         augment_on_the_fly=False,
+        use_deterministic_in_train=False,
+        train_deterministic_prob=0.0,
         dataset_split="test",
         **ds_kw,
     )

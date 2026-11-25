@@ -15,6 +15,33 @@ Sustituye `/ruta/data_result` por tu `data_result` real.
 
 Multiclase **no** se usa. Celda actual: `win_bin_full_baseline` (full + weighted BCE). Variantes `hardened` / `filtered` son ablaciones futuras.
 
+## Reparto train / val / test y augment
+
+**No es la campaña clásica** (`train_campaign.py` + `training_plan.json` fijado por celda), pero usa la **misma lógica**:
+
+| Garantía | Cómo |
+|----------|------|
+| Split por **clip** (UID), no por ventana | `split_examples_stratified_by_uid` — un `.npy`/usuario no cruza splits |
+| Estratificado por **categoría** | Val/test reparten robos y negativos por carpeta |
+| Sin fugas | `assert_no_uid_leak_between_splits` + manifiesto `artifacts/plans/*_split_manifest.json` |
+| **Val/test sin augment** | Sin `expand_manifest`, sin padding simulado en negativos, `augment_on_the_fly=False`, sin `forced_ops` (assert en runtime) |
+| Solo **preprocess** en eval | `normalize_sequence` + velocidad (`keep_grid_v2`) — igual que inferencia, sin mirror/rotate/etc. |
+
+Orden: **split clips → ventanas → calidad → core labels → (solo train) padding sim + manifest → datasets**.
+
+**Anti-overfitting en validación**
+
+- `train ∩ val = ∅`, `train ∩ test = ∅`, `val ∩ test = ∅` a nivel **UID de clip** y **ruta `.npy`** — si hay fuga, el entrenamiento **aborta** (`certify_disjoint_splits`).
+- Tras la **primera** corrida se guarda `artifacts/plans/win_bin_full_baseline_split_manifest.json`. Con `use_frozen_manifest: true`, los re-entrenos **reutilizan** los mismos clips en val/test (nunca mezclados con train).
+- Al final del batch: `verify_split_disjoint.py` vuelve a comprobar el manifiesto (+ datos si pasas `--data-root`).
+- Para re-sortear todo: borra el manifiesto o `train_window_campaign.py ... --force-new-split`.
+
+**Calidad de datos**
+
+- **Clip entero:** `clip_filters.min_clip_seconds` (default **4 s**) — como antes en `collect_examples`.
+- **Cada chunk:** `quality_gate` descarta ventanas con teletransporte (salto ≫ mediana), muchos frames vacíos, poca visibilidad, o contenido &lt; **2 s** (último trozo con padding: mínimo **1 s**).
+- Ajustar en `window_config.json`; el preflight muestra cuántos chunks se tiran y por qué.
+
 ---
 
 ## a) PREFLIGHT — vista general + tiempos
