@@ -98,9 +98,16 @@
     "balanced": false
   },
   "parallelism": {
+    "auto": true,
+    "max_parallel_jobs_cap": 8,
     "max_parallel_jobs": 2,
-    "_comment": "Como campaign: N procesos de entrenamiento a la vez. 2 en la misma GPU si solo tienes una; si hay varias, usa cuda_device_ids.",
-    "cuda_device_ids": [0],
-    "dataloader_workers": 4
+    "_comment_auto": "auto=true: calcula jobs por VRAM (vram_probe) y nº GPUs. max_parallel_jobs solo si auto=false.",
+    "vram_probe": true,
+    "vram_reserve_mb": 2048,
+    "process_overhead_mb": 1024,
+    "estimated_vram_gb_per_job": 3.5,
+    "probe_feature_dim": 68,
+    "cuda_device_ids": null,
+    "dataloader_workers": "auto"
   }
 }

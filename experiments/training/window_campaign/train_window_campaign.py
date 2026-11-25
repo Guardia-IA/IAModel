@@ -49,6 +49,7 @@ from train_model_operations import (  # type: ignore
 )
 from window_build_loaders import build_window_datasets_and_loaders
 from window_loss import train_one_epoch_weighted_bce
+from window_parallel_policy import format_parallel_report, resolve_parallelism
 from window_paths import load_window_config, models_dir
 
 
@@ -236,24 +237,6 @@ def run_window_experiment(
     return checkpoint
 
 
-def _parallel_jobs(cfg: Dict[str, Any], override: Optional[int]) -> int:
-    if override is not None:
-        return max(1, int(override))
-    par = cfg.get("parallelism") or {}
-    return max(1, int(par.get("max_parallel_jobs", 1)))
-
-
-def _cuda_device_ids(cfg: Dict[str, Any]) -> List[str]:
-    par = cfg.get("parallelism") or {}
-    raw = par.get("cuda_device_ids")
-    if raw is None:
-        idx = int(par.get("cuda_device_index", 0))
-        return [str(idx)]
-    if isinstance(raw, (list, tuple)):
-        return [str(int(x)) for x in raw]
-    return [s.strip() for s in str(raw).split(",") if s.strip()]
-
-
 def _model_exists(models_out: Path, exp_id: int) -> bool:
     return (models_out / f"modelo_{exp_id:02d}.pt").is_file()
 
@@ -332,11 +315,12 @@ def _train_experiments_parallel(
     *,
     cfg: Dict[str, Any],
     parallel: int,
+    gpu_cycle: List[str],
+    par_report: Dict[str, Any],
     resume: bool,
     models_out: Path,
     cmd_base: List[str],
 ) -> None:
-    gpus = _cuda_device_ids(cfg)
     jobs_dir = models_out / "train_jobs"
     jobs_dir.mkdir(parents=True, exist_ok=True)
     pending: List[int] = []
@@ -352,8 +336,8 @@ def _train_experiments_parallel(
         return
 
     print(
-        f"[WINDOW] Paralelo: {len(pending)} experimentos, {parallel} a la vez, "
-        f"GPUs={','.join(gpus)}",
+        f"[WINDOW] Paralelo: {len(pending)} experimentos, {parallel} a la vez\n"
+        f"{format_parallel_report(par_report)}",
         flush=True,
     )
     lock = threading.Lock()
@@ -362,7 +346,9 @@ def _train_experiments_parallel(
     def _next_gpu() -> str:
         nonlocal slot
         with lock:
-            gpu = gpus[slot % len(gpus)]
+            if not gpu_cycle:
+                return "0"
+            gpu = gpu_cycle[slot % len(gpu_cycle)]
             slot += 1
             return gpu
 
@@ -502,7 +488,13 @@ def main() -> None:
     mdir = _resolve_manifest_dir(args, cfg)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     out = models_dir(cell_id)
-    parallel = _parallel_jobs(cfg, args.parallel)
+    parallel, _gpu_cycle, _dl_workers, par_report = resolve_parallelism(cfg, override_parallel=args.parallel)
+    if not os.environ.get("WINDOW_TRAIN_WORKER"):
+        print(f"[WINDOW] Paralelismo detectado:\n{format_parallel_report(par_report)}", flush=True)
+        par_path = out / "parallel_policy.json"
+        par_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(par_path, "w", encoding="utf-8") as f:
+            json.dump(par_report, f, indent=2)
 
     if args.worker:
         if not args.experiment_id or len(args.experiment_id) != 1:
@@ -548,6 +540,8 @@ def main() -> None:
             exp_ids,
             cfg=cfg,
             parallel=parallel,
+            gpu_cycle=_gpu_cycle,
+            par_report=par_report,
             resume=bool(args.resume),
             models_out=out,
             cmd_base=_cmd_base_for_workers(sys.executable, args, cell_id),

@@ -28,6 +28,7 @@ from training_time_estimate import estimate_all_experiments, fmt_duration  # typ
 
 from core_labels import build_core_index_for_examples, load_core_index
 from preflight_stats import build_preflight_stats
+from window_parallel_policy import format_parallel_report, resolve_parallelism
 from window_paths import WINDOW_ROOT, load_window_config, window_plan_path
 
 
@@ -270,6 +271,13 @@ def main() -> None:
     val_rows = max(1, int(stats["val_rows_per_epoch"]))
     epochs_cfg = int((cfg.get("train_defaults") or {}).get("epochs", 25))
 
+    par_jobs, _gc, _dl, par_report = resolve_parallelism(cfg)
+    _section("4b) Paralelismo (hardware)")
+    for line in format_parallel_report(par_report).splitlines():
+        _say(line)
+    if args.debug_clips > 0:
+        _say(yellow("  [DEBUG] La estimación de tiempo abajo no extrapola bien con pocos clips."))
+
     _say("[preflight] Estimación de tiempos por arquitectura …")
     est = estimate_all_experiments(
         train_rows=train_rows,
@@ -287,23 +295,31 @@ def main() -> None:
                 f"epochs≈{ep}  batch={ec.get('batch_size', 32)}"
             )
 
-    _section("5) Tiempo estimado (todos los experimentos, en serie)")
-    gpu_t = 0.0
-    cpu_t = 0.0
+    _section("5) Tiempo estimado (experimentos)")
+    gpu_serial = 0.0
+    cpu_serial = 0.0
     for row in est.get("per_experiment", []):
         ratio = epochs_cfg / max(1, int(row.get("epochs", 25)))
-        gpu_t += float(row.get("gpu_seconds", 0)) * ratio
-        cpu_t += float(row.get("cpu_seconds", 0)) * ratio
+        gpu_serial += float(row.get("gpu_seconds", 0)) * ratio
+        cpu_serial += float(row.get("cpu_seconds", 0)) * ratio
+
+    slots = max(1, int(par_jobs))
+    gpu_wall = (gpu_serial / slots) * 1.10 if gpu_serial > 0 else 0.0
+    cpu_wall = (cpu_serial / slots) * 1.10 if cpu_serial > 0 else 0.0
 
     on_gpu = est.get("cuda_available", False)
     _say(f"  Filas/época train/val     {train_rows} / {val_rows}")
     _say(f"  CUDA disponible           {green('sí') if on_gpu else yellow('no')}")
-    _say(f"  {bold('GPU')} (suma {len(exp_ids)} modelos, {epochs_cfg} épocas c/u)  {cyan(fmt_duration(gpu_t))}")
-    _say(f"  {bold('CPU')} (misma batería, referencia)        {fmt_duration(cpu_t)}")
+    _say(f"  {bold('GPU serial')} ({len(exp_ids)} modelos)     {fmt_duration(gpu_serial)}")
+    _say(
+        f"  {bold('GPU pared')} (×{slots} jobs paralelos)  "
+        f"{cyan(fmt_duration(gpu_wall))}"
+    )
+    _say(f"  {bold('CPU')} (serial, referencia)        {fmt_duration(cpu_serial)}")
     if on_gpu:
-        _say(f"  {bold('Recomendado')}: lanzar en GPU y dormir {cyan(fmt_duration(gpu_t))}")
+        _say(f"  {bold('Recomendado')}: batch con paralelo auto → ~{cyan(fmt_duration(gpu_wall))}")
     else:
-        _say(f"  {bold('Recomendado')}: usar máquina con CUDA; en CPU sería {yellow(fmt_duration(cpu_t))}")
+        _say(f"  {bold('Recomendado')}: usar máquina con CUDA; en CPU sería {yellow(fmt_duration(cpu_wall))}")
 
     _hline("═")
     _say()
@@ -316,13 +332,17 @@ def main() -> None:
             "experiment_ids": exp_ids,
             "stats": stats,
             "time_estimate": {
-                "gpu_seconds": gpu_t,
-                "cpu_seconds": cpu_t,
-                "gpu_human": fmt_duration(gpu_t),
-                "cpu_human": fmt_duration(cpu_t),
+                "gpu_seconds_serial": gpu_serial,
+                "gpu_seconds_wall": gpu_wall,
+                "cpu_seconds_serial": cpu_serial,
+                "gpu_human_serial": fmt_duration(gpu_serial),
+                "gpu_human_wall": fmt_duration(gpu_wall),
+                "cpu_human": fmt_duration(cpu_serial),
                 "cuda_available": on_gpu,
                 "epochs_per_model": epochs_cfg,
+                "parallel_jobs": slots,
             },
+            "parallelism": par_report,
             "config_snapshot": {
                 "window_len": cfg.get("window_len"),
                 "stride": cfg.get("stride"),
