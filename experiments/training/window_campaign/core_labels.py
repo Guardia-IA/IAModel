@@ -40,6 +40,9 @@ def save_core_index(path: Path, clips: Dict[str, Any]) -> None:
 def build_core_index_for_examples(examples: list, out_path: Path, robbery_cats: List[int]) -> Dict[str, Any]:
     clips: Dict[str, Any] = {}
     rob = {int(x) for x in robbery_cats}
+    n_rob = sum(1 for ex in examples if _parse_cat(ex.category_str) in rob)
+    if n_rob:
+        print(f"[core_index] Detectando núcleo en {n_rob} clips 6/14 …", flush=True)
     for ex in examples:
         cat = _parse_cat(ex.category_str)
         if cat not in rob:

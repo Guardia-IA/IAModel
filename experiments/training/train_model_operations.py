@@ -1854,34 +1854,55 @@ def collect_debug_examples(
     groups: List[tuple] = []
     for root in roots:
         if not root.is_dir():
+            print(f"[debug] AVISO: no es carpeta (se omite): {root}", flush=True)
             continue
+        print(f"[debug] Escaneando categorías en {root} …", flush=True)
+        n_cats = 0
         for cat_dir in sorted(root.iterdir()):
             if not cat_dir.is_dir():
                 continue
             folder_cat = _parse_category_dir_name(cat_dir.name)
             if folder_cat is None or int(folder_cat) in skip:
                 continue
-            clips = sorted(
-                p for p in cat_dir.iterdir() if p.is_dir() and (p / "meta.json").is_file()
-            )
-            if clips:
-                groups.append((root, cat_dir.name, int(folder_cat), clips))
+            n_cats += 1
+            groups.append((root, cat_dir.name, int(folder_cat), cat_dir))
+        print(f"[debug]   → {n_cats} carpetas de categoría", flush=True)
     groups.sort(key=lambda g: (g[2], g[0].name))
+    if not groups:
+        tried = ", ".join(str(r) for r in roots)
+        raise RuntimeError(
+            f"No hay categorías con clips en data_result. Comprueba --data-root. Rutas: {tried}"
+        )
     print(
-        f"[debug] Busco {int(n)} clips en {len(groups)} categorías (sin recorrer todo el corpus)",
+        f"[debug] Busco {int(n)} clips válidos en {len(groups)} categorías "
+        f"(indexo cada categoría solo cuando hace falta)",
         flush=True,
     )
-    cursors = [0] * len(groups)
+    clip_lists: List[Optional[List[Path]]] = [None] * len(groups)
+    clip_idx = [0] * len(groups)
+    exhausted = [False] * len(groups)
     examples: List[PoseExample] = []
     target = max(0, int(n))
+
+    def _clip_dirs(i: int) -> List[Path]:
+        if clip_lists[i] is None:
+            _root, cat_str, _fc, cat_dir = groups[i]
+            print(f"[debug] Listando clips en {_root.name}/{cat_str} …", flush=True)
+            clip_lists[i] = sorted(
+                p for p in cat_dir.iterdir() if p.is_dir() and (p / "meta.json").is_file()
+            )
+            print(f"[debug]   → {len(clip_lists[i])} carpetas clip", flush=True)
+        return clip_lists[i] or []
+
     while len(examples) < target and groups:
         progressed = False
-        for i, (root, cat_str, folder_cat, clips) in enumerate(groups):
-            if len(examples) >= target:
-                break
-            while cursors[i] < len(clips):
-                clip_dir = clips[cursors[i]]
-                cursors[i] += 1
+        for i, (root, cat_str, folder_cat, _cat_dir) in enumerate(groups):
+            if len(examples) >= target or exhausted[i]:
+                continue
+            entries = _clip_dirs(i)
+            while clip_idx[i] < len(entries):
+                clip_dir = entries[clip_idx[i]]
+                clip_idx[i] += 1
                 got = _examples_in_clip_dir(
                     clip_dir,
                     cat_str=cat_str,
@@ -1898,14 +1919,22 @@ def collect_debug_examples(
                 examples.extend(got)
                 progressed = True
                 print(
-                    f"[debug] {min(len(examples), target)}/{target}  {root.name}/{cat_str}/{clip_dir.name}",
+                    f"[debug] {min(len(examples), target)}/{target}  "
+                    f"{root.name}/{cat_str}/{clip_dir.name}",
                     flush=True,
                 )
                 break
+            if clip_idx[i] >= len(entries):
+                exhausted[i] = True
         if not progressed:
             break
     examples = examples[:target]
     print(f"[debug] Clips cogidos: {len(examples)}", flush=True)
+    if target > 0 and len(examples) < target:
+        print(
+            f"[debug] AVISO: solo {len(examples)}/{target} clips pasaron filtros",
+            flush=True,
+        )
     return examples
 
 

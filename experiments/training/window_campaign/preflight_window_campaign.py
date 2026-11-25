@@ -8,6 +8,9 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+# Feedback inmediato (imports pesados — PyTorch — pueden tardar)
+print("[preflight] Arranque… (importando dependencias; la 1ª vez puede tardar ~1 min)", flush=True)
+
 WINDOW_DIR = Path(__file__).resolve().parent
 TRAINING_DIR = WINDOW_DIR.parent
 for p in (TRAINING_DIR, WINDOW_DIR):
@@ -26,6 +29,14 @@ from training_time_estimate import estimate_all_experiments, fmt_duration  # typ
 from core_labels import build_core_index_for_examples, load_core_index
 from preflight_stats import build_preflight_stats
 from window_paths import WINDOW_ROOT, load_window_config, window_plan_path
+
+
+def _say(msg: str = "", *, err: bool = False) -> None:
+    stream = sys.stderr if err else sys.stdout
+    if msg:
+        print(msg, flush=True, file=stream)
+    else:
+        print(flush=True, file=stream)
 
 
 # ─── ANSI (si TTY) ───
@@ -52,13 +63,13 @@ def green(s: str) -> str:
 
 
 def _hline(char: str = "─", width: int = 72) -> None:
-    print(char * width)
+    _say(char * width)
 
 
 def _section(title: str) -> None:
-    print()
+    _say()
     _hline("═")
-    print(bold(f"  {title}"))
+    _say(bold(f"  {title}"))
     _hline("─")
 
 
@@ -67,6 +78,56 @@ def _resolve_data_root(cli: str | None) -> Path | None:
         return Path(cli).expanduser().resolve()
     roots = get_data_result_roots(None)
     return roots[0] if roots else None
+
+
+def _validate_data_root(data_root: Path, *, cli_path: str | None) -> None:
+    _say(f"[preflight] Comprobando data_root: {data_root}")
+    if not data_root.exists():
+        hint = (
+            f"La ruta no existe: {data_root}\n"
+            f"  Usa --data-root con la carpeta que contiene categorías (p. ej. …/6_robo/, …/3_caminar/).\n"
+        )
+        if cli_path:
+            hint += f"  Recibido: --data-root {cli_path!r}\n"
+        else:
+            hint += "  No pasaste --data-root; se tomó la ruta por defecto de experiments/config.py.\n"
+        raise SystemExit(hint)
+    if not data_root.is_dir():
+        raise SystemExit(f"data_root no es una carpeta: {data_root}")
+    try:
+        children = list(data_root.iterdir())
+    except OSError as e:
+        raise SystemExit(f"No se puede leer data_root ({data_root}): {e}") from e
+    cat_dirs = [p for p in children if p.is_dir()]
+    with_meta = 0
+    sample_cats: list[str] = []
+    for cat in sorted(cat_dirs)[:30]:
+        sample_cats.append(cat.name)
+        try:
+            for clip in cat.iterdir():
+                if clip.is_dir() and (clip / "meta.json").is_file():
+                    with_meta += 1
+                    break
+        except OSError:
+            continue
+    _say(
+        f"[preflight] OK: carpeta accesible | subcarpetas={len(cat_dirs)} | "
+        f"categorías con al menos 1 clip≈{with_meta} (muestra hasta 30 cats)"
+    )
+    if sample_cats:
+        _say(f"[preflight] Ejemplos de nombres: {', '.join(sample_cats[:8])}")
+    if not cat_dirs:
+        raise SystemExit(
+            f"data_root vacío o sin subcarpetas de categoría: {data_root}\n"
+            "  Esperado: …/data_result/6_robo/<clip>/meta.json"
+        )
+    if with_meta == 0:
+        _say(
+            yellow(
+                "[preflight] AVISO: no vi ningún clip con meta.json en las primeras "
+                "categorías; puede que la ruta apunte a un nivel incorrecto."
+            )
+        )
 
 
 def _core_path(cfg: dict) -> Path:
@@ -90,23 +151,28 @@ def main() -> None:
     )
     args = ap.parse_args()
 
+    _say("[preflight] Leyendo window_config.json …")
     cfg = load_window_config()
     cell_id = args.cell_id or cfg.get("default_cell_id", "win_bin_full_baseline")
     data_root = _resolve_data_root(args.data_root)
     if data_root is None:
-        raise SystemExit("Indica --data-root o configura data_result en experiments/config.py")
+        raise SystemExit(
+            "Indica --data-root /ruta/data_result o configura data_result en experiments/config.py"
+        )
+    _validate_data_root(data_root, cli_path=args.data_root)
 
     pose_source = cfg.get("pose_source", "full")
     single_user = bool(cfg.get("single_user_only", True))
     rob = cfg.get("robbery_classes", [6, 14])
 
     _section("WINDOW CAMPAIGN — PREFLIGHT (binario únicamente)")
-    print(f"  data_root     {cyan(str(data_root))}")
-    print(f"  cell_id       {cell_id}")
-    print(f"  pose_source   {pose_source} | mask {cfg.get('mask_policy')}")
-    print(f"  positivos     carpetas {rob}")
+    _say(f"  data_root     {cyan(str(data_root))}")
+    _say(f"  cell_id       {cell_id}")
+    _say(f"  pose_source   {pose_source} | mask {cfg.get('mask_policy')}")
+    _say(f"  positivos     carpetas {rob}")
 
     if args.debug_clips > 0:
+        _say(f"[preflight] Modo debug: recolectando ≤{args.debug_clips} clips …")
         examples = collect_debug_examples(
             n=args.debug_clips,
             pose_source=pose_source,
@@ -114,9 +180,10 @@ def main() -> None:
             data_root=data_root,
         )
         examples = make_binary_examples(examples, positive_classes=rob)
-        print(yellow(f"  [DEBUG] Solo {len(examples)} clips para el informe"))
+        _say(yellow(f"  [DEBUG] {len(examples)} clips en el informe"))
     else:
         cf = cfg.get("clip_filters") or {}
+        _say("[preflight] Recorriendo corpus completo (puede tardar; ver líneas [progreso]) …")
         examples = collect_examples(
             pose_source=pose_source,
             single_user_only=single_user,
@@ -127,62 +194,74 @@ def main() -> None:
             max_occlusion_ratio=float(cf.get("max_occlusion_ratio", 90)),
         )
         examples = make_binary_examples(examples, positive_classes=rob)
+        _say(f"[preflight] Corpus: {len(examples)} ejemplos (usuarios/clips) listos")
 
     core_path = _core_path(cfg)
     if (cfg.get("positive_labeling") or {}).get("mode") == "core_aware":
         if not core_path.is_file():
+            _say(f"[preflight] Construyendo core_index (6/14) → {core_path} …")
             build_core_index_for_examples(examples, core_path, rob)
+        else:
+            _say(f"[preflight] Reutilizando core_index: {core_path}")
         core_index = load_core_index(core_path)
     else:
         core_index = {}
 
-    stats = build_preflight_stats(examples, cfg, core_index=core_index, data_root_str=str(data_root))
+    _say("[preflight] Ventanas + quality gate + estadísticas …")
+    stats = build_preflight_stats(
+        examples,
+        cfg,
+        core_index=core_index,
+        data_root_str=str(data_root),
+        progress=True,
+    )
+    _say("[preflight] Estadísticas listas.")
 
     _section("1) Clips (.npy por acción)")
     c = stats["clips"]
-    print(f"  Total clips              {bold(str(c['total']))}")
-    print(f"  Split train / val / test {c['train']} / {c['val']} / {c['test']}")
-    print(f"  Clips con ≥2 chunks      {green(str(c['with_multiple_chunks']))}  (segmentación temporal)")
-    print(f"  Clips con 1 sola ventana {c['with_single_chunk_only']}")
+    _say(f"  Total clips              {bold(str(c['total']))}")
+    _say(f"  Split train / val / test {c['train']} / {c['val']} / {c['test']}")
+    _say(f"  Clips con ≥2 chunks      {green(str(c['with_multiple_chunks']))}  (segmentación temporal)")
+    _say(f"  Clips con 1 sola ventana {c['with_single_chunk_only']}")
 
     _section("2) Chunks base (ventanas 96f, stride 48)")
     ch = stats["chunks_base"]
-    print(f"  Total chunks (todos)     {bold(str(ch['total_all_splits']))}")
-    print(f"  Train / val / test       {ch['train']} / {ch['val']} / {ch['test']}")
+    _say(f"  Total chunks (todos)     {bold(str(ch['total_all_splits']))}")
+    _say(f"  Train / val / test       {ch['train']} / {ch['val']} / {ch['test']}")
     lbl = ch.get("by_label") or {}
-    print(f"  Por etiqueta binaria     neg(0)={lbl.get(0, 0)} | pos(1)={lbl.get(1, 0)}")
+    _say(f"  Por etiqueta binaria     neg(0)={lbl.get(0, 0)} | pos(1)={lbl.get(1, 0)}")
 
     qg = stats.get("quality_gate") or {}
     _section("2b) Filtro calidad por chunk (esqueleto)")
-    print(f"  Chunks antes del filtro        {qg.get('chunks_before', '?')}")
-    print(
+    _say(f"  Chunks antes del filtro        {qg.get('chunks_before', '?')}")
+    _say(
         f"  Descartados train / val / test {qg.get('dropped_train', 0)} / "
         f"{qg.get('dropped_val', 0)} / {qg.get('dropped_test', 0)}"
     )
     rc = qg.get("reason_counts_train") or {}
     if rc:
-        print(f"  Motivos (train)                {rc}")
+        _say(f"  Motivos (train)                {rc}")
     cf = cfg.get("clip_filters") or {}
-    print(
+    _say(
         f"  Clips: min duración            {cf.get('min_clip_seconds', 0)} s "
         f"(collect_examples; último chunk corto permitido)"
     )
     qcfg = cfg.get("quality_gate") or {}
-    print(
+    _say(
         f"  Chunk: min contenido           {qcfg.get('min_content_seconds')} s "
         f"(padded tail ≥ {qcfg.get('min_padded_content_seconds')} s)"
     )
 
     _section("3) Chunks en train — core-aware + augment (cota superior)")
     seg = stats["chunks_segmented_train"]
-    print(f"  Entrenables (≠ ignore)   {bold(str(seg['trainable_after_core']))}")
-    print(f"  ignore (solo de pie 6/14) {seg['ignored_stand_only']}")
-    print(f"  pos_core / partial / neg  {seg['pos_core']} / {seg['pos_partial']} / {seg['neg']}")
-    print(
+    _say(f"  Entrenables (≠ ignore)   {bold(str(seg['trainable_after_core']))}")
+    _say(f"  ignore (solo de pie 6/14) {seg['ignored_stand_only']}")
+    _say(f"  pos_core / partial / neg  {seg['pos_core']} / {seg['pos_partial']} / {seg['neg']}")
+    _say(
         f"  Filas train (1+{cfg.get('synthetic_variants', {}).get('extra_manifest_views_per_clip', 1)} syn) "
         f"≤ {seg['expanded_upper_bound_syn']}"
     )
-    print(f"  Muestreo ≈ filas/época     {cyan(str(seg['sampler_rows_per_epoch_est']))}")
+    _say(f"  Muestreo ≈ filas/época     {cyan(str(seg['sampler_rows_per_epoch_est']))}")
 
     exp_ids = args.experiments
     if not exp_ids:
@@ -191,6 +270,7 @@ def main() -> None:
     val_rows = max(1, int(stats["val_rows_per_epoch"]))
     epochs_cfg = int((cfg.get("train_defaults") or {}).get("epochs", 25))
 
+    _say("[preflight] Estimación de tiempos por arquitectura …")
     est = estimate_all_experiments(
         train_rows=train_rows,
         val_rows=val_rows,
@@ -202,13 +282,12 @@ def main() -> None:
         if 1 <= eid <= len(EXPERIMENTS):
             ec = EXPERIMENTS[eid - 1]
             ep = epochs_cfg if cfg.get("train_defaults", {}).get("epochs") else ec.get("epochs", 25)
-            print(
+            _say(
                 f"  exp {eid:02d}  {ec.get('arch'):16s}  seq={cfg.get('window_len', 96)}  "
                 f"epochs≈{ep}  batch={ec.get('batch_size', 32)}"
             )
 
     _section("5) Tiempo estimado (todos los experimentos, en serie)")
-    # Rescale: estimate uses EXPERIMENTS epochs; override with train_defaults.epochs
     gpu_t = 0.0
     cpu_t = 0.0
     for row in est.get("per_experiment", []):
@@ -217,17 +296,17 @@ def main() -> None:
         cpu_t += float(row.get("cpu_seconds", 0)) * ratio
 
     on_gpu = est.get("cuda_available", False)
-    print(f"  Filas/época train/val     {train_rows} / {val_rows}")
-    print(f"  CUDA disponible           {green('sí') if on_gpu else yellow('no')}")
-    print(f"  {bold('GPU')} (suma {len(exp_ids)} modelos, {epochs_cfg} épocas c/u)  {cyan(fmt_duration(gpu_t))}")
-    print(f"  {bold('CPU')} (misma batería, referencia)        {fmt_duration(cpu_t)}")
+    _say(f"  Filas/época train/val     {train_rows} / {val_rows}")
+    _say(f"  CUDA disponible           {green('sí') if on_gpu else yellow('no')}")
+    _say(f"  {bold('GPU')} (suma {len(exp_ids)} modelos, {epochs_cfg} épocas c/u)  {cyan(fmt_duration(gpu_t))}")
+    _say(f"  {bold('CPU')} (misma batería, referencia)        {fmt_duration(cpu_t)}")
     if on_gpu:
-        print(f"  {bold('Recomendado')}: lanzar en GPU y dormir {cyan(fmt_duration(gpu_t))}")
+        _say(f"  {bold('Recomendado')}: lanzar en GPU y dormir {cyan(fmt_duration(gpu_t))}")
     else:
-        print(f"  {bold('Recomendado')}: usar máquina con CUDA; en CPU sería {yellow(fmt_duration(cpu_t))}")
+        _say(f"  {bold('Recomendado')}: usar máquina con CUDA; en CPU sería {yellow(fmt_duration(cpu_t))}")
 
     _hline("═")
-    print()
+    _say()
 
     if args.write_plan:
         plan = {
@@ -253,7 +332,9 @@ def main() -> None:
         out = window_plan_path(cell_id)
         with open(out, "w", encoding="utf-8") as f:
             json.dump(plan, f, indent=2, ensure_ascii=False)
-        print(f"Plan → {out}")
+        _say(f"Plan → {out}")
+
+    _say("[preflight] Fin.")
 
 
 if __name__ == "__main__":

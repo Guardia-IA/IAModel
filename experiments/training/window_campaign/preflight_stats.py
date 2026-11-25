@@ -37,6 +37,7 @@ def build_preflight_stats(
     *,
     core_index: Dict[str, Any],
     data_root_str: str,
+    progress: bool = False,
 ) -> Dict[str, Any]:
     wl = int(cfg.get("window_len", 96))
     stride = int(cfg.get("stride", 48))
@@ -49,6 +50,8 @@ def build_preflight_stats(
     batch_size = int((cfg.get("train_defaults") or {}).get("batch_size", 32))
     positive_classes = cfg.get("robbery_classes", [6, 14])
 
+    if progress:
+        print(f"[preflight-stats] Split estratificado ({len(examples)} clips) …", flush=True)
     train_clips, val_clips, test_clips = split_examples_stratified_by_uid(
         examples,
         seed=SEED,
@@ -67,14 +70,27 @@ def build_preflight_stats(
             ws = apply_core_aware_labels(ws, core_index, robbery_cats=positive_classes, cfg=cfg)
         return ws
 
+    if progress:
+        print("[preflight-stats] Generando ventanas train/val/test …", flush=True)
     train_w = wins(train_clips)
     val_w = wins(val_clips)
     test_w = wins(test_clips)
     q_before = len(train_w) + len(val_w) + len(test_w)
     if (cfg.get("quality_gate") or {}).get("enabled", True):
-        train_w, q_tr = filter_windows_by_pose_quality(train_w, cfg=cfg, verbose=False)
+        if progress:
+            print(
+                f"[preflight-stats] Quality gate ({q_before} ventanas; lee .npy por clip) …",
+                flush=True,
+            )
+        train_w, q_tr = filter_windows_by_pose_quality(train_w, cfg=cfg, verbose=progress)
         val_w, q_va = filter_windows_by_pose_quality(val_w, cfg=cfg, verbose=False)
         test_w, q_te = filter_windows_by_pose_quality(test_w, cfg=cfg, verbose=False)
+        if progress:
+            print(
+                f"[preflight-stats] Quality gate OK | drop train/val/test="
+                f"{q_tr.get('dropped', 0)}/{q_va.get('dropped', 0)}/{q_te.get('dropped', 0)}",
+                flush=True,
+            )
     else:
         q_tr = q_va = q_te = {"dropped": 0}
 
