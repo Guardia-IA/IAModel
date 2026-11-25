@@ -1,0 +1,79 @@
+{
+  "version": 2,
+  "description": "Window campaign R2 — core-aware labels, keep_grid_v2, weighted BCE (WINDOW_CAMPAIGN_FINAL_PLAN)",
+  "extends_campaign_config": "../campaign/campaign_config.json",
+  "window_len": 96,
+  "stride": 48,
+  "min_tail_for_final_window": 24,
+  "pad_mode": "repeat_last",
+  "mask_policy": "keep_grid_v2",
+  "preprocess_version": 2,
+  "pose_source": "full",
+  "single_user_only": true,
+  "robbery_classes": [6, 14],
+  "task_default": "binary",
+  "default_cell_id": "win_bin_full_baseline",
+  "task_multiclass_enabled": false,
+  "experiment_benchmark": [48, 49, 53, 57, 13, 11],
+  "_experiment_benchmark_comment": "6 arq binario: tcn_gru prod (48,49), conformer_lite (53), ms_tcn (57), res_tcn (13), dilated_tcn (11). Alineado campaña + FINAL_PLAN.",
+  "experiment_stages": {
+    "stage1_pilot": [48, 49],
+    "stage2": [48, 49, 53, 57],
+    "benchmark": [48, 49, 53, 57, 13, 11],
+    "stage3_optional": [5, 11, 13],
+    "dropped_first_sweep": [12, 37, 41, 50]
+  },
+  "binary_cells_planned": ["win_bin_full_baseline"],
+  "_binary_cells_future": ["win_bin_filtered_baseline", "win_bin_full_hardened"],
+  "positive_labeling": {
+    "mode": "core_aware",
+    "core_index_path": "artifacts/core_index.json",
+    "full_ov_frames_cap": 36,
+    "full_ov_frac": 0.6,
+    "partial_min_frac": 0.2,
+    "partial_weight": 0.3,
+    "stand_only": "ignore"
+  },
+  "padding": {
+    "mode": "repeat_last",
+    "record_pad_frac": true,
+    "padded_negative_prob": 0.15,
+    "padded_len_range": [48, 95],
+    "pad_weight_threshold": 0.25,
+    "pad_weight": 0.5
+  },
+  "sampler": {
+    "type": "hierarchical",
+    "positive_share": 0.35,
+    "max_windows_per_clip_per_epoch": 4
+  },
+  "synthetic_variants": {
+    "use_validate_npy_manifests": true,
+    "max_deterministic_variants": 32,
+    "train_deterministic_prob": 0.25,
+    "use_deterministic_in_train": true,
+    "augment_on_the_fly": true,
+    "aug_profile": "baseline",
+    "extra_manifest_views_per_clip": 1
+  },
+  "loss": {
+    "type": "weighted_bce",
+    "label_smoothing": 0.02,
+    "weights": {
+      "neg": 1.0,
+      "pos_core": 2.0
+    }
+  },
+  "split": {
+    "train_ratio": 0.8,
+    "val_ratio": 0.1,
+    "test_ratio": 0.1,
+    "split_by": "clip_name"
+  },
+  "train_defaults": {
+    "batch_size": 32,
+    "epochs": 25,
+    "early_stop_patience": 8,
+    "balanced": false
+  }
+}
