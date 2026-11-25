@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import time
@@ -20,7 +21,9 @@ WINDOW_DIR = Path(__file__).resolve().parent
 
 def _run(cmd: list[str], cwd: Path) -> int:
     print(f"\n>>> {' '.join(cmd)}", flush=True)
-    return subprocess.call(cmd, cwd=str(cwd))
+    env = os.environ.copy()
+    env["PYTHONUNBUFFERED"] = "1"
+    return subprocess.call(cmd, cwd=str(cwd), env=env)
 
 
 def main() -> int:
@@ -51,6 +54,11 @@ def main() -> int:
     data_root = str(Path(args.data_root).resolve())
     log_dir = WINDOW_DIR / "artifacts" / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
+    print(
+        f"[BATCH] Log este proceso → el fichero que redirijas con nohup\n"
+        f"[BATCH] Progreso entrenamiento → {log_dir / 'train_progress.json'}",
+        flush=True,
+    )
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     manifest_path = log_dir / f"batch_manifest_{stamp}.json"
 

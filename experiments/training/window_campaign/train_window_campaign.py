@@ -51,6 +51,14 @@ from window_build_loaders import build_window_datasets_and_loaders
 from window_loss import train_one_epoch_weighted_bce
 from window_parallel_policy import format_parallel_report, resolve_parallelism
 from window_paths import load_window_config, models_dir
+from window_train_progress import (
+    DEFAULT_PROGRESS_PATH,
+    attach_heartbeat,
+    finish_experiment,
+    init_batch,
+    set_experiment_running,
+    tick_epoch,
+)
 
 
 def _aug_from_campaign(cfg_window: Dict[str, Any]) -> Dict[str, Any]:
@@ -75,6 +83,7 @@ def run_window_experiment(
     augment_on_the_fly: bool,
     manifest_cache_dir: Optional[Path],
     models_out: Path,
+    progress_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
     if exp_id < 1 or exp_id > len(EXPERIMENTS):
         raise ValueError(f"experiment-id {exp_id} fuera de rango 1..{len(EXPERIMENTS)}")
@@ -147,7 +156,17 @@ def run_window_experiment(
     best_val = 0.0
     best_state = None
     t0 = time.perf_counter()
-    print(f"\n{'=' * 72}\nWindow exp {exp_id:02d} | arch={exp_cfg.get('arch')} | epochs={epochs}\n{'=' * 72}")
+    print(
+        f"\n{'=' * 72}\nWindow exp {exp_id:02d} | arch={exp_cfg.get('arch')} | epochs={epochs}\n{'=' * 72}",
+        flush=True,
+    )
+    if progress_path is not None:
+        set_experiment_running(
+            progress_path,
+            exp_id,
+            epochs_total=epochs,
+            arch=str(exp_cfg.get("arch", "?")),
+        )
 
     label_smoothing = float(loss_cfg.get("label_smoothing", 0.02))
     for epoch in range(1, epochs + 1):
@@ -170,7 +189,14 @@ def run_window_experiment(
         line = f"[Win {exp_id:02d}] ep {epoch:03d} train_loss={train_loss:.4f} val_loss={val_loss:.4f} val_acc={val_acc:.4f}"
         if task == "binary" and val_metrics.get("binary"):
             line += " | " + format_binary_metrics_line(val_metrics["binary"])
-        print(line)
+        print(line, flush=True)
+        if progress_path is not None:
+            tick_epoch(
+                progress_path,
+                exp_id,
+                epoch,
+                extra={"val_acc": round(float(val_acc), 4), "train_loss": round(float(train_loss), 4)},
+            )
         if val_acc > best_val:
             best_val = val_acc
             best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
@@ -233,7 +259,14 @@ def run_window_experiment(
     meta_path = models_out / f"window_train_meta_{exp_id:02d}.json"
     with open(meta_path, "w", encoding="utf-8") as f:
         json.dump({k: v for k, v in checkpoint.items() if k != "state_dict"}, f, indent=2)
-    print(f"Checkpoint: {ckpt_path}")
+    print(f"Checkpoint: {ckpt_path}", flush=True)
+    if progress_path is not None:
+        finish_experiment(
+            progress_path,
+            exp_id,
+            ok=True,
+            wall_seconds=time.perf_counter() - t0,
+        )
     return checkpoint
 
 
@@ -514,12 +547,14 @@ def main() -> None:
                 augment_on_the_fly=augment,
                 manifest_cache_dir=mdir,
                 models_out=out,
+                progress_path=DEFAULT_PROGRESS_PATH,
             )
             payload["best_val_acc"] = res.get("best_val_acc")
             payload["test_metrics"] = res.get("test_metrics")
         except Exception as exc:
             err = str(exc)
             payload["error"] = err
+            finish_experiment(DEFAULT_PROGRESS_PATH, eid, ok=False, error=err)
         payload["wall_seconds"] = time.perf_counter() - t0
         if args.job_result:
             Path(args.job_result).parent.mkdir(parents=True, exist_ok=True)
@@ -528,6 +563,21 @@ def main() -> None:
         if err:
             raise SystemExit(1)
         return
+
+    progress_path = DEFAULT_PROGRESS_PATH
+    progress_path.parent.mkdir(parents=True, exist_ok=True)
+    hb_stop: Optional[threading.Event] = None
+    if not args.worker:
+        init_batch(
+            path=progress_path,
+            stage=args.stage,
+            exp_ids=exp_ids,
+            parallel=parallel,
+            cell_id=cell_id,
+            data_root=str(data_root),
+        )
+        hb_stop = attach_heartbeat(path=progress_path, interval_sec=60.0)
+        print(f"[WINDOW] Progreso → {progress_path} (y líneas [PROGRESS] cada ~60s)", flush=True)
 
     print(
         f"[WINDOW] stage={args.stage} experiment_ids={exp_ids} cell={cell_id} "
@@ -546,23 +596,37 @@ def main() -> None:
             models_out=out,
             cmd_base=_cmd_base_for_workers(sys.executable, args, cell_id),
         )
+        if hb_stop is not None:
+            hb_stop.set()
         return
 
-    for eid in exp_ids:
-        if args.resume and _model_exists(out, eid):
-            print(f"[Exp {eid:02d}] Ya existe, omitido.")
-            continue
-        run_window_experiment(
-            eid,
-            data_root=data_root,
-            device=device,
-            cfg_window=cfg,
-            task=task,
-            positive_classes=positive,
-            augment_on_the_fly=augment,
-            manifest_cache_dir=mdir,
-            models_out=out,
-        )
+    try:
+        for eid in exp_ids:
+            if args.resume and _model_exists(out, eid):
+                print(f"[Exp {eid:02d}] Ya existe, omitido.", flush=True)
+                if progress_path is not None:
+                    finish_experiment(progress_path, eid, ok=True, wall_seconds=0.0)
+                continue
+            try:
+                run_window_experiment(
+                    eid,
+                    data_root=data_root,
+                    device=device,
+                    cfg_window=cfg,
+                    task=task,
+                    positive_classes=positive,
+                    augment_on_the_fly=augment,
+                    manifest_cache_dir=mdir,
+                    models_out=out,
+                    progress_path=progress_path,
+                )
+            except Exception as exc:
+                if progress_path is not None:
+                    finish_experiment(progress_path, eid, ok=False, error=str(exc))
+                raise
+    finally:
+        if hb_stop is not None:
+            hb_stop.set()
 
 
 if __name__ == "__main__":
