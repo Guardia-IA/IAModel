@@ -9,8 +9,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import subprocess
 import sys
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -98,10 +102,13 @@ def run_window_experiment(
 
     debug_clips = int(cfg_window.get("_debug_max_clips") or 0)
 
+    par = cfg_window.get("parallelism") or {}
+    num_workers = int(os.environ.get("WINDOW_DATALOADER_WORKERS") or par.get("dataloader_workers", 2))
     loaders, input_dim, label_to_idx, summary = build_window_datasets_and_loaders(
         data_root=data_root,
         cfg_window=cfg_window,
         batch_size=batch_size,
+        num_workers=num_workers,
         debug_max_clips=debug_clips,
         augment_on_the_fly=augment_on_the_fly,
         augment_config_path=AUGMENT_CONFIG_PATH,
@@ -229,6 +236,210 @@ def run_window_experiment(
     return checkpoint
 
 
+def _parallel_jobs(cfg: Dict[str, Any], override: Optional[int]) -> int:
+    if override is not None:
+        return max(1, int(override))
+    par = cfg.get("parallelism") or {}
+    return max(1, int(par.get("max_parallel_jobs", 1)))
+
+
+def _cuda_device_ids(cfg: Dict[str, Any]) -> List[str]:
+    par = cfg.get("parallelism") or {}
+    raw = par.get("cuda_device_ids")
+    if raw is None:
+        idx = int(par.get("cuda_device_index", 0))
+        return [str(idx)]
+    if isinstance(raw, (list, tuple)):
+        return [str(int(x)) for x in raw]
+    return [s.strip() for s in str(raw).split(",") if s.strip()]
+
+
+def _model_exists(models_out: Path, exp_id: int) -> bool:
+    return (models_out / f"modelo_{exp_id:02d}.pt").is_file()
+
+
+def _worker_env(cfg: Dict[str, Any], *, parallel: int, cuda_device: str) -> Dict[str, str]:
+    par = cfg.get("parallelism") or {}
+    env = os.environ.copy()
+    env["CUDA_VISIBLE_DEVICES"] = str(cuda_device)
+    env["WINDOW_TRAIN_WORKER"] = "1"
+    env["PYTHONUNBUFFERED"] = "1"
+    workers = int(par.get("dataloader_workers", 2))
+    env["WINDOW_DATALOADER_WORKERS"] = str(max(0, workers // max(1, parallel)))
+    cpus = os.cpu_count() or 8
+    threads = max(1, cpus // max(1, parallel * 2))
+    for key in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+        env.setdefault(key, str(threads))
+    return env
+
+
+def _run_exp_subprocess(
+    *,
+    exp_id: int,
+    cmd_base: List[str],
+    job_result: Path,
+    env: Dict[str, str],
+) -> Dict[str, Any]:
+    cmd = cmd_base + [
+        "--worker",
+        "--experiment-id",
+        str(exp_id),
+        "--job-result",
+        str(job_result),
+    ]
+    label = f"win/exp{exp_id:02d}"
+    t0 = time.perf_counter()
+    print(
+        f"[paralelo] inicio {label} | CUDA_VISIBLE_DEVICES={env.get('CUDA_VISIBLE_DEVICES')}",
+        flush=True,
+    )
+    proc = subprocess.Popen(
+        cmd,
+        cwd=str(WINDOW_DIR),
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+    )
+    chunks: List[str] = []
+    assert proc.stdout is not None
+    for line in proc.stdout:
+        chunks.append(line)
+        print(f"[{label}] {line}", end="", flush=True)
+    proc.wait()
+    wall = time.perf_counter() - t0
+    if job_result.is_file():
+        try:
+            payload = json.loads(job_result.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            payload = {"error": "job-result ilegible", "exp_id": exp_id}
+    else:
+        tail = "".join(chunks)[-2000:]
+        payload = {
+            "exp_id": exp_id,
+            "error": tail or f"worker exit {proc.returncode} sin job-result",
+        }
+    if proc.returncode != 0 and "error" not in payload:
+        payload["error"] = f"worker exit {proc.returncode}"
+    payload["wall_seconds"] = float(payload.get("wall_seconds") or wall)
+    payload["returncode"] = proc.returncode
+    return payload
+
+
+def _train_experiments_parallel(
+    exp_ids: List[int],
+    *,
+    cfg: Dict[str, Any],
+    parallel: int,
+    resume: bool,
+    models_out: Path,
+    cmd_base: List[str],
+) -> None:
+    gpus = _cuda_device_ids(cfg)
+    jobs_dir = models_out / "train_jobs"
+    jobs_dir.mkdir(parents=True, exist_ok=True)
+    pending: List[int] = []
+    for exp_id in exp_ids:
+        if exp_id < 1 or exp_id > len(EXPERIMENTS):
+            print(f"[Exp {exp_id:02d}] Fuera de rango, omitido.")
+            continue
+        if resume and _model_exists(models_out, exp_id):
+            print(f"[Exp {exp_id:02d}] Ya existe modelo → resume, omitido.")
+            continue
+        pending.append(exp_id)
+    if not pending:
+        return
+
+    print(
+        f"[WINDOW] Paralelo: {len(pending)} experimentos, {parallel} a la vez, "
+        f"GPUs={','.join(gpus)}",
+        flush=True,
+    )
+    lock = threading.Lock()
+    slot = 0
+
+    def _next_gpu() -> str:
+        nonlocal slot
+        with lock:
+            gpu = gpus[slot % len(gpus)]
+            slot += 1
+            return gpu
+
+    results: List[Dict[str, Any]] = []
+    with ThreadPoolExecutor(max_workers=parallel) as pool:
+        futures = {}
+        for exp_id in pending:
+            job_result = jobs_dir / f"exp_{exp_id:02d}.json"
+            env = _worker_env(cfg, parallel=parallel, cuda_device=_next_gpu())
+            fut = pool.submit(
+                _run_exp_subprocess,
+                exp_id=exp_id,
+                cmd_base=cmd_base,
+                job_result=job_result,
+                env=env,
+            )
+            futures[fut] = exp_id
+        for fut in as_completed(futures):
+            exp_id = futures[fut]
+            payload = fut.result()
+            results.append(payload)
+            status = "FAIL" if payload.get("error") else "OK"
+            print(
+                f"[paralelo] exp {exp_id:02d} {status} "
+                f"({payload.get('wall_seconds', 0):.0f}s)",
+                flush=True,
+            )
+            if payload.get("error"):
+                print(f"[paralelo] error exp {exp_id:02d}: {payload.get('error')[:500]}", flush=True)
+
+    summary_path = models_out / "parallel_train_summary.json"
+    with open(summary_path, "w", encoding="utf-8") as f:
+        json.dump({"parallel_jobs": parallel, "results": results}, f, indent=2)
+    print(f"[WINDOW] Resumen paralelo → {summary_path}")
+
+
+def _apply_cfg_overrides(cfg: Dict[str, Any], args: argparse.Namespace) -> Dict[str, Any]:
+    cfg = dict(cfg)
+    if args.force_new_split:
+        cfg["_force_new_split"] = True
+    if args.debug_clips > 0 or args.debug_epochs > 0:
+        if args.debug_clips > 0:
+            cfg["_debug_max_clips"] = args.debug_clips
+        if args.debug_epochs > 0:
+            td = dict(cfg.get("train_defaults") or {})
+            td["epochs"] = args.debug_epochs
+            cfg["train_defaults"] = td
+    return cfg
+
+
+def _resolve_manifest_dir(args: argparse.Namespace, cfg: Dict[str, Any]) -> Optional[Path]:
+    if args.manifest_cache_dir:
+        return Path(args.manifest_cache_dir).resolve()
+    if cfg.get("synthetic_variants", {}).get("use_validate_npy_manifests"):
+        guess = TRAINING_DIR / "operations_npy" / "manifest_cache"
+        return guess if guess.is_dir() else None
+    return None
+
+
+def _cmd_base_for_workers(py: str, args: argparse.Namespace, cell_id: str) -> List[str]:
+    cmd = [py, str(Path(__file__).resolve())]
+    if args.data_root:
+        cmd.extend(["--data-root", str(Path(args.data_root).resolve())])
+    cmd.extend(["--cell-id", cell_id])
+    if args.no_augment:
+        cmd.append("--no-augment")
+    if args.force_new_split:
+        cmd.append("--force-new-split")
+    if args.manifest_cache_dir:
+        cmd.extend(["--manifest-cache-dir", args.manifest_cache_dir])
+    if args.debug_clips > 0:
+        cmd.extend(["--debug-clips", str(args.debug_clips)])
+    if args.debug_epochs > 0:
+        cmd.extend(["--debug-epochs", str(args.debug_epochs)])
+    return cmd
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--data-root", type=str, default=None)
@@ -254,6 +465,15 @@ def main() -> None:
         default=None,
         help="Caché JSON validate_npy (misma que campaña)",
     )
+    ap.add_argument(
+        "--parallel",
+        type=int,
+        default=None,
+        help="Experimentos en paralelo (default: parallelism.max_parallel_jobs en window_config)",
+    )
+    ap.add_argument("--resume", action="store_true", help="Omitir exp si ya existe modelo_XX.pt")
+    ap.add_argument("--worker", action="store_true", help=argparse.SUPPRESS)
+    ap.add_argument("--job-result", type=str, default=None, help=argparse.SUPPRESS)
     args = ap.parse_args()
 
     cfg = load_window_config()
@@ -275,31 +495,69 @@ def main() -> None:
         if args.data_root
         else get_data_result_roots(None)[0]
     )
+    cfg = _apply_cfg_overrides(cfg, args)
     task = "binary"
-    if args.force_new_split:
-        cfg = dict(cfg)
-        cfg["_force_new_split"] = True
-    if args.debug_clips > 0 or args.debug_epochs > 0:
-        cfg = dict(cfg) if not args.force_new_split else cfg
-        if args.debug_clips > 0:
-            cfg["_debug_max_clips"] = args.debug_clips
-        if args.debug_epochs > 0:
-            td = dict(cfg.get("train_defaults") or {})
-            td["epochs"] = args.debug_epochs
-            cfg["train_defaults"] = td
     positive = cfg.get("robbery_classes", [6, 14])
     augment = not args.no_augment and bool(cfg.get("synthetic_variants", {}).get("augment_on_the_fly", True))
-    mdir = Path(args.manifest_cache_dir).resolve() if args.manifest_cache_dir else None
-    if mdir is None and cfg.get("synthetic_variants", {}).get("use_validate_npy_manifests"):
-        # Ruta típica campaña (si existe)
-        guess = TRAINING_DIR / "operations_npy" / "manifest_cache"
-        mdir = guess if guess.is_dir() else None
-
+    mdir = _resolve_manifest_dir(args, cfg)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     out = models_dir(cell_id)
+    parallel = _parallel_jobs(cfg, args.parallel)
 
-    print(f"[WINDOW] stage={args.stage} experiment_ids={exp_ids} cell={cell_id}")
+    if args.worker:
+        if not args.experiment_id or len(args.experiment_id) != 1:
+            raise SystemExit("--worker requiere un solo --experiment-id")
+        eid = int(args.experiment_id[0])
+        t0 = time.perf_counter()
+        err: Optional[str] = None
+        payload: Dict[str, Any] = {"exp_id": eid, "cell_id": cell_id}
+        try:
+            res = run_window_experiment(
+                eid,
+                data_root=data_root,
+                device=device,
+                cfg_window=cfg,
+                task=task,
+                positive_classes=positive,
+                augment_on_the_fly=augment,
+                manifest_cache_dir=mdir,
+                models_out=out,
+            )
+            payload["best_val_acc"] = res.get("best_val_acc")
+            payload["test_metrics"] = res.get("test_metrics")
+        except Exception as exc:
+            err = str(exc)
+            payload["error"] = err
+        payload["wall_seconds"] = time.perf_counter() - t0
+        if args.job_result:
+            Path(args.job_result).parent.mkdir(parents=True, exist_ok=True)
+            with open(args.job_result, "w", encoding="utf-8") as f:
+                json.dump(payload, f, indent=2)
+        if err:
+            raise SystemExit(1)
+        return
+
+    print(
+        f"[WINDOW] stage={args.stage} experiment_ids={exp_ids} cell={cell_id} "
+        f"parallel={parallel}",
+        flush=True,
+    )
+
+    if parallel > 1 and not os.environ.get("WINDOW_TRAIN_WORKER"):
+        _train_experiments_parallel(
+            exp_ids,
+            cfg=cfg,
+            parallel=parallel,
+            resume=bool(args.resume),
+            models_out=out,
+            cmd_base=_cmd_base_for_workers(sys.executable, args, cell_id),
+        )
+        return
+
     for eid in exp_ids:
+        if args.resume and _model_exists(out, eid):
+            print(f"[Exp {eid:02d}] Ya existe, omitido.")
+            continue
         run_window_experiment(
             eid,
             data_root=data_root,

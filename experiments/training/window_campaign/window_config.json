@@ -96,5 +96,11 @@
     "epochs": 25,
     "early_stop_patience": 8,
     "balanced": false
+  },
+  "parallelism": {
+    "max_parallel_jobs": 2,
+    "_comment": "Como campaign: N procesos de entrenamiento a la vez. 2 en la misma GPU si solo tienes una; si hay varias, usa cuda_device_ids.",
+    "cuda_device_ids": [0],
+    "dataloader_workers": 4
   }
 }

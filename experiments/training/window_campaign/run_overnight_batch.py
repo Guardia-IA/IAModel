@@ -38,6 +38,13 @@ def main() -> int:
     ap.add_argument("--debug-clips", type=int, default=0)
     ap.add_argument("--debug-epochs", type=int, default=0)
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument(
+        "--parallel",
+        type=int,
+        default=None,
+        help="Reenvía a train_window_campaign (default: window_config parallelism)",
+    )
+    ap.add_argument("--resume", action="store_true", help="Omitir modelos ya entrenados")
     args = ap.parse_args()
 
     py = sys.executable
@@ -69,6 +76,10 @@ def main() -> int:
             cmd.extend(["--debug-clips", str(args.debug_clips)])
         if args.debug_epochs > 0:
             cmd.extend(["--debug-epochs", str(args.debug_epochs)])
+        if args.parallel is not None:
+            cmd.extend(["--parallel", str(args.parallel)])
+        if args.resume:
+            cmd.append("--resume")
         steps.append(cmd)
 
     steps.append([py, "summarize_window_runs.py"] + (["--cell-id", args.cell_id] if args.cell_id else []))
