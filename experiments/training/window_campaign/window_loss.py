@@ -31,10 +31,13 @@ def train_one_epoch_weighted_bce(
         optimizer.zero_grad(set_to_none=True)
         logits = model(x)
         if num_classes == 2:
-            target = y.float()
-            if label_smoothing > 0:
-                target = target * (1.0 - label_smoothing) + 0.5 * label_smoothing
-            loss_vec = F.binary_cross_entropy_with_logits(logits[:, 1], target, reduction="none")
+            # CE sobre ambas clases (argmax en eval). BCE solo en logits[:,1] dejaba el modelo en "todo neg".
+            loss_vec = F.cross_entropy(
+                logits,
+                y,
+                reduction="none",
+                label_smoothing=label_smoothing if label_smoothing > 0 else 0.0,
+            )
         else:
             loss_vec = F.cross_entropy(logits, y, reduction="none")
         loss_vec = loss_vec * w
