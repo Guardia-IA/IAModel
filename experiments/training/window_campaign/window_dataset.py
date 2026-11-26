@@ -13,13 +13,12 @@ from train_model_operations import (  # type: ignore
     _stable_str_hash,
     _stable_uid_hash,
     add_velocity,
-    normalize_sequence,
     temporal_resize,
     SEED,
 )
 
 from window_index import WindowExample
-from window_preprocess import add_velocity_v2, extract_window
+from window_preprocess import add_velocity_v2, extract_window, normalize_visible_sequence
 
 
 class WindowPoseDataset(Dataset):
@@ -139,7 +138,7 @@ class WindowPoseDataset(Dataset):
                     ranges=self.augment_ranges,
                 )
 
-        poses = normalize_sequence(poses)
+        poses = normalize_visible_sequence(poses)
         if self.mask_policy == "keep_grid_v2":
             poses = add_velocity_v2(poses)
         else:

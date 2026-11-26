@@ -145,7 +145,9 @@ def filter_windows_by_pose_quality(
     cache_vm: Dict[str, Optional[np.ndarray]] = {}
     kept: List[WindowExample] = []
     dropped = 0
+    protected = 0
     reason_counts: Dict[str, int] = {}
+    protect = set(qcfg.get("protect_label_states") or ["pos_core", "pos_partial"])
 
     for w in windows:
         key = str(w.pose_path.resolve())
@@ -176,15 +178,23 @@ def filter_windows_by_pose_quality(
         )
         if res.ok:
             kept.append(w)
+        elif w.label_state in protect and "empty_window" not in res.reasons:
+            kept.append(w)
+            protected += 1
         else:
             dropped += 1
             tag = res.reasons[0].split("=")[0] if res.reasons else "unknown"
             reason_counts[tag] = reason_counts.get(tag, 0) + 1
 
-    summary = {"dropped": dropped, "kept": len(kept), "reason_counts": reason_counts}
-    if verbose and dropped:
+    summary = {
+        "dropped": dropped,
+        "kept": len(kept),
+        "protected_positives": protected,
+        "reason_counts": reason_counts,
+    }
+    if verbose and (dropped or protected):
         print(
             f"[QUALITY] Ventanas descartadas={dropped} | conservadas={len(kept)} | "
-            f"motivos={reason_counts}"
+            f"positivos protegidos={protected} | motivos={reason_counts}"
         )
     return kept, summary

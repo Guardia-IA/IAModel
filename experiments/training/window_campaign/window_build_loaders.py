@@ -190,17 +190,17 @@ def build_window_datasets_and_loaders(
     val_w = _wins(val_clips)
     test_w = _wins(test_clips)
 
+    if pl_cfg.get("mode") == "core_aware":
+        train_w = apply_core_aware_labels(train_w, core_index, robbery_cats=positive_classes, cfg=cfg_window)
+        val_w = apply_core_aware_labels(val_w, core_index, robbery_cats=positive_classes, cfg=cfg_window)
+        test_w = apply_core_aware_labels(test_w, core_index, robbery_cats=positive_classes, cfg=cfg_window)
+
     q_summary: Dict[str, Any] = {}
     if (cfg_window.get("quality_gate") or {}).get("enabled", True):
         train_w, q_tr = filter_windows_by_pose_quality(train_w, cfg=cfg_window)
         val_w, q_va = filter_windows_by_pose_quality(val_w, cfg=cfg_window, verbose=False)
         test_w, q_te = filter_windows_by_pose_quality(test_w, cfg=cfg_window, verbose=False)
         q_summary = {"train": q_tr, "val": q_va, "test": q_te}
-
-    if pl_cfg.get("mode") == "core_aware":
-        train_w = apply_core_aware_labels(train_w, core_index, robbery_cats=positive_classes, cfg=cfg_window)
-        val_w = apply_core_aware_labels(val_w, core_index, robbery_cats=positive_classes, cfg=cfg_window)
-        test_w = apply_core_aware_labels(test_w, core_index, robbery_cats=positive_classes, cfg=cfg_window)
     train_w = apply_padded_negative_simulation(
         train_w,
         prob=float(pad_cfg.get("padded_negative_prob", 0.15)),

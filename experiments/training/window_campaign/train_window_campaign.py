@@ -75,7 +75,12 @@ def _checkpoint_score(
     if metric_key == "val_acc":
         return float(val_acc)
     if metric_key == "macro_f1":
-        return float(val_metrics.get("macro_f1", 0.0))
+        f1 = float(val_metrics.get("macro_f1", 0.0))
+        if task == "binary":
+            block = (val_metrics.get("binary") or {}).get("softmax_argmax") or {}
+            if float(block.get("recall_robbery_pct", 0.0)) <= 0.0:
+                return -1.0
+        return f1
     if metric_key == "rec_robo" and task == "binary":
         block = (val_metrics.get("binary") or {}).get("softmax_argmax") or {}
         return float(block.get("recall_robbery_pct", 0.0))
@@ -224,6 +229,13 @@ def run_window_experiment(
         print(
             f"[Win {exp_id:02d}] CE class_weight (neg,pos)=("
             f"{class_weight[0].item():.2f}, {class_weight[1].item():.2f})",
+            flush=True,
+        )
+    else:
+        share = float((cfg_window.get("sampler") or {}).get("positive_share", 0.35))
+        print(
+            f"[Win {exp_id:02d}] balanceo=sampler positive_share={share} "
+            f"(sin peso de clase; el peso por ventana solo distingue pos_core/partial)",
             flush=True,
         )
     if progress_path is not None:

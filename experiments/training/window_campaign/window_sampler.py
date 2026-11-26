@@ -36,18 +36,19 @@ class HierarchicalClipCapSampler(Sampler[int]):
         self._pos: List[int] = []
         self._neg: List[int] = []
         self._by_clip: Dict[str, List[int]] = defaultdict(list)
+        pos_per_clip: Dict[str, int] = defaultdict(int)
         for i, w in enumerate(self.windows):
             if w.label_state == "ignore" or w.train_label < 0 or w.sample_weight <= 0:
                 continue
             self._by_clip[w.clip_uid].append(i)
             if int(w.train_label) == 1:
                 self._pos.append(i)
+                pos_per_clip[w.clip_uid] += 1
             else:
                 self._neg.append(i)
-        self._pos_target = min(
-            int(self.num_samples * self.positive_share),
-            max(1, len(self._pos) * self.max_windows_per_clip),
-        )
+        # El mismo índice puede repetirse hasta el tope por clip (varias pasadas).
+        feasible_pos = len(pos_per_clip) * self.max_windows_per_clip
+        self._pos_target = min(int(self.num_samples * self.positive_share), max(0, feasible_pos))
 
     def stats_line(self) -> str:
         return (
@@ -59,47 +60,49 @@ class HierarchicalClipCapSampler(Sampler[int]):
     def set_epoch(self, epoch: int) -> None:
         self._epoch = epoch
 
+    def _draw(
+        self,
+        rng: random.Random,
+        pool: List[int],
+        n: int,
+        clip_counts: Dict[str, int],
+    ) -> List[int]:
+        """Toma n índices del pool sin pasarse del tope por clip. No rellena con la otra clase."""
+        if n <= 0 or not pool:
+            return []
+        out: List[int] = []
+        stalls = 0
+        while len(out) < n and stalls < 4:
+            order = pool[:]
+            rng.shuffle(order)
+            before = len(out)
+            for idx in order:
+                if len(out) >= n:
+                    break
+                uid = self.windows[idx].clip_uid
+                if clip_counts[uid] >= self.max_windows_per_clip:
+                    continue
+                clip_counts[uid] += 1
+                out.append(idx)
+            if len(out) == before:
+                stalls += 1
+            else:
+                stalls = 0
+        return out
+
     def __iter__(self):
         rng = random.Random(self.seed + self._epoch)
         clip_counts: Dict[str, int] = defaultdict(int)
-        n_pos_target = int(self._pos_target)
-        emitted = 0
-        pos_emitted = 0
-
-        def pick_from(pool: List[int]) -> int | None:
-            rng.shuffle(pool)
-            for idx in pool:
-                w = self.windows[idx]
-                if clip_counts[w.clip_uid] >= self.max_windows_per_clip:
-                    continue
-                clip_counts[w.clip_uid] += 1
-                return idx
-            return None
-
-        while emitted < self.num_samples:
-            want_pos = pos_emitted < n_pos_target and self._pos
-            pool = self._pos if want_pos else self._neg
-            if not pool:
-                pool = self._neg or self._pos
-            idx = pick_from(pool)
-            if idx is None:
-                alt = self._neg if pool is self._pos else self._pos
-                if alt:
-                    idx = pick_from(alt)
-                if idx is None:
-                    break
-            if int(self.windows[idx].train_label) == 1:
-                pos_emitted += 1
-            emitted += 1
+        # Primero los positivos: el tope por clip no se lo comen los negativos.
+        pos_drawn = self._draw(rng, self._pos, int(self._pos_target), clip_counts)
+        neg_target = max(0, self.num_samples - len(pos_drawn))
+        neg_drawn = self._draw(rng, self._neg, neg_target, clip_counts)
+        drawn = pos_drawn + neg_drawn
+        rng.shuffle(drawn)
+        self.last_epoch_pos = len(pos_drawn)
+        self.last_epoch_neg = len(neg_drawn)
+        for idx in drawn:
             yield idx
-
-        while emitted < self.num_samples:
-            idx = rng.randint(0, len(self.windows) - 1)
-            w = self.windows[idx]
-            if w.label_state == "ignore" or w.sample_weight <= 0:
-                continue
-            yield idx
-            emitted += 1
 
     def __len__(self) -> int:
         return self.num_samples

@@ -29,6 +29,26 @@ def apply_keep_grid_v2(poses: np.ndarray, valid_mask: np.ndarray | None = None) 
     return out
 
 
+def normalize_visible_sequence(poses: np.ndarray) -> np.ndarray:
+    """Centra y escala solo joints visibles. Los frames a cero no mueven la media."""
+    out = np.nan_to_num(poses, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
+    vis = np.abs(out).sum(axis=-1) > 1e-7
+    if not np.any(vis):
+        return out
+    counts = np.maximum(vis.sum(axis=1, keepdims=True), 1).astype(np.float32)
+    center = (out * vis[..., None]).sum(axis=1, keepdims=True) / counts[:, None]
+    has = vis.any(axis=1)
+    center[~has] = 0.0
+    out = out - center
+    out = np.where(vis[..., None], out, 0.0)
+    norms = np.linalg.norm(out, axis=-1)
+    scale = float(norms[vis].mean()) if np.any(vis) else 0.0
+    if scale > 1e-8:
+        out = out / scale
+        out = np.where(vis[..., None], out, 0.0)
+    return out.astype(np.float32)
+
+
 def add_velocity_v2(poses: np.ndarray) -> np.ndarray:
     """Velocity only between consecutive valid (non-zero) frames; else 0."""
     poses = poses.astype(np.float32)

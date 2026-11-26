@@ -25,7 +25,8 @@
     "max_centroid_jump_norm": 0.55,
     "min_visible_joints": 5,
     "max_low_visibility_frame_ratio": 0.35,
-    "max_all_zero_frame_ratio": 0.2
+    "max_all_zero_frame_ratio": 0.2,
+    "protect_label_states": ["pos_core", "pos_partial"]
   },
   "single_user_only": true,
   "robbery_classes": [6, 14],
@@ -62,7 +63,7 @@
   },
   "sampler": {
     "type": "hierarchical",
-    "positive_share": 0.4,
+    "positive_share": 0.35,
     "max_windows_per_clip_per_epoch": 4,
     "samples_per_epoch_batches": 100,
     "samples_per_epoch": 3200
@@ -79,8 +80,8 @@
   "loss": {
     "type": "weighted_bce",
     "label_smoothing": 0.02,
-    "auto_pos_class_weight": true,
-    "pos_class_weight_scale": 1.25,
+    "auto_pos_class_weight": false,
+    "pos_class_weight_scale": 1.0,
     "weights": {
       "neg": 1.0,
       "pos_core": 2.0

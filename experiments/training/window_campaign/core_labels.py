@@ -83,7 +83,8 @@ def apply_core_aware_labels(
     for w in windows:
         cat = _parse_cat(w.category_str)
         content_len = max(0, w.end - w.start)
-        pad_frac = max(0.0, 1.0 - content_len / 96.0) if content_len else 1.0
+        wl = max(1, int(cfg.get("window_len", 96)))
+        pad_frac = max(0.0, 1.0 - content_len / float(wl)) if content_len else 1.0
         w = replace(w, pad_frac=pad_frac)
 
         if cat not in rob or int(w.label) != 1:
