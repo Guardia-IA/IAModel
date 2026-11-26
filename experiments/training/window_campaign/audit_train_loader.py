@@ -21,14 +21,29 @@ from window_paths import load_window_config
 def main() -> int:
     ap = argparse.ArgumentParser(description="Audit window train loader labels")
     ap.add_argument("--data-root", type=str, required=True)
-    ap.add_argument("--debug-clips", type=int, default=0)
-    ap.add_argument("--max-batches", type=int, default=40)
+    ap.add_argument(
+        "--debug-clips",
+        type=int,
+        default=80,
+        help="Solo N clips (rápido). 0 = corpus completo (lento).",
+    )
+    ap.add_argument("--max-batches", type=int, default=20)
+    ap.add_argument(
+        "--skip-quality",
+        action="store_true",
+        help="Omite quality_gate (solo audit; ahorra muchos minutos).",
+    )
     args = ap.parse_args()
 
     cfg = load_window_config()
+    cfg = dict(cfg)
     if args.debug_clips > 0:
-        cfg = dict(cfg)
         cfg["_debug_max_clips"] = int(args.debug_clips)
+    if args.skip_quality:
+        qg = dict(cfg.get("quality_gate") or {})
+        qg["enabled"] = False
+        cfg["quality_gate"] = qg
+        print("[AUDIT] quality_gate desactivado (solo esta corrida)", flush=True)
 
     data_root = Path(args.data_root).resolve()
     batch_size = int((cfg.get("train_defaults") or {}).get("batch_size", 32))
