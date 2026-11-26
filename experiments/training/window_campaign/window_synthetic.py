@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -15,18 +16,10 @@ from window_index import WindowExample
 
 
 def _window_copy(w: WindowExample, forced_ops: Optional[List[Dict[str, Any]]]) -> WindowExample:
-    return WindowExample(
-        pose_path=w.pose_path,
-        valid_mask_path=w.valid_mask_path,
-        label=w.label,
-        clip_name=w.clip_name,
-        category_str=w.category_str,
-        track_id=w.track_id,
-        action_label=w.action_label,
-        start=w.start,
-        end=w.end,
-        window_id=w.window_id + ("::grid" if forced_ops == [] else "::syn"),
-        clip_uid=w.clip_uid,
+    suffix = "::grid" if forced_ops == [] else "::syn"
+    return replace(
+        w,
+        window_id=w.window_id + suffix,
         forced_ops=forced_ops,
     )
 

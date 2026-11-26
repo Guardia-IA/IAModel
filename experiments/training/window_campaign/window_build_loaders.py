@@ -241,7 +241,9 @@ def build_window_datasets_and_loaders(
     print(
         f"[WINDOW-R2] clips T/V/Te={len(train_clips)}/{len(val_clips)}/{len(test_clips)} | "
         f"windows T/V/Te={len(train_w)}/{len(val_w)}/{len(test_w)} | "
-        f"label_states train={summary['label_states']['train']}"
+        f"label_states train={summary['label_states']['train']} | "
+        f"val={summary['label_states']['val']} | test={summary['label_states']['test']}",
+        flush=True,
     )
 
     label_to_idx = build_label_mapping(examples)

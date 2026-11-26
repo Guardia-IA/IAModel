@@ -65,6 +65,40 @@ from window_train_progress import (
 )
 
 
+def _checkpoint_score(
+    *,
+    task: str,
+    val_acc: float,
+    val_metrics: Dict[str, Any],
+    metric_key: str,
+) -> float:
+    if metric_key == "val_acc":
+        return float(val_acc)
+    if metric_key == "macro_f1":
+        return float(val_metrics.get("macro_f1", 0.0))
+    if metric_key == "rec_robo" and task == "binary":
+        block = (val_metrics.get("binary") or {}).get("softmax_argmax") or {}
+        return float(block.get("recall_robbery_pct", 0.0))
+    return float(val_metrics.get("macro_f1", val_acc))
+
+
+def _binary_class_weight(
+    summary: Dict[str, Any],
+    device: torch.device,
+    *,
+    enabled: bool,
+) -> Optional[torch.Tensor]:
+    if not enabled:
+        return None
+    st = (summary.get("label_states") or {}).get("train") or {}
+    pos = int(st.get("pos_core", 0)) + int(st.get("pos_partial", 0))
+    neg = int(st.get("neg", 0))
+    if pos <= 0:
+        return None
+    ratio = min(float(neg) / float(pos), 50.0)
+    return torch.tensor([1.0, ratio], dtype=torch.float32, device=device)
+
+
 def _aug_from_campaign(cfg_window: Dict[str, Any]) -> Dict[str, Any]:
     camp = cfg_window.get("_campaign_config") or {}
     syn = cfg_window.get("synthetic_variants") or {}
@@ -161,13 +195,29 @@ def run_window_experiment(
         binary_logit_margin=DEFAULT_BINARY_LOGIT_MARGIN,
     )
 
-    best_val = 0.0
+    td = cfg_window.get("train_defaults") or {}
+    ckpt_metric = str(td.get("checkpoint_metric") or ("macro_f1" if task == "binary" else "val_acc"))
+    auto_pos_w = bool(loss_cfg.get("auto_pos_class_weight", True))
+    class_weight = _binary_class_weight(summary, device, enabled=(task == "binary" and auto_pos_w))
+
+    best_score = float("-inf")
     best_state = None
     t0 = time.perf_counter()
     print(
         f"\n{'=' * 72}\nWindow exp {exp_id:02d} | arch={exp_cfg.get('arch')} | epochs={epochs}\n{'=' * 72}",
         flush=True,
     )
+    print(
+        f"[Win {exp_id:02d}] num_classes={num_classes} label_to_idx={label_to_idx} | "
+        f"checkpoint_metric={ckpt_metric} | auto_pos_class_weight={auto_pos_w}",
+        flush=True,
+    )
+    if class_weight is not None:
+        print(
+            f"[Win {exp_id:02d}] CE class_weight (neg,pos)=("
+            f"{class_weight[0].item():.2f}, {class_weight[1].item():.2f})",
+            flush=True,
+        )
     if progress_path is not None:
         set_experiment_running(
             progress_path,
@@ -186,6 +236,7 @@ def run_window_experiment(
                 device,
                 label_smoothing=label_smoothing,
                 num_classes=num_classes,
+                class_weight=class_weight,
             )
         else:
             from train_model_operations import train_one_epoch
@@ -198,15 +249,23 @@ def run_window_experiment(
         if task == "binary" and val_metrics.get("binary"):
             line += " | " + format_binary_metrics_line(val_metrics["binary"])
         print(line, flush=True)
+        ckpt = _checkpoint_score(
+            task=task, val_acc=val_acc, val_metrics=val_metrics, metric_key=ckpt_metric
+        )
         if progress_path is not None:
             tick_epoch(
                 progress_path,
                 exp_id,
                 epoch,
-                extra={"val_acc": round(float(val_acc), 4), "train_loss": round(float(train_loss), 4)},
+                extra={
+                    "val_acc": round(float(val_acc), 4),
+                    "train_loss": round(float(train_loss), 4),
+                    "val_macro_f1": round(float(val_metrics.get("macro_f1", 0)), 4),
+                    "checkpoint_score": round(float(ckpt), 4),
+                },
             )
-        if val_acc > best_val:
-            best_val = val_acc
+        if ckpt > best_score:
+            best_score = ckpt
             best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
 
     if best_state:
@@ -260,7 +319,8 @@ def run_window_experiment(
         "augment_profile": augment_profile,
         "summary": summary,
         "test_metrics": test_metrics,
-        "best_val_acc": best_val,
+        "best_val_acc": best_score,
+        "checkpoint_metric": ckpt_metric,
         "train_seconds": time.perf_counter() - t0,
     }
     torch.save(checkpoint, ckpt_path)

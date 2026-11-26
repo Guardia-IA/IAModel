@@ -1,6 +1,8 @@
 """B4 — weighted BCE training step for window campaign."""
 from __future__ import annotations
 
+from typing import Optional
+
 import torch
 import torch.nn.functional as F
 
@@ -13,6 +15,7 @@ def train_one_epoch_weighted_bce(
     *,
     label_smoothing: float = 0.02,
     num_classes: int = 2,
+    class_weight: Optional[torch.Tensor] = None,
 ) -> float:
     model.train()
     total_loss = 0.0
@@ -36,10 +39,13 @@ def train_one_epoch_weighted_bce(
                 logits,
                 y,
                 reduction="none",
+                weight=class_weight,
                 label_smoothing=label_smoothing if label_smoothing > 0 else 0.0,
             )
         else:
-            loss_vec = F.cross_entropy(logits, y, reduction="none")
+            loss_vec = F.cross_entropy(
+                logits, y, reduction="none", weight=class_weight
+            )
         loss_vec = loss_vec * w
         denom = w.sum().clamp(min=1e-6)
         loss = loss_vec.sum() / denom

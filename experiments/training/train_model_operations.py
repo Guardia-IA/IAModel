@@ -3370,10 +3370,12 @@ def format_binary_metrics_line(binary_metrics: Dict[str, Any], prefix: str = "")
         block = binary_metrics.get(key)
         if not block:
             continue
+        sup = block.get("support_pos")
+        sup_s = f" n_pos={int(sup)}" if sup is not None else ""
         parts.append(
             f"{label}: acc={block['accuracy_pct']:.1f}% "
             f"rec_robo={block['recall_robbery_pct']:.1f}% "
-            f"FP={block['false_positive_rate_pct']:.1f}%"
+            f"FP={block['false_positive_rate_pct']:.1f}%{sup_s}"
         )
     return (prefix + " | ".join(parts)) if parts else ""
 
