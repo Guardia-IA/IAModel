@@ -309,7 +309,11 @@ def build_window_datasets_and_loaders(
 
     use_hier = str(sampler_cfg.get("type", "hierarchical")) == "hierarchical"
     if use_hier and task == "binary":
-        n_train = max(batch_size * 100, len(train_ds))
+        # No escalar muestras/época con len(dataset): en 20k+ ventanas el target de
+        # positivos (share × N) supera el pool y el sampler rellena casi todo neg.
+        default_spb = int(sampler_cfg.get("samples_per_epoch_batches", 100))
+        n_train = int(sampler_cfg.get("samples_per_epoch", batch_size * default_spb))
+        n_train = max(batch_size, min(n_train, len(train_ds)))
         sampler = HierarchicalClipCapSampler(
             train_w,
             num_samples=n_train,
@@ -317,6 +321,7 @@ def build_window_datasets_and_loaders(
             max_windows_per_clip=int(sampler_cfg.get("max_windows_per_clip_per_epoch", 4)),
             seed=SEED,
         )
+        print(f"[WINDOW-SAMPLER] {sampler.stats_line()}", flush=True)
         train_loader = DataLoader(
             train_ds,
             batch_size=batch_size,

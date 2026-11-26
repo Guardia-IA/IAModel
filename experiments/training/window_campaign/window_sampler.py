@@ -44,6 +44,17 @@ class HierarchicalClipCapSampler(Sampler[int]):
                 self._pos.append(i)
             else:
                 self._neg.append(i)
+        self._pos_target = min(
+            int(self.num_samples * self.positive_share),
+            max(1, len(self._pos) * self.max_windows_per_clip),
+        )
+
+    def stats_line(self) -> str:
+        return (
+            f"sampler: num_samples={self.num_samples} pos_pool={len(self._pos)} "
+            f"neg_pool={len(self._neg)} pos_target/epoch={self._pos_target} "
+            f"(positive_share={self.positive_share})"
+        )
 
     def set_epoch(self, epoch: int) -> None:
         self._epoch = epoch
@@ -51,7 +62,7 @@ class HierarchicalClipCapSampler(Sampler[int]):
     def __iter__(self):
         rng = random.Random(self.seed + self._epoch)
         clip_counts: Dict[str, int] = defaultdict(int)
-        n_pos_target = int(self.num_samples * self.positive_share)
+        n_pos_target = int(self._pos_target)
         emitted = 0
         pos_emitted = 0
 
@@ -72,7 +83,11 @@ class HierarchicalClipCapSampler(Sampler[int]):
                 pool = self._neg or self._pos
             idx = pick_from(pool)
             if idx is None:
-                break
+                alt = self._neg if pool is self._pos else self._pos
+                if alt:
+                    idx = pick_from(alt)
+                if idx is None:
+                    break
             if int(self.windows[idx].train_label) == 1:
                 pos_emitted += 1
             emitted += 1

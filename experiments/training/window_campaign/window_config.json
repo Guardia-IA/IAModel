@@ -62,8 +62,10 @@
   },
   "sampler": {
     "type": "hierarchical",
-    "positive_share": 0.35,
-    "max_windows_per_clip_per_epoch": 4
+    "positive_share": 0.4,
+    "max_windows_per_clip_per_epoch": 4,
+    "samples_per_epoch_batches": 100,
+    "samples_per_epoch": 3200
   },
   "synthetic_variants": {
     "use_validate_npy_manifests": true,
@@ -78,6 +80,7 @@
     "type": "weighted_bce",
     "label_smoothing": 0.02,
     "auto_pos_class_weight": true,
+    "pos_class_weight_scale": 1.25,
     "weights": {
       "neg": 1.0,
       "pos_core": 2.0

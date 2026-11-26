@@ -87,6 +87,7 @@ def _binary_class_weight(
     device: torch.device,
     *,
     enabled: bool,
+    scale: float = 1.0,
 ) -> Optional[torch.Tensor]:
     if not enabled:
         return None
@@ -95,7 +96,8 @@ def _binary_class_weight(
     neg = int(st.get("neg", 0))
     if pos <= 0:
         return None
-    ratio = min(float(neg) / float(pos), 50.0)
+    sc = float(scale) if scale > 0 else 1.0
+    ratio = min(float(neg) / float(pos) * sc, 50.0)
     return torch.tensor([1.0, ratio], dtype=torch.float32, device=device)
 
 
@@ -198,7 +200,13 @@ def run_window_experiment(
     td = cfg_window.get("train_defaults") or {}
     ckpt_metric = str(td.get("checkpoint_metric") or ("macro_f1" if task == "binary" else "val_acc"))
     auto_pos_w = bool(loss_cfg.get("auto_pos_class_weight", True))
-    class_weight = _binary_class_weight(summary, device, enabled=(task == "binary" and auto_pos_w))
+    pos_w_scale = float(loss_cfg.get("pos_class_weight_scale", 1.0))
+    class_weight = _binary_class_weight(
+        summary,
+        device,
+        enabled=(task == "binary" and auto_pos_w),
+        scale=pos_w_scale,
+    )
 
     best_score = float("-inf")
     best_state = None
@@ -227,7 +235,10 @@ def run_window_experiment(
         )
 
     label_smoothing = float(loss_cfg.get("label_smoothing", 0.02))
+    train_sampler = getattr(loaders["train"], "sampler", None)
     for epoch in range(1, epochs + 1):
+        if train_sampler is not None and hasattr(train_sampler, "set_epoch"):
+            train_sampler.set_epoch(epoch)
         if str(loss_cfg.get("type", "weighted_bce")) == "weighted_bce":
             train_loss = train_one_epoch_weighted_bce(
                 model,
