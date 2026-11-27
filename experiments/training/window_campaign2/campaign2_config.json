@@ -1,0 +1,126 @@
+{
+  "version": 1,
+  "description": "Window campaign v2 — native 8s buffers, symmetric gate, event-level eval (PROPOSAL_NEXT_STEP_WINDOW_VS_CLIP.md)",
+  "extends_campaign_config": "../campaign/campaign_config.json",
+  "window_len": 96,
+  "stride": 48,
+  "production_stride_frames": 48,
+  "min_tail_for_final_window": 24,
+  "pad_mode": "repeat_last",
+  "mask_policy": "keep_grid_v2",
+  "preprocess_version": 2,
+  "pose_source": "full",
+  "clip_filters": {
+    "min_clip_seconds": 0.0,
+    "min_valid_frames": 0,
+    "min_valid_pct": 0.0,
+    "max_occlusion_ratio": 90.0
+  },
+  "quality_gate": {
+    "enabled": true,
+    "hz": 12,
+    "min_content_seconds": 2.0,
+    "min_padded_content_seconds": 1.0,
+    "allow_padded_tail": true,
+    "max_jump_to_median_ratio": 8.0,
+    "max_centroid_jump_norm": 0.55,
+    "min_visible_joints": 5,
+    "max_low_visibility_frame_ratio": 0.35,
+    "max_all_zero_frame_ratio": 0.2,
+    "protect_label_states": []
+  },
+  "single_user_only": true,
+  "robbery_classes": [6, 14],
+  "task_default": "binary",
+  "default_cell_id": "win2_bin_native_baseline",
+  "task_multiclass_enabled": false,
+  "experiment_benchmark": [49, 53, 11],
+  "_experiment_benchmark_comment": "Phase 1 primary: diverse pair 49+53 or 11+49. Optional 48 for same-family ablation.",
+  "experiment_stages": {
+    "pilot": [49, 53],
+    "benchmark": [49, 53, 11],
+    "optional_48": [48]
+  },
+  "positive_labeling": {
+    "mode": "core_aware_v2",
+    "core_index_path": "artifacts/core_index.json",
+    "core_overlap_frac_pos": 0.8,
+    "stand_only": "ignore",
+    "copy_core_index_from_v1": "../window_campaign/artifacts/core_index.json"
+  },
+  "padding": {
+    "mode": "repeat_last",
+    "record_pad_frac": true,
+    "padded_negative_prob": 0.1,
+    "padded_len_range": [48, 95],
+    "pad_weight_threshold": 0.25,
+    "pad_weight": 0.5
+  },
+  "sampler": {
+    "type": "hierarchical",
+    "positive_share": 0.22,
+    "max_windows_per_clip_per_epoch": 4,
+    "samples_per_epoch_batches": 100,
+    "samples_per_epoch": 3200
+  },
+  "synthetic_variants": {
+    "use_validate_npy_manifests": true,
+    "max_deterministic_variants": 32,
+    "train_deterministic_prob": 0.25,
+    "use_deterministic_in_train": true,
+    "augment_on_the_fly": true,
+    "aug_profile": "baseline",
+    "extra_manifest_views_per_clip": 1
+  },
+  "loss": {
+    "type": "weighted_bce",
+    "label_smoothing": 0.02,
+    "auto_pos_class_weight": false,
+    "pos_class_weight_scale": 1.0,
+    "focal_gamma": 0.0,
+    "weights": {
+      "neg": 1.0,
+      "pos_core": 2.0
+    }
+  },
+  "split": {
+    "train_ratio": 0.8,
+    "val_ratio": 0.1,
+    "test_ratio": 0.1,
+    "split_by": "clip_uid",
+    "use_frozen_manifest": true,
+    "manifest_path": "artifacts/plans/win2_bin_native_baseline_split_manifest.json"
+  },
+  "train_defaults": {
+    "batch_size": 32,
+    "epochs": 25,
+    "early_stop_patience": 8,
+    "balanced": false,
+    "checkpoint_metric": "recall_at_fpr_cap",
+    "target_fpr_pct": 1.0,
+    "min_recall_robbery_pct": 66.0
+  },
+  "evaluation": {
+    "event_core_overlap_frac": 0.8,
+    "default_thresholds": [0.5, 0.8],
+    "ensemble_pairs": ["49,53", "11,49", "48,49"]
+  },
+  "phase0": {
+    "reference_campaign_manifest": "../window_campaign/artifacts/plans/win_bin_full_baseline_split_manifest.json",
+    "full_clip_checkpoint_dir": null,
+    "window_v1_checkpoint_dir": "../window_campaign/artifacts/models/win_bin_full_baseline",
+    "report_path": "artifacts/reports/phase0_report.md"
+  },
+  "parallelism": {
+    "auto": true,
+    "max_parallel_jobs_cap": 8,
+    "max_parallel_jobs": 2,
+    "vram_probe": true,
+    "vram_reserve_mb": 2048,
+    "process_overhead_mb": 1024,
+    "estimated_vram_gb_per_job": 3.5,
+    "probe_feature_dim": 68,
+    "cuda_device_ids": null,
+    "dataloader_workers": "auto"
+  }
+}
