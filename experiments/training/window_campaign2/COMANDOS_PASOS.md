@@ -27,9 +27,10 @@ Checkpoints ventana v1 (opcional, ya referenciados en config):
 ## Entrenamiento
 
 ```bash
-# Smoke (200 clips, split nuevo)
+# Smoke (200 clips: ~70 robo + 130 neg estratificado, gate OFF, overlap 0.6)
 python3 train_campaign2.py --data-root "$DATA" --stage pilot \
   --debug-clips 200 --force-new-split --experiment-id 49
+# Al arrancar debes ver [WIN2-SMOKE] y pos_core train >> 15
 
 # Benchmark completo (49+53+11), respeta manifiesto congelado
 python3 train_campaign2.py --data-root "$DATA" --stage benchmark --resume

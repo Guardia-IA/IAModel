@@ -91,6 +91,13 @@
     "use_frozen_manifest": true,
     "manifest_path": "artifacts/plans/win2_bin_native_baseline_split_manifest.json"
   },
+  "smoke": {
+    "stratified": true,
+    "min_robbery_clips": 70,
+    "smoke_core_overlap_frac_pos": 0.6,
+    "disable_quality_gate": true,
+    "min_recall_checkpoint_pct": 25.0
+  },
   "train_defaults": {
     "batch_size": 32,
     "epochs": 25,

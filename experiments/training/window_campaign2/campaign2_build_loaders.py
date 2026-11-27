@@ -34,6 +34,7 @@ from train_model_operations import (  # type: ignore
     split_uids_from_example_lists,
 )
 
+from campaign2_collect import collect_smoke_examples  # noqa: E402
 from campaign2_labels import apply_campaign2_labels, ensure_core_index_file  # noqa: E402
 from campaign2_paths import CAMPAIGN2_ROOT as ROOT  # noqa: E402
 from core_labels import apply_padded_negative_simulation  # type: ignore
@@ -89,14 +90,26 @@ def build_campaign2_datasets_and_loaders(
     sampler_cfg = cfg.get("sampler") or {}
     cf = _clip_filter_kwargs(cfg)
 
+    smoke_cfg = cfg.get("smoke") or {}
     if debug_max_clips > 0:
-        examples = collect_debug_examples(
-            n=int(debug_max_clips),
-            pose_source=pose_source,
-            single_user_only=single_user,
-            data_root=data_root,
-            **cf,
-        )
+        if bool(smoke_cfg.get("stratified", True)):
+            examples = collect_smoke_examples(
+                n_total=int(debug_max_clips),
+                robbery_classes=positive_classes,
+                data_root=data_root,
+                min_robbery_clips=int(smoke_cfg.get("min_robbery_clips", 0)) or None,
+                pose_source=pose_source,
+                single_user_only=single_user,
+                **cf,
+            )
+        else:
+            examples = collect_debug_examples(
+                n=int(debug_max_clips),
+                pose_source=pose_source,
+                single_user_only=single_user,
+                data_root=data_root,
+                **cf,
+            )
         print(f"[WIN2-DEBUG] {len(examples)} clips (debug_max_clips={debug_max_clips})")
     else:
         examples = collect_examples(
@@ -136,20 +149,42 @@ def build_campaign2_datasets_and_loaders(
             min_tail_for_final_window=min_tail,
         )
 
+    label_cfg = dict(cfg)
+    if debug_max_clips > 0:
+        pl_override = dict(pl_cfg)
+        if "smoke_core_overlap_frac_pos" in smoke_cfg:
+            pl_override["core_overlap_frac_pos"] = float(smoke_cfg["smoke_core_overlap_frac_pos"])
+        else:
+            pl_override["core_overlap_frac_pos"] = min(
+                float(pl_override.get("core_overlap_frac_pos", 0.8)), 0.6
+            )
+        label_cfg = {**cfg, "positive_labeling": pl_override}
+        if bool(smoke_cfg.get("disable_quality_gate", True)):
+            label_cfg = {
+                **label_cfg,
+                "quality_gate": {**(cfg.get("quality_gate") or {}), "enabled": False},
+            }
+            print("[WIN2-SMOKE] quality_gate OFF para señal rápida", flush=True)
+        print(
+            f"[WIN2-SMOKE] core_overlap_frac_pos={pl_override['core_overlap_frac_pos']}",
+            flush=True,
+        )
+
     train_w = _wins(train_clips)
     val_w = _wins(val_clips)
     test_w = _wins(test_clips)
 
     if pl_cfg.get("mode", "core_aware_v2").startswith("core"):
-        train_w = apply_campaign2_labels(train_w, core_index, robbery_cats=positive_classes, cfg=cfg)
-        val_w = apply_campaign2_labels(val_w, core_index, robbery_cats=positive_classes, cfg=cfg)
-        test_w = apply_campaign2_labels(test_w, core_index, robbery_cats=positive_classes, cfg=cfg)
+        train_w = apply_campaign2_labels(train_w, core_index, robbery_cats=positive_classes, cfg=label_cfg)
+        val_w = apply_campaign2_labels(val_w, core_index, robbery_cats=positive_classes, cfg=label_cfg)
+        test_w = apply_campaign2_labels(test_w, core_index, robbery_cats=positive_classes, cfg=label_cfg)
 
     q_summary: Dict[str, Any] = {}
-    if (cfg.get("quality_gate") or {}).get("enabled", True):
-        train_w, q_tr = filter_windows_by_pose_quality(train_w, cfg=cfg)
-        val_w, q_va = filter_windows_by_pose_quality(val_w, cfg=cfg, verbose=False)
-        test_w, q_te = filter_windows_by_pose_quality(test_w, cfg=cfg, verbose=False)
+    qcfg = label_cfg if debug_max_clips > 0 else cfg
+    if (qcfg.get("quality_gate") or {}).get("enabled", True):
+        train_w, q_tr = filter_windows_by_pose_quality(train_w, cfg=qcfg)
+        val_w, q_va = filter_windows_by_pose_quality(val_w, cfg=qcfg, verbose=False)
+        test_w, q_te = filter_windows_by_pose_quality(test_w, cfg=qcfg, verbose=False)
         q_summary = {"train": q_tr, "val": q_va, "test": q_te}
 
     train_w = apply_padded_negative_simulation(
@@ -191,12 +226,19 @@ def build_campaign2_datasets_and_loaders(
         "quality_gate": q_summary,
         "windows_raw": {"train": train_w, "val": val_w, "test": test_w},
     }
+    n_pos_train = int(summary["label_states"]["train"].get("pos_core", 0))
     print(
         f"[WIN2] clips T/V/Te={len(train_clips)}/{len(val_clips)}/{len(test_clips)} | "
         f"windows T/V/Te={len(train_w)}/{len(val_w)}/{len(test_w)} | "
-        f"label_states test={summary['label_states']['test']}",
+        f"label_states train={summary['label_states']['train']} | test={summary['label_states']['test']}",
         flush=True,
     )
+    if debug_max_clips > 0 and n_pos_train < 15:
+        print(
+            f"[WIN2-SMOKE] AVISO: pos_core train={n_pos_train} (pocas ventanas positivas). "
+            "Sube --debug-clips o min_robbery_clips en campaign2_config.json → smoke.",
+            flush=True,
+        )
 
     label_to_idx = build_label_mapping(examples)
     aug_cfg = _load_augment_profile(Path(augment_config_path), augment_profile) or {}

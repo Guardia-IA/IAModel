@@ -65,10 +65,14 @@ def _checkpoint_score(
 ) -> float:
     td = cfg.get("train_defaults") or {}
     if metric_key == "recall_at_fpr_cap" and task == "binary":
+        min_rec = float(td.get("min_recall_robbery_pct", 66.0))
+        if int(cfg.get("_debug_max_clips") or 0) > 0:
+            # Smoke: exigir señal de robo, no el 66% de producción con n_pos minúsculo
+            min_rec = float((cfg.get("smoke") or {}).get("min_recall_checkpoint_pct", 25.0))
         return recall_at_fpr_score(
             val_metrics,
             float(td.get("target_fpr_pct", 1.0)),
-            float(td.get("min_recall_robbery_pct", 66.0)),
+            min_rec,
         )
     if metric_key == "macro_f1":
         f1 = float(val_metrics.get("macro_f1", 0.0))
@@ -205,7 +209,14 @@ def run_campaign2_experiment(
             best_score = ckpt
             best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
 
-    if best_state:
+    if best_state is None or best_score < 0:
+        print(
+            f"[WIN2 {exp_id:02d}] AVISO: ningún checkpoint con recall>0 en val "
+            f"(best_score={best_score}). Se guarda el último estado pero no sirve para producción.",
+            flush=True,
+        )
+        best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+    elif best_state:
         model.load_state_dict(best_state)
 
     test_loss, test_acc, test_metrics = evaluate_with_metrics(

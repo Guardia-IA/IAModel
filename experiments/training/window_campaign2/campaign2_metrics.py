@@ -109,11 +109,13 @@ def fp_buckets_in_robbery_files(
 
 def recall_at_fpr_score(val_metrics: Dict, target_fpr_pct: float, min_recall_pct: float) -> float:
     """Checkpoint score: maximize recall with FP <= target; penalize if recall below floor."""
-    block = (val_metrics.get("binary") or {}).get("softmax_threshold") or {}
+    block = (val_metrics.get("binary") or {}).get("softmax_argmax") or {}
     if not block:
-        block = (val_metrics.get("binary") or {}).get("softmax_argmax") or {}
+        block = (val_metrics.get("binary") or {}).get("softmax_threshold") or {}
     rec = float(block.get("recall_robbery_pct", 0.0))
     fpr = float(block.get("false_positive_rate_pct", 100.0))
+    if rec <= 0.0:
+        return -1.0
     if rec < min_recall_pct:
         return -1.0
     if fpr > target_fpr_pct:
